@@ -162,6 +162,23 @@ const config = {
     maxTimeBetweenAttempts: 120000, // 2 minutes
     testLocation: null,
     uploadedPlugins: []
+  },
+  
+  // Player tracking settings
+  tracking: {
+    targetPlayer: null,
+    shadowDistance: 15, // blocks to maintain from target
+    minShadowDistance: 10,
+    maxShadowDistance: 30,
+    stealthMode: true,
+    crouchWhenClose: true,
+    crouchDistance: 20,
+    updateInterval: 5000, // 5 seconds
+    afkDetectionTime: 120000, // 2 minutes of no movement
+    repeatedLocationThreshold: 3, // visits before marking as base
+    locationProximityRadius: 20, // blocks to consider "same location"
+    intelligenceReporting: true,
+    activityLogging: true
   }
 };
 
@@ -3414,6 +3431,65 @@ class ConversationAI {
       return;
     }
     
+    // Player tracking commands (admin+ only for privacy/security)
+    if (lower.includes('track') && (lower.includes('player') || lower.includes('start tracking'))) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can initiate player tracking!");
+        return;
+      }
+      
+      const targetName = this.extractPlayerName(message);
+      if (targetName) {
+        if (this.bot.playerTracker) {
+          this.bot.playerTracker.stop();
+        }
+        
+        config.tracking.targetPlayer = targetName;
+        const playerTracker = new PlayerTracker(this.bot, targetName);
+        this.bot.playerTracker = playerTracker;
+        playerTracker.start();
+        
+        this.bot.chat(`🕵️ Now tracking ${targetName} in stealth mode`);
+      } else {
+        this.bot.chat("Usage: 'track player <username>'");
+      }
+      return;
+    }
+    
+    if (lower.includes('stop tracking') || lower.includes('end tracking')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can control tracking!");
+        return;
+      }
+      
+      if (this.bot.playerTracker) {
+        this.bot.playerTracker.stop();
+        this.bot.chat("Tracking stopped and data saved.");
+      } else {
+        this.bot.chat("Not currently tracking anyone.");
+      }
+      return;
+    }
+    
+    if (lower.includes('tracking report') || lower.includes('tracking status')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can view tracking reports!");
+        return;
+      }
+      
+      if (this.bot.playerTracker) {
+        const tracker = this.bot.playerTracker;
+        const sightings = tracker.trackingLog.sightings.length;
+        const bases = tracker.suspectedBases.length;
+        const afkPeriods = tracker.trackingLog.afkPeriods.length;
+        
+        this.bot.chat(`🕵️ Tracking ${tracker.targetUsername}: ${sightings} sightings, ${bases} suspected bases, ${afkPeriods} AFK periods detected`);
+      } else {
+        this.bot.chat("Not currently tracking anyone.");
+      }
+      return;
+    }
+    
     // Ultimate Dupe Engine commands
     if (lower.includes('ultimate dupe') || lower.includes('start ultimate') || lower.includes('ultimate test')) {
       if (!this.bot.ultimateDupeEngine) {
@@ -3989,6 +4065,558 @@ class ConversationAI {
       });
     } else {
       this.bot.chat("Already guarding another area!");
+    }
+  }
+}
+
+// === PLAYER TRACKER (STEALTH INTELLIGENCE GATHERING) ===
+class PlayerTracker {
+  constructor(bot, targetUsername) {
+    this.bot = bot;
+    this.targetUsername = targetUsername;
+    this.targetEntity = null;
+    this.isTracking = false;
+    this.lastKnownPosition = null;
+    this.lastMovementTime = Date.now();
+    this.locationHistory = [];
+    this.visitedLocations = new Map(); // key: "x,y,z", value: count
+    this.suspectedBases = [];
+    this.trackingLog = {
+      targetPlayer: targetUsername,
+      sessionStart: Date.now(),
+      sightings: [],
+      activities: [],
+      suspectedBases: [],
+      afkPeriods: []
+    };
+    this.logFilePath = `./data/tracking_${targetUsername}.json`;
+    this.isCrouching = false;
+    this.updateInterval = null;
+    
+    // Load existing tracking data if available
+    this.loadTrackingData();
+    
+    console.log(`[TRACKER] Initialized tracker for ${targetUsername}`);
+  }
+  
+  loadTrackingData() {
+    try {
+      if (fs.existsSync(this.logFilePath)) {
+        const data = fs.readFileSync(this.logFilePath, 'utf8');
+        const existingLog = JSON.parse(data);
+        
+        // Merge with existing data
+        if (existingLog.suspectedBases) {
+          this.suspectedBases = existingLog.suspectedBases;
+        }
+        if (existingLog.visitedLocations) {
+          this.visitedLocations = new Map(Object.entries(existingLog.visitedLocations));
+        }
+        
+        console.log(`[TRACKER] Loaded existing tracking data (${this.suspectedBases.length} suspected bases)`);
+      }
+    } catch (err) {
+      console.log(`[TRACKER] No existing data or error loading: ${err.message}`);
+    }
+  }
+  
+  async start() {
+    this.isTracking = true;
+    console.log(`[TRACKER] 🕵️ Starting stealth tracking of ${this.targetUsername}`);
+    
+    if (config.tracking.intelligenceReporting) {
+      this.bot.chat(`🕵️ Tracking mode active - target: ${this.targetUsername}`);
+    }
+    
+    // Start main tracking loop
+    this.trackingLoop();
+    
+    // Start periodic intelligence updates
+    this.updateInterval = setInterval(() => {
+      this.reportIntelligence();
+    }, config.tracking.updateInterval);
+    
+    // Set up packet listeners for activity detection
+    this.setupPacketListeners();
+    
+    // Monitor for target spawn/despawn
+    this.monitorTargetPresence();
+  }
+  
+  stop() {
+    this.isTracking = false;
+    if (this.updateInterval) {
+      clearInterval(this.updateInterval);
+    }
+    this.saveTrackingData();
+    console.log(`[TRACKER] Tracking stopped, data saved to ${this.logFilePath}`);
+  }
+  
+  async trackingLoop() {
+    while (this.isTracking) {
+      try {
+        // Locate target
+        const found = await this.locateTarget();
+        
+        if (found) {
+          // Shadow target at appropriate distance
+          await this.shadowTarget();
+          
+          // Check if we should crouch for stealth
+          await this.manageStealthBehavior();
+          
+          // Monitor target activity
+          this.monitorActivity();
+          
+          // Check for AFK
+          this.detectAFK();
+          
+          // Check for repeated locations (potential bases)
+          this.checkForRepeatedLocation();
+        } else {
+          // Target not visible, search last known location
+          if (this.lastKnownPosition) {
+            await this.searchLastKnownLocation();
+          }
+        }
+        
+        await sleep(1000); // Check every second
+      } catch (err) {
+        console.log(`[TRACKER] Error in tracking loop: ${err.message}`);
+        await sleep(2000);
+      }
+    }
+  }
+  
+  async locateTarget() {
+    // First try entity scan
+    const targetEntity = Object.values(this.bot.entities).find(e =>
+      e.type === 'player' && e.username === this.targetUsername
+    );
+    
+    if (targetEntity) {
+      this.targetEntity = targetEntity;
+      this.lastKnownPosition = targetEntity.position.clone();
+      this.lastMovementTime = Date.now();
+      
+      // Log sighting
+      this.trackingLog.sightings.push({
+        timestamp: Date.now(),
+        position: {
+          x: Math.floor(targetEntity.position.x),
+          y: Math.floor(targetEntity.position.y),
+          z: Math.floor(targetEntity.position.z)
+        },
+        distance: this.bot.entity.position.distanceTo(targetEntity.position)
+      });
+      
+      return true;
+    }
+    
+    // Check tab list to see if player is online
+    const playerInTabList = this.bot.players[this.targetUsername];
+    if (playerInTabList) {
+      console.log(`[TRACKER] ${this.targetUsername} is online but not visible (distance: unknown)`);
+      return false;
+    }
+    
+    console.log(`[TRACKER] ${this.targetUsername} is offline or not in render distance`);
+    return false;
+  }
+  
+  async shadowTarget() {
+    if (!this.targetEntity) return;
+    
+    const distance = this.bot.entity.position.distanceTo(this.targetEntity.position);
+    const targetDist = config.tracking.shadowDistance;
+    
+    // Maintain appropriate shadow distance
+    if (distance > config.tracking.maxShadowDistance) {
+      // Too far, move closer
+      const goal = new goals.GoalNear(
+        this.targetEntity.position.x,
+        this.targetEntity.position.y,
+        this.targetEntity.position.z,
+        targetDist
+      );
+      this.bot.pathfinder.setGoal(goal);
+    } else if (distance < config.tracking.minShadowDistance) {
+      // Too close, back off to avoid detection
+      const awayVector = this.bot.entity.position.minus(this.targetEntity.position).normalize();
+      const retreatPos = this.bot.entity.position.plus(awayVector.scaled(5));
+      
+      const goal = new goals.GoalNear(
+        retreatPos.x,
+        retreatPos.y,
+        retreatPos.z,
+        2
+      );
+      this.bot.pathfinder.setGoal(goal);
+    } else {
+      // Good distance, maintain with offset goal
+      const goal = new goals.GoalFollow(this.targetEntity, targetDist);
+      this.bot.pathfinder.setGoal(goal);
+    }
+  }
+  
+  async manageStealthBehavior() {
+    if (!this.targetEntity) return;
+    
+    const distance = this.bot.entity.position.distanceTo(this.targetEntity.position);
+    
+    // Crouch when close for reduced visibility
+    if (config.tracking.crouchWhenClose && distance < config.tracking.crouchDistance) {
+      if (!this.isCrouching) {
+        this.bot.setControlState('sneak', true);
+        this.isCrouching = true;
+        console.log('[TRACKER] 🤫 Crouching for stealth');
+      }
+    } else {
+      if (this.isCrouching) {
+        this.bot.setControlState('sneak', false);
+        this.isCrouching = false;
+      }
+    }
+    
+    // Check line of sight - if target is looking at us, take evasive action
+    if (this.hasLineOfSight() && this.isTargetLookingAtUs()) {
+      await this.avoidDetection();
+    }
+  }
+  
+  hasLineOfSight() {
+    if (!this.targetEntity) return false;
+    
+    try {
+      const start = this.bot.entity.position.offset(0, this.bot.entity.height, 0);
+      const end = this.targetEntity.position.offset(0, this.targetEntity.height, 0);
+      
+      const block = this.bot.world.raycast(start, end.minus(start).normalize(), 
+                                            start.distanceTo(end));
+      
+      return block === null; // No blocks in the way
+    } catch (err) {
+      return false;
+    }
+  }
+  
+  isTargetLookingAtUs() {
+    if (!this.targetEntity) return false;
+    
+    // Calculate if target's yaw is pointing towards us
+    const dx = this.bot.entity.position.x - this.targetEntity.position.x;
+    const dz = this.bot.entity.position.z - this.targetEntity.position.z;
+    const angleToUs = Math.atan2(-dx, -dz);
+    
+    const targetYaw = this.targetEntity.yaw;
+    const angleDiff = Math.abs(angleToUs - targetYaw);
+    
+    // If within 45 degrees (π/4 radians), they might be looking at us
+    return angleDiff < Math.PI / 4;
+  }
+  
+  async avoidDetection() {
+    console.log('[TRACKER] ⚠️ Possible detection! Taking evasive action');
+    
+    // Find cover - look for solid blocks nearby
+    const coverBlock = this.bot.findBlock({
+      matching: (block) => {
+        return block && block.type !== 0 && block.boundingBox === 'block';
+      },
+      maxDistance: 10,
+      count: 1
+    });
+    
+    if (coverBlock) {
+      // Move behind cover
+      const coverPos = coverBlock.position;
+      this.bot.pathfinder.setGoal(new goals.GoalNear(coverPos.x, coverPos.y, coverPos.z, 1));
+      await sleep(2000);
+    } else {
+      // No cover, increase distance
+      const awayVector = this.bot.entity.position.minus(this.targetEntity.position).normalize();
+      const retreatPos = this.bot.entity.position.plus(awayVector.scaled(10));
+      
+      this.bot.pathfinder.setGoal(new goals.GoalNear(retreatPos.x, retreatPos.y, retreatPos.z, 2));
+    }
+    
+    // Log evasive action
+    this.trackingLog.activities.push({
+      timestamp: Date.now(),
+      type: 'evasive_action',
+      reason: 'possible_detection',
+      position: this.bot.entity.position
+    });
+  }
+  
+  monitorActivity() {
+    if (!this.targetEntity) return;
+    
+    // Monitor for significant position changes
+    if (this.lastKnownPosition) {
+      const moved = this.targetEntity.position.distanceTo(this.lastKnownPosition);
+      if (moved > 5) {
+        this.lastMovementTime = Date.now();
+      }
+    }
+  }
+  
+  detectAFK() {
+    const timeSinceMovement = Date.now() - this.lastMovementTime;
+    
+    if (timeSinceMovement > config.tracking.afkDetectionTime) {
+      console.log(`[TRACKER] 🛌 ${this.targetUsername} appears to be AFK`);
+      
+      // Log AFK detection
+      const lastAfk = this.trackingLog.afkPeriods[this.trackingLog.afkPeriods.length - 1];
+      if (!lastAfk || lastAfk.endTime) {
+        this.trackingLog.afkPeriods.push({
+          startTime: Date.now(),
+          position: this.lastKnownPosition,
+          duration: timeSinceMovement
+        });
+        
+        if (config.tracking.intelligenceReporting) {
+          this.bot.chat(`📊 Target is AFK at ${Math.floor(this.lastKnownPosition.x)}, ${Math.floor(this.lastKnownPosition.y)}, ${Math.floor(this.lastKnownPosition.z)}`);
+        }
+      }
+    }
+  }
+  
+  checkForRepeatedLocation() {
+    if (!this.lastKnownPosition) return;
+    
+    // Round to nearest location proximity radius
+    const radius = config.tracking.locationProximityRadius;
+    const locationKey = `${Math.floor(this.lastKnownPosition.x / radius) * radius},${Math.floor(this.lastKnownPosition.y / radius) * radius},${Math.floor(this.lastKnownPosition.z / radius) * radius}`;
+    
+    // Update visit count
+    const currentCount = (this.visitedLocations.get(locationKey) || 0) + 1;
+    this.visitedLocations.set(locationKey, currentCount);
+    
+    // Check if this location should be marked as a suspected base
+    if (currentCount >= config.tracking.repeatedLocationThreshold) {
+      const [x, y, z] = locationKey.split(',').map(Number);
+      const baseExists = this.suspectedBases.some(b => 
+        Math.abs(b.x - x) < radius && Math.abs(b.z - z) < radius
+      );
+      
+      if (!baseExists) {
+        const suspectedBase = {
+          x, y, z,
+          visitCount: currentCount,
+          firstSeen: Date.now(),
+          lastSeen: Date.now(),
+          threatLevel: this.assessThreatLevel(currentCount),
+          explored: false
+        };
+        
+        this.suspectedBases.push(suspectedBase);
+        this.trackingLog.suspectedBases.push(suspectedBase);
+        
+        console.log(`[TRACKER] 🏠 Suspected base detected at ${x}, ${y}, ${z} (visits: ${currentCount})`);
+        
+        if (config.tracking.intelligenceReporting) {
+          this.bot.chat(`🏠 Potential base location marked: ${x}, ${y}, ${z} (threat level: ${suspectedBase.threatLevel})`);
+        }
+        
+        // Initiate stealth exploration if safe
+        this.initiateStealthExploration(suspectedBase);
+      }
+    }
+  }
+  
+  assessThreatLevel(visitCount) {
+    if (visitCount >= 10) return 'high';
+    if (visitCount >= 5) return 'medium';
+    return 'low';
+  }
+  
+  async initiateStealthExploration(base) {
+    // Check bot health - cooperate with Lifesteal mode
+    if (this.bot.health < 10) {
+      console.log('[TRACKER] ⚠️ Health too low for risky infiltration, postponing exploration');
+      return;
+    }
+    
+    console.log(`[TRACKER] 🔍 Initiating stealth exploration of suspected base at ${base.x}, ${base.y}, ${base.z}`);
+    
+    // Log activity
+    this.trackingLog.activities.push({
+      timestamp: Date.now(),
+      type: 'base_exploration',
+      location: { x: base.x, y: base.y, z: base.z },
+      threatLevel: base.threatLevel
+    });
+    
+    // Enable maximum stealth
+    this.bot.setControlState('sneak', true);
+    this.isCrouching = true;
+    
+    // Approach slowly
+    const goal = new goals.GoalNear(base.x, base.y, base.z, 5);
+    this.bot.pathfinder.setGoal(goal);
+    
+    await sleep(5000); // Wait for approach
+    
+    // Scan for storage blocks and valuable information
+    await this.scanBaseArea(base);
+    
+    base.explored = true;
+    base.explorationTime = Date.now();
+    
+    console.log('[TRACKER] ✅ Base exploration complete');
+  }
+  
+  async scanBaseArea(base) {
+    console.log('[TRACKER] Scanning base area for intel...');
+    
+    const scanRadius = 30;
+    const storageBlocks = [];
+    const centerPos = new Vec3(base.x, base.y, base.z);
+    
+    // Scan for chests, shulkers, ender chests
+    for (let x = -scanRadius; x <= scanRadius; x++) {
+      for (let y = -10; y <= 10; y++) {
+        for (let z = -scanRadius; z <= scanRadius; z++) {
+          const pos = centerPos.offset(x, y, z);
+          const block = this.bot.blockAt(pos);
+          
+          if (block && STORAGE_BLOCKS[block.name]) {
+            storageBlocks.push({
+              type: block.name,
+              position: pos,
+              value: STORAGE_BLOCKS[block.name]
+            });
+          }
+        }
+      }
+    }
+    
+    if (storageBlocks.length > 0) {
+      console.log(`[TRACKER] 💎 Found ${storageBlocks.length} storage blocks in base area!`);
+      
+      base.storageBlocks = storageBlocks;
+      base.estimatedValue = storageBlocks.reduce((sum, b) => sum + b.value, 0);
+      
+      if (config.tracking.intelligenceReporting) {
+        this.bot.chat(`💎 Base has ${storageBlocks.length} storage containers (value: ${base.estimatedValue})`);
+      }
+      
+      // Log for future loot extraction
+      this.trackingLog.activities.push({
+        timestamp: Date.now(),
+        type: 'storage_discovered',
+        location: { x: base.x, y: base.y, z: base.z },
+        storageCount: storageBlocks.length,
+        estimatedValue: base.estimatedValue
+      });
+    }
+  }
+  
+  async searchLastKnownLocation() {
+    if (!this.lastKnownPosition) return;
+    
+    console.log(`[TRACKER] Searching last known location: ${Math.floor(this.lastKnownPosition.x)}, ${Math.floor(this.lastKnownPosition.y)}, ${Math.floor(this.lastKnownPosition.z)}`);
+    
+    const goal = new goals.GoalNear(
+      this.lastKnownPosition.x,
+      this.lastKnownPosition.y,
+      this.lastKnownPosition.z,
+      10
+    );
+    
+    this.bot.pathfinder.setGoal(goal);
+    await sleep(3000);
+  }
+  
+  monitorTargetPresence() {
+    // Monitor for player join/leave
+    this.bot.on('playerJoined', (player) => {
+      if (player.username === this.targetUsername) {
+        console.log(`[TRACKER] 🎯 Target ${this.targetUsername} joined the server!`);
+        if (config.tracking.intelligenceReporting) {
+          this.bot.chat(`🎯 Target ${this.targetUsername} is now online`);
+        }
+      }
+    });
+    
+    this.bot.on('playerLeft', (player) => {
+      if (player.username === this.targetUsername) {
+        console.log(`[TRACKER] 👋 Target ${this.targetUsername} left the server`);
+        if (config.tracking.intelligenceReporting) {
+          this.bot.chat(`👋 Target ${this.targetUsername} went offline`);
+        }
+        this.saveTrackingData();
+      }
+    });
+  }
+  
+  setupPacketListeners() {
+    // Listen for block dig packets (mining activity)
+    this.bot._client.on('block_dig', (packet) => {
+      if (this.targetEntity) {
+        const distance = this.bot.entity.position.distanceTo(this.targetEntity.position);
+        if (distance < 50) {
+          this.trackingLog.activities.push({
+            timestamp: Date.now(),
+            type: 'mining',
+            targetPosition: this.targetEntity.position,
+            distance: distance
+          });
+          console.log(`[TRACKER] 🔨 Target is mining nearby`);
+        }
+      }
+    });
+    
+    // Listen for container open (chest access)
+    this.bot._client.on('open_window', (packet) => {
+      if (this.targetEntity) {
+        const distance = this.bot.entity.position.distanceTo(this.targetEntity.position);
+        if (distance < 50) {
+          this.trackingLog.activities.push({
+            timestamp: Date.now(),
+            type: 'container_opened',
+            targetPosition: this.targetEntity.position,
+            distance: distance
+          });
+          console.log(`[TRACKER] 📦 Target opened a container nearby`);
+        }
+      }
+    });
+  }
+  
+  reportIntelligence() {
+    if (!this.targetEntity) return;
+    
+    const distance = Math.floor(this.bot.entity.position.distanceTo(this.targetEntity.position));
+    const pos = this.targetEntity.position;
+    
+    console.log(`[TRACKER] 📊 Intel: ${this.targetUsername} at (${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)}) - distance: ${distance}m`);
+    
+    // Periodically save tracking data
+    this.saveTrackingData();
+  }
+  
+  saveTrackingData() {
+    try {
+      // Convert Map to object for JSON serialization
+      const visitedLocationsObj = {};
+      this.visitedLocations.forEach((value, key) => {
+        visitedLocationsObj[key] = value;
+      });
+      
+      const dataToSave = {
+        ...this.trackingLog,
+        visitedLocations: visitedLocationsObj,
+        suspectedBases: this.suspectedBases,
+        sessionEnd: Date.now()
+      };
+      
+      fs.writeFileSync(this.logFilePath, JSON.stringify(dataToSave, null, 2));
+      console.log(`[TRACKER] Data saved to ${this.logFilePath}`);
+    } catch (err) {
+      console.log(`[TRACKER] Error saving data: ${err.message}`);
     }
   }
 }
@@ -6882,7 +7510,25 @@ http.createServer((req, res) => {
           trusted: config.whitelist.filter(e => e.level === 'trusted').length,
           guest: config.whitelist.filter(e => e.level === 'guest').length
         }
-      }
+      },
+      tracking: globalBot?.playerTracker ? {
+        active: globalBot.playerTracker.isTracking,
+        target: globalBot.playerTracker.targetUsername,
+        sightings: globalBot.playerTracker.trackingLog.sightings.length,
+        suspectedBases: globalBot.playerTracker.suspectedBases.length,
+        afkPeriods: globalBot.playerTracker.trackingLog.afkPeriods.length,
+        lastKnownPosition: globalBot.playerTracker.lastKnownPosition ? 
+          `${Math.floor(globalBot.playerTracker.lastKnownPosition.x)}, ${Math.floor(globalBot.playerTracker.lastKnownPosition.y)}, ${Math.floor(globalBot.playerTracker.lastKnownPosition.z)}` :
+          'Unknown',
+        bases: globalBot.playerTracker.suspectedBases.map(b => ({
+          coords: `${b.x}, ${b.y}, ${b.z}`,
+          visitCount: b.visitCount,
+          threatLevel: b.threatLevel,
+          explored: b.explored,
+          storageBlocks: b.storageBlocks?.length || 0,
+          estimatedValue: b.estimatedValue || 0
+        }))
+      } : null
     }));
   } else if (req.url === '/swarm') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -7232,6 +7878,19 @@ async function launchBot(username, role = 'fighter') {
           await dupeFramework.startTesting();
         }, 3000);
       }, 2000); // Wait 2 seconds for bot to fully initialize
+    } else if (config.mode === 'tracking') {
+      if (config.tracking.targetPlayer) {
+        const playerTracker = new PlayerTracker(bot, config.tracking.targetPlayer);
+        bot.playerTracker = playerTracker;
+        console.log(`[TRACKING] Player tracker initialized for target: ${config.tracking.targetPlayer}`);
+        
+        // Start tracking after a short delay
+        setTimeout(() => {
+          playerTracker.start();
+        }, 2000);
+      } else {
+        console.log('[TRACKING] ⚠️ No target player set! Use menu option 7 to configure.');
+      }
     }
     
     // Chat handler
@@ -7365,13 +8024,14 @@ function showMenu() {
 ║  [4] Friendly Mode (Companion & Helper)               ║
 ║  [5] Swarm Multi-Bot (Coordinated Operations)         ║
 ║  [6] Configure Whitelist                              ║
+║  [7] Player Tracking Mode (Stealth Intelligence)      ║
 ╠═══════════════════════════════════════════════════════╣
 ║  🏠 Home Base: ${config.homeBase.coords ? '✅' : '❌'}                                 ║
 ║  🐝 Swarm Coordinator: ${globalSwarmCoordinator ? '✅' : '❌'}                       ║
 ╚═══════════════════════════════════════════════════════╝
   `);
   
-  rl.question('Select option (1-6): ', (answer) => {
+  rl.question('Select option (1-7): ', (answer) => {
     switch (answer.trim()) {
       case '1': config.mode = 'pvp'; askServer(); break;
       case '2': config.mode = 'dupe'; askServer(); break;
@@ -7379,6 +8039,7 @@ function showMenu() {
       case '4': config.mode = 'friendly'; askServer(); break;
       case '5': config.mode = 'swarm'; launchSwarm(); break;
       case '6': configureWhitelist(); break;
+      case '7': config.mode = 'tracking'; askTrackingConfig(); break;
       default: console.log('Invalid choice'); showMenu(); break;
     }
   });
@@ -7397,6 +8058,30 @@ function askStashConfig() {
         askServer();
       });
     });
+  });
+}
+
+function askTrackingConfig() {
+  console.log('\n🕵️ PLAYER TRACKING MODE - Stealth Intelligence Gathering\n');
+  
+  rl.question('Target player username: ', (target) => {
+    config.tracking.targetPlayer = target.trim();
+    
+    if (!config.tracking.targetPlayer) {
+      console.log('❌ Invalid username. Please try again.');
+      setTimeout(showMenu, 1000);
+      return;
+    }
+    
+    console.log(`\n🎯 Target set: ${config.tracking.targetPlayer}`);
+    console.log('Tracking configuration:');
+    console.log(`  - Shadow distance: ${config.tracking.shadowDistance} blocks`);
+    console.log(`  - Stealth mode: ${config.tracking.stealthMode ? 'ON' : 'OFF'}`);
+    console.log(`  - Crouch when close: ${config.tracking.crouchWhenClose ? 'YES' : 'NO'}`);
+    console.log(`  - Intelligence reporting: ${config.tracking.intelligenceReporting ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`  - Log file: ./data/tracking_${config.tracking.targetPlayer}.json\n`);
+    
+    askServer();
   });
 }
 
