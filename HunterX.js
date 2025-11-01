@@ -40,9 +40,11 @@ const readline = require('readline');
 const http = require('http');
 const WebSocket = require('ws');
 const { SocksClient } = require('socks');
+const nbt = require('prismarine-nbt');
+const { promisify } = require('util');
 
 // === SAFE DIRECTORIES ===
-['./models', './dupes', './replays', './logs', './data', './training', './stashes'].forEach(d => 
+['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics'].forEach(d => 
   fs.mkdirSync(d, { recursive: true })
 );
 
@@ -160,6 +162,23 @@ const config = {
     maxTimeBetweenAttempts: 120000, // 2 minutes
     testLocation: null,
     uploadedPlugins: []
+  },
+  
+  // Player tracking settings
+  tracking: {
+    targetPlayer: null,
+    shadowDistance: 15, // blocks to maintain from target
+    minShadowDistance: 10,
+    maxShadowDistance: 30,
+    stealthMode: true,
+    crouchWhenClose: true,
+    crouchDistance: 20,
+    updateInterval: 5000, // 5 seconds
+    afkDetectionTime: 120000, // 2 minutes of no movement
+    repeatedLocationThreshold: 3, // visits before marking as base
+    locationProximityRadius: 20, // blocks to consider "same location"
+    intelligenceReporting: true,
+    activityLogging: true
   }
 };
 
@@ -1184,6 +1203,553 @@ ${c.items.map(item => `  - ${item.count}x ${item.name} (Value: ${item.value})`).
     
     fs.writeFileSync(`./stashes/stash_${stash.timestamp}.txt`, report);
     fs.appendFileSync('./stashes/all_stashes.txt', `\n${stash.coords.toString()} | ${stash.chestCount} chests | Value: ${stash.totalValue} | ${new Date().toISOString()}\n`);
+  }
+}
+
+// === SCHEMATIC LOADER ===
+class SchematicLoader {
+  constructor(bot = null) {
+    this.bot = bot;
+    this.loadedSchematics = new Map();
+    this.blockFallbacks = {
+      'minecraft:air': 'minecraft:air',
+      'default': 'minecraft:air'
+    };
+    this.parseNBT = promisify(nbt.parse);
+  }
+
+  async loadSchematic(input, name = null) {
+    try {
+      let buffer;
+      let schematicName = name;
+
+      if (typeof input === 'string') {
+        if (!schematicName) {
+          schematicName = input.split('/').pop().replace(/\.(schem|schematic)$/, '');
+        }
+        console.log(`[SCHEMATIC] Loading from file: ${input}`);
+        buffer = fs.readFileSync(input);
+      } else if (Buffer.isBuffer(input)) {
+        if (!schematicName) {
+          schematicName = `schematic_${Date.now()}`;
+        }
+        console.log(`[SCHEMATIC] Loading from buffer`);
+        buffer = input;
+      } else {
+        throw new Error('Invalid input: expected file path or buffer');
+      }
+
+      const format = this.detectFormat(buffer);
+      console.log(`[SCHEMATIC] Detected format: ${format}`);
+
+      const parsed = await this.parseSchematic(buffer, format);
+      
+      const schematic = {
+        name: schematicName,
+        format: format,
+        metadata: parsed.metadata,
+        blocks: parsed.blocks,
+        palette: parsed.palette,
+        entities: parsed.entities || [],
+        tileEntities: parsed.tileEntities || [],
+        materialCounts: this.calculateMaterialCounts(parsed.blocks, parsed.palette),
+        loadedAt: Date.now()
+      };
+
+      this.validateBlocks(schematic);
+      
+      this.saveSchematicToFile(schematic);
+      
+      this.loadedSchematics.set(schematicName, schematic);
+      
+      console.log(`[SCHEMATIC] Successfully loaded: ${schematicName}`);
+      console.log(`[SCHEMATIC] Dimensions: ${parsed.metadata.width}x${parsed.metadata.height}x${parsed.metadata.length}`);
+      console.log(`[SCHEMATIC] Total blocks: ${parsed.blocks.length}`);
+      console.log(`[SCHEMATIC] Materials: ${Object.keys(schematic.materialCounts).length} types`);
+
+      return schematic;
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error loading schematic:`, err.message);
+      throw err;
+    }
+  }
+
+  detectFormat(buffer) {
+    try {
+      const firstByte = buffer[0];
+      
+      if (firstByte === 0x0a) {
+        const header = buffer.slice(0, 20).toString('latin1');
+        if (header.includes('Schematic')) {
+          return 'sponge_v2';
+        }
+        return 'legacy';
+      }
+      
+      if (buffer[0] === 0x1f && buffer[1] === 0x8b) {
+        return 'legacy_gzip';
+      }
+
+      return 'sponge_v2';
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error detecting format:`, err.message);
+      return 'sponge_v2';
+    }
+  }
+
+  async parseSchematic(buffer, format) {
+    try {
+      const { parsed, type } = await this.parseNBT(buffer);
+      
+      if (format === 'legacy' || format === 'legacy_gzip') {
+        return this.parseLegacySchematic(parsed);
+      } else {
+        return this.parseSpongeSchematic(parsed);
+      }
+    } catch (err) {
+      console.error(`[SCHEMATIC] NBT parsing error:`, err.message);
+      throw new Error(`Failed to parse NBT data: ${err.message}`);
+    }
+  }
+
+  parseSpongeSchematic(data) {
+    try {
+      const schematic = data.Schematic || data;
+      
+      const width = schematic.Width?.value || 0;
+      const height = schematic.Height?.value || 0;
+      const length = schematic.Length?.value || 0;
+      
+      const offsetX = schematic.Offset?.value?.[0] || 0;
+      const offsetY = schematic.Offset?.value?.[1] || 0;
+      const offsetZ = schematic.Offset?.value?.[2] || 0;
+
+      const paletteData = schematic.Palette?.value || {};
+      const palette = {};
+      
+      for (const [blockName, id] of Object.entries(paletteData)) {
+        palette[id.value] = this.normalizeBlockName(blockName);
+      }
+
+      const blockData = schematic.BlockData?.value || [];
+      
+      const blocks = [];
+      let blockIndex = 0;
+
+      for (let y = 0; y < height; y++) {
+        for (let z = 0; z < length; z++) {
+          for (let x = 0; x < width; x++) {
+            if (blockIndex < blockData.length) {
+              const paletteId = this.readVarint(blockData, blockIndex);
+              const blockName = palette[paletteId] || 'minecraft:air';
+              
+              if (blockName !== 'minecraft:air') {
+                blocks.push({
+                  x: x + offsetX,
+                  y: y + offsetY,
+                  z: z + offsetZ,
+                  name: blockName,
+                  relX: x,
+                  relY: y,
+                  relZ: z
+                });
+              }
+              
+              blockIndex++;
+            }
+          }
+        }
+      }
+
+      const entities = [];
+      if (schematic.Entities?.value?.value) {
+        for (const entity of schematic.Entities.value.value) {
+          entities.push(this.parseEntity(entity));
+        }
+      }
+
+      const tileEntities = [];
+      if (schematic.BlockEntities?.value?.value) {
+        for (const tileEntity of schematic.BlockEntities.value.value) {
+          tileEntities.push(this.parseTileEntity(tileEntity));
+        }
+      }
+
+      return {
+        metadata: {
+          width,
+          height,
+          length,
+          offsetX,
+          offsetY,
+          offsetZ,
+          version: schematic.Version?.value || 2
+        },
+        blocks,
+        palette,
+        entities,
+        tileEntities
+      };
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error parsing Sponge schematic:`, err.message);
+      throw err;
+    }
+  }
+
+  parseLegacySchematic(data) {
+    try {
+      const schematic = data.Schematic || data;
+      
+      const width = schematic.Width?.value || 0;
+      const height = schematic.Height?.value || 0;
+      const length = schematic.Length?.value || 0;
+      
+      const offsetX = schematic.WEOffsetX?.value || 0;
+      const offsetY = schematic.WEOffsetY?.value || 0;
+      const offsetZ = schematic.WEOffsetZ?.value || 0;
+
+      const blocks = schematic.Blocks?.value || [];
+      const blockDataValues = schematic.Data?.value || [];
+      
+      const palette = {};
+      const blockList = [];
+
+      for (let y = 0; y < height; y++) {
+        for (let z = 0; z < length; z++) {
+          for (let x = 0; x < width; x++) {
+            const index = (y * length + z) * width + x;
+            
+            if (index < blocks.length) {
+              const blockId = blocks[index];
+              const blockData = blockDataValues[index] || 0;
+              
+              const blockName = this.legacyIdToName(blockId, blockData);
+              
+              if (blockName !== 'minecraft:air') {
+                blockList.push({
+                  x: x + offsetX,
+                  y: y + offsetY,
+                  z: z + offsetZ,
+                  name: blockName,
+                  relX: x,
+                  relY: y,
+                  relZ: z
+                });
+              }
+              
+              palette[blockId] = blockName;
+            }
+          }
+        }
+      }
+
+      const entities = [];
+      if (schematic.Entities?.value?.value) {
+        for (const entity of schematic.Entities.value.value) {
+          entities.push(this.parseEntity(entity));
+        }
+      }
+
+      const tileEntities = [];
+      if (schematic.TileEntities?.value?.value) {
+        for (const tileEntity of schematic.TileEntities.value.value) {
+          tileEntities.push(this.parseTileEntity(tileEntity));
+        }
+      }
+
+      return {
+        metadata: {
+          width,
+          height,
+          length,
+          offsetX,
+          offsetY,
+          offsetZ,
+          version: 1
+        },
+        blocks: blockList,
+        palette,
+        entities,
+        tileEntities
+      };
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error parsing legacy schematic:`, err.message);
+      throw err;
+    }
+  }
+
+  readVarint(buffer, startIndex) {
+    let value = 0;
+    let position = 0;
+    let currentByte;
+    let index = startIndex;
+
+    do {
+      if (index >= buffer.length) break;
+      currentByte = buffer[index++];
+      value |= (currentByte & 0x7F) << position;
+
+      if ((currentByte & 0x80) === 0) break;
+
+      position += 7;
+      if (position >= 32) throw new Error('VarInt too big');
+    } while (true);
+
+    return value;
+  }
+
+  normalizeBlockName(blockName) {
+    if (!blockName.includes(':')) {
+      return `minecraft:${blockName}`;
+    }
+    return blockName;
+  }
+
+  legacyIdToName(id, data = 0) {
+    const legacyMap = {
+      0: 'minecraft:air',
+      1: 'minecraft:stone',
+      2: 'minecraft:grass_block',
+      3: 'minecraft:dirt',
+      4: 'minecraft:cobblestone',
+      5: 'minecraft:oak_planks',
+      6: 'minecraft:oak_sapling',
+      7: 'minecraft:bedrock',
+      8: 'minecraft:water',
+      9: 'minecraft:water',
+      10: 'minecraft:lava',
+      11: 'minecraft:lava',
+      12: 'minecraft:sand',
+      13: 'minecraft:gravel',
+      14: 'minecraft:gold_ore',
+      15: 'minecraft:iron_ore',
+      16: 'minecraft:coal_ore',
+      17: 'minecraft:oak_log',
+      18: 'minecraft:oak_leaves',
+      19: 'minecraft:sponge',
+      20: 'minecraft:glass',
+      35: 'minecraft:white_wool',
+      41: 'minecraft:gold_block',
+      42: 'minecraft:iron_block',
+      43: 'minecraft:stone_slab',
+      44: 'minecraft:stone_slab',
+      45: 'minecraft:bricks',
+      46: 'minecraft:tnt',
+      47: 'minecraft:bookshelf',
+      48: 'minecraft:mossy_cobblestone',
+      49: 'minecraft:obsidian',
+      50: 'minecraft:torch',
+      51: 'minecraft:fire',
+      52: 'minecraft:spawner',
+      53: 'minecraft:oak_stairs',
+      54: 'minecraft:chest',
+      56: 'minecraft:diamond_ore',
+      57: 'minecraft:diamond_block',
+      58: 'minecraft:crafting_table',
+      61: 'minecraft:furnace',
+      62: 'minecraft:furnace',
+      63: 'minecraft:oak_sign',
+      64: 'minecraft:oak_door',
+      65: 'minecraft:ladder',
+      66: 'minecraft:rail',
+      67: 'minecraft:cobblestone_stairs',
+      68: 'minecraft:oak_wall_sign',
+      73: 'minecraft:redstone_ore',
+      74: 'minecraft:redstone_ore',
+      79: 'minecraft:ice',
+      80: 'minecraft:snow_block',
+      81: 'minecraft:cactus',
+      82: 'minecraft:clay',
+      85: 'minecraft:oak_fence',
+      89: 'minecraft:glowstone',
+      98: 'minecraft:stone_bricks',
+      99: 'minecraft:brown_mushroom_block',
+      100: 'minecraft:red_mushroom_block',
+      130: 'minecraft:ender_chest',
+      133: 'minecraft:emerald_block',
+      137: 'minecraft:command_block',
+      145: 'minecraft:anvil',
+      146: 'minecraft:trapped_chest',
+      152: 'minecraft:redstone_block',
+      155: 'minecraft:quartz_block',
+      158: 'minecraft:dropper',
+      159: 'minecraft:white_terracotta',
+      166: 'minecraft:barrier',
+      168: 'minecraft:prismarine',
+      172: 'minecraft:terracotta',
+      173: 'minecraft:coal_block',
+      174: 'minecraft:packed_ice'
+    };
+
+    return legacyMap[id] || 'minecraft:air';
+  }
+
+  parseEntity(entityData) {
+    try {
+      return {
+        id: entityData.Id?.value || entityData.id?.value || 'unknown',
+        pos: entityData.Pos?.value?.value || [0, 0, 0]
+      };
+    } catch (err) {
+      return { id: 'unknown', pos: [0, 0, 0] };
+    }
+  }
+
+  parseTileEntity(tileEntityData) {
+    try {
+      return {
+        id: tileEntityData.Id?.value || tileEntityData.id?.value || 'unknown',
+        x: tileEntityData.x?.value || tileEntityData.Pos?.value?.value?.[0] || 0,
+        y: tileEntityData.y?.value || tileEntityData.Pos?.value?.value?.[1] || 0,
+        z: tileEntityData.z?.value || tileEntityData.Pos?.value?.value?.[2] || 0
+      };
+    } catch (err) {
+      return { id: 'unknown', x: 0, y: 0, z: 0 };
+    }
+  }
+
+  validateBlocks(schematic) {
+    const warnings = [];
+    const unknownBlocks = new Set();
+
+    for (const block of schematic.blocks) {
+      if (this.bot && this.bot.registry && this.bot.registry.blocksByName) {
+        const mcData = this.bot.registry.blocksByName;
+        const blockNameSimple = block.name.replace('minecraft:', '');
+        
+        if (!mcData[blockNameSimple] && !mcData[block.name]) {
+          unknownBlocks.add(block.name);
+          
+          const fallback = this.blockFallbacks[block.name] || this.blockFallbacks.default;
+          block.originalName = block.name;
+          block.name = fallback;
+        }
+      }
+    }
+
+    if (unknownBlocks.size > 0) {
+      console.warn(`[SCHEMATIC] Unknown blocks found (using fallbacks):`);
+      unknownBlocks.forEach(blockName => {
+        console.warn(`  - ${blockName} -> ${this.blockFallbacks[blockName] || this.blockFallbacks.default}`);
+      });
+    }
+
+    return warnings;
+  }
+
+  calculateMaterialCounts(blocks, palette) {
+    const counts = {};
+    
+    for (const block of blocks) {
+      const blockName = block.name;
+      counts[blockName] = (counts[blockName] || 0) + 1;
+    }
+
+    return counts;
+  }
+
+  saveSchematicToFile(schematic) {
+    try {
+      const filePath = `./data/schematics/${schematic.name}.json`;
+      const data = {
+        name: schematic.name,
+        format: schematic.format,
+        metadata: schematic.metadata,
+        materialCounts: schematic.materialCounts,
+        blockCount: schematic.blocks.length,
+        loadedAt: schematic.loadedAt,
+        blocks: schematic.blocks.map(b => ({
+          x: b.x,
+          y: b.y,
+          z: b.z,
+          relX: b.relX,
+          relY: b.relY,
+          relZ: b.relZ,
+          name: b.name,
+          originalName: b.originalName
+        })),
+        entities: schematic.entities,
+        tileEntities: schematic.tileEntities
+      };
+
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      console.log(`[SCHEMATIC] Saved to ${filePath}`);
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error saving to file:`, err.message);
+    }
+  }
+
+  getSchematic(name) {
+    if (this.loadedSchematics.has(name)) {
+      return this.loadedSchematics.get(name);
+    }
+
+    try {
+      const filePath = `./data/schematics/${name}.json`;
+      if (fs.existsSync(filePath)) {
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        this.loadedSchematics.set(name, data);
+        console.log(`[SCHEMATIC] Loaded ${name} from cache`);
+        return data;
+      }
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error loading ${name} from cache:`, err.message);
+    }
+
+    return null;
+  }
+
+  listSchematics() {
+    try {
+      const files = fs.readdirSync('./data/schematics');
+      return files
+        .filter(f => f.endsWith('.json'))
+        .map(f => f.replace('.json', ''));
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error listing schematics:`, err.message);
+      return [];
+    }
+  }
+
+  deleteSchematic(name) {
+    try {
+      const filePath = `./data/schematics/${name}.json`;
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        this.loadedSchematics.delete(name);
+        console.log(`[SCHEMATIC] Deleted ${name}`);
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error deleting ${name}:`, err.message);
+      return false;
+    }
+  }
+
+  getBlockAt(schematic, x, y, z) {
+    if (!schematic || !schematic.blocks) return null;
+    
+    return schematic.blocks.find(b => 
+      b.relX === x && b.relY === y && b.relZ === z
+    );
+  }
+
+  getBlocksInRegion(schematic, x1, y1, z1, x2, y2, z2) {
+    if (!schematic || !schematic.blocks) return [];
+    
+    const minX = Math.min(x1, x2);
+    const maxX = Math.max(x1, x2);
+    const minY = Math.min(y1, y2);
+    const maxY = Math.max(y1, y2);
+    const minZ = Math.min(z1, z2);
+    const maxZ = Math.max(z1, z2);
+
+    return schematic.blocks.filter(b =>
+      b.relX >= minX && b.relX <= maxX &&
+      b.relY >= minY && b.relY <= maxY &&
+      b.relZ >= minZ && b.relZ <= maxZ
+    );
   }
 }
 
@@ -2609,7 +3175,7 @@ class ConversationAI {
   }
   
   isCommand(message) {
-    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard'];
+    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'scanner', 'start scanner', 'stop scanner'];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
@@ -2931,6 +3497,95 @@ class ConversationAI {
     
     if (lower.includes('dupe report') || lower.includes('dupe stats')) {
       this.bot.chat(`Dupe Stats: ${config.analytics.dupe.successfulDupes} successes out of ${config.analytics.dupe.totalAttempts} attempts. ${config.analytics.dupe.activeExploits.length} active exploits found!`);
+      return;
+    }
+    
+    // Continuous Scanner commands (admin+ only)
+    if (lower.includes('start scanner') || lower.includes('scanner start')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can control the continuous scanner!");
+        return;
+      }
+      
+      const result = globalPluginAnalyzer.startContinuousScanning(300000);
+      this.bot.chat(result.success ? `✅ ${result.message}` : `⚠️ ${result.message}`);
+      return;
+    }
+    
+    if (lower.includes('stop scanner') || lower.includes('scanner stop')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can control the continuous scanner!");
+        return;
+      }
+      
+      const result = globalPluginAnalyzer.stopContinuousScanning();
+      this.bot.chat(result.success ? `✅ ${result.message}` : `⚠️ ${result.message}`);
+      return;
+    }
+    
+    if (lower.includes('scanner status') || lower.includes('scanner report')) {
+      const status = globalPluginAnalyzer.getContinuousScanStatus();
+      this.bot.chat(`🔄 Scanner: ${status.active ? '✅ Running' : '⏹️ Stopped'} | Queue: ${status.queueSize} | Plugins: ${status.totalPlugins} | Scans: ${status.totalScans}`);
+      
+      if (status.recentScans && status.recentScans.length > 0) {
+        const recent = status.recentScans[status.recentScans.length - 1];
+        this.bot.chat(`Latest: ${recent.fileName} (Risk: ${recent.riskScore}, Vulns: ${recent.vulnerabilities})`);
+    // Player tracking commands (admin+ only for privacy/security)
+    if (lower.includes('track') && (lower.includes('player') || lower.includes('start tracking'))) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can initiate player tracking!");
+        return;
+      }
+      
+      const targetName = this.extractPlayerName(message);
+      if (targetName) {
+        if (this.bot.playerTracker) {
+          this.bot.playerTracker.stop();
+        }
+        
+        config.tracking.targetPlayer = targetName;
+        const playerTracker = new PlayerTracker(this.bot, targetName);
+        this.bot.playerTracker = playerTracker;
+        playerTracker.start();
+        
+        this.bot.chat(`🕵️ Now tracking ${targetName} in stealth mode`);
+      } else {
+        this.bot.chat("Usage: 'track player <username>'");
+      }
+      return;
+    }
+    
+    if (lower.includes('stop tracking') || lower.includes('end tracking')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can control tracking!");
+        return;
+      }
+      
+      if (this.bot.playerTracker) {
+        this.bot.playerTracker.stop();
+        this.bot.chat("Tracking stopped and data saved.");
+      } else {
+        this.bot.chat("Not currently tracking anyone.");
+      }
+      return;
+    }
+    
+    if (lower.includes('tracking report') || lower.includes('tracking status')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can view tracking reports!");
+        return;
+      }
+      
+      if (this.bot.playerTracker) {
+        const tracker = this.bot.playerTracker;
+        const sightings = tracker.trackingLog.sightings.length;
+        const bases = tracker.suspectedBases.length;
+        const afkPeriods = tracker.trackingLog.afkPeriods.length;
+        
+        this.bot.chat(`🕵️ Tracking ${tracker.targetUsername}: ${sightings} sightings, ${bases} suspected bases, ${afkPeriods} AFK periods detected`);
+      } else {
+        this.bot.chat("Not currently tracking anyone.");
+      }
       return;
     }
     
@@ -3551,11 +4206,895 @@ class ConversationAI {
   }
 }
 
+// === PLAYER TRACKER (STEALTH INTELLIGENCE GATHERING) ===
+class PlayerTracker {
+  constructor(bot, targetUsername) {
+    this.bot = bot;
+    this.targetUsername = targetUsername;
+    this.targetEntity = null;
+    this.isTracking = false;
+    this.lastKnownPosition = null;
+    this.lastMovementTime = Date.now();
+    this.locationHistory = [];
+    this.visitedLocations = new Map(); // key: "x,y,z", value: count
+    this.suspectedBases = [];
+    this.trackingLog = {
+      targetPlayer: targetUsername,
+      sessionStart: Date.now(),
+      sightings: [],
+      activities: [],
+      suspectedBases: [],
+      afkPeriods: []
+    };
+    this.logFilePath = `./data/tracking_${targetUsername}.json`;
+    this.isCrouching = false;
+    this.updateInterval = null;
+    
+    // Load existing tracking data if available
+    this.loadTrackingData();
+    
+    console.log(`[TRACKER] Initialized tracker for ${targetUsername}`);
+  }
+  
+  loadTrackingData() {
+    try {
+      if (fs.existsSync(this.logFilePath)) {
+        const data = fs.readFileSync(this.logFilePath, 'utf8');
+        const existingLog = JSON.parse(data);
+        
+        // Merge with existing data
+        if (existingLog.suspectedBases) {
+          this.suspectedBases = existingLog.suspectedBases;
+        }
+        if (existingLog.visitedLocations) {
+          this.visitedLocations = new Map(Object.entries(existingLog.visitedLocations));
+        }
+        
+        console.log(`[TRACKER] Loaded existing tracking data (${this.suspectedBases.length} suspected bases)`);
+      }
+    } catch (err) {
+      console.log(`[TRACKER] No existing data or error loading: ${err.message}`);
+    }
+  }
+  
+  async start() {
+    this.isTracking = true;
+    console.log(`[TRACKER] 🕵️ Starting stealth tracking of ${this.targetUsername}`);
+    
+    if (config.tracking.intelligenceReporting) {
+      this.bot.chat(`🕵️ Tracking mode active - target: ${this.targetUsername}`);
+    }
+    
+    // Start main tracking loop
+    this.trackingLoop();
+    
+    // Start periodic intelligence updates
+    this.updateInterval = setInterval(() => {
+      this.reportIntelligence();
+    }, config.tracking.updateInterval);
+    
+    // Set up packet listeners for activity detection
+    this.setupPacketListeners();
+    
+    // Monitor for target spawn/despawn
+    this.monitorTargetPresence();
+  }
+  
+  stop() {
+    this.isTracking = false;
+    if (this.updateInterval) {
+      clearInterval(this.updateInterval);
+    }
+    this.saveTrackingData();
+    console.log(`[TRACKER] Tracking stopped, data saved to ${this.logFilePath}`);
+  }
+  
+  async trackingLoop() {
+    while (this.isTracking) {
+      try {
+        // Locate target
+        const found = await this.locateTarget();
+        
+        if (found) {
+          // Shadow target at appropriate distance
+          await this.shadowTarget();
+          
+          // Check if we should crouch for stealth
+          await this.manageStealthBehavior();
+          
+          // Monitor target activity
+          this.monitorActivity();
+          
+          // Check for AFK
+          this.detectAFK();
+          
+          // Check for repeated locations (potential bases)
+          this.checkForRepeatedLocation();
+        } else {
+          // Target not visible, search last known location
+          if (this.lastKnownPosition) {
+            await this.searchLastKnownLocation();
+          }
+        }
+        
+        await sleep(1000); // Check every second
+      } catch (err) {
+        console.log(`[TRACKER] Error in tracking loop: ${err.message}`);
+        await sleep(2000);
+      }
+    }
+  }
+  
+  async locateTarget() {
+    // First try entity scan
+    const targetEntity = Object.values(this.bot.entities).find(e =>
+      e.type === 'player' && e.username === this.targetUsername
+    );
+    
+    if (targetEntity) {
+      this.targetEntity = targetEntity;
+      this.lastKnownPosition = targetEntity.position.clone();
+      this.lastMovementTime = Date.now();
+      
+      // Log sighting
+      this.trackingLog.sightings.push({
+        timestamp: Date.now(),
+        position: {
+          x: Math.floor(targetEntity.position.x),
+          y: Math.floor(targetEntity.position.y),
+          z: Math.floor(targetEntity.position.z)
+        },
+        distance: this.bot.entity.position.distanceTo(targetEntity.position)
+      });
+      
+      return true;
+    }
+    
+    // Check tab list to see if player is online
+    const playerInTabList = this.bot.players[this.targetUsername];
+    if (playerInTabList) {
+      console.log(`[TRACKER] ${this.targetUsername} is online but not visible (distance: unknown)`);
+      return false;
+    }
+    
+    console.log(`[TRACKER] ${this.targetUsername} is offline or not in render distance`);
+    return false;
+  }
+  
+  async shadowTarget() {
+    if (!this.targetEntity) return;
+    
+    const distance = this.bot.entity.position.distanceTo(this.targetEntity.position);
+    const targetDist = config.tracking.shadowDistance;
+    
+    // Maintain appropriate shadow distance
+    if (distance > config.tracking.maxShadowDistance) {
+      // Too far, move closer
+      const goal = new goals.GoalNear(
+        this.targetEntity.position.x,
+        this.targetEntity.position.y,
+        this.targetEntity.position.z,
+        targetDist
+      );
+      this.bot.pathfinder.setGoal(goal);
+    } else if (distance < config.tracking.minShadowDistance) {
+      // Too close, back off to avoid detection
+      const awayVector = this.bot.entity.position.minus(this.targetEntity.position).normalize();
+      const retreatPos = this.bot.entity.position.plus(awayVector.scaled(5));
+      
+      const goal = new goals.GoalNear(
+        retreatPos.x,
+        retreatPos.y,
+        retreatPos.z,
+        2
+      );
+      this.bot.pathfinder.setGoal(goal);
+    } else {
+      // Good distance, maintain with offset goal
+      const goal = new goals.GoalFollow(this.targetEntity, targetDist);
+      this.bot.pathfinder.setGoal(goal);
+    }
+  }
+  
+  async manageStealthBehavior() {
+    if (!this.targetEntity) return;
+    
+    const distance = this.bot.entity.position.distanceTo(this.targetEntity.position);
+    
+    // Crouch when close for reduced visibility
+    if (config.tracking.crouchWhenClose && distance < config.tracking.crouchDistance) {
+      if (!this.isCrouching) {
+        this.bot.setControlState('sneak', true);
+        this.isCrouching = true;
+        console.log('[TRACKER] 🤫 Crouching for stealth');
+      }
+    } else {
+      if (this.isCrouching) {
+        this.bot.setControlState('sneak', false);
+        this.isCrouching = false;
+      }
+    }
+    
+    // Check line of sight - if target is looking at us, take evasive action
+    if (this.hasLineOfSight() && this.isTargetLookingAtUs()) {
+      await this.avoidDetection();
+    }
+  }
+  
+  hasLineOfSight() {
+    if (!this.targetEntity) return false;
+    
+    try {
+      const start = this.bot.entity.position.offset(0, this.bot.entity.height, 0);
+      const end = this.targetEntity.position.offset(0, this.targetEntity.height, 0);
+      
+      const block = this.bot.world.raycast(start, end.minus(start).normalize(), 
+                                            start.distanceTo(end));
+      
+      return block === null; // No blocks in the way
+    } catch (err) {
+      return false;
+    }
+  }
+  
+  isTargetLookingAtUs() {
+    if (!this.targetEntity) return false;
+    
+    // Calculate if target's yaw is pointing towards us
+    const dx = this.bot.entity.position.x - this.targetEntity.position.x;
+    const dz = this.bot.entity.position.z - this.targetEntity.position.z;
+    const angleToUs = Math.atan2(-dx, -dz);
+    
+    const targetYaw = this.targetEntity.yaw;
+    const angleDiff = Math.abs(angleToUs - targetYaw);
+    
+    // If within 45 degrees (π/4 radians), they might be looking at us
+    return angleDiff < Math.PI / 4;
+  }
+  
+  async avoidDetection() {
+    console.log('[TRACKER] ⚠️ Possible detection! Taking evasive action');
+    
+    // Find cover - look for solid blocks nearby
+    const coverBlock = this.bot.findBlock({
+      matching: (block) => {
+        return block && block.type !== 0 && block.boundingBox === 'block';
+      },
+      maxDistance: 10,
+      count: 1
+    });
+    
+    if (coverBlock) {
+      // Move behind cover
+      const coverPos = coverBlock.position;
+      this.bot.pathfinder.setGoal(new goals.GoalNear(coverPos.x, coverPos.y, coverPos.z, 1));
+      await sleep(2000);
+    } else {
+      // No cover, increase distance
+      const awayVector = this.bot.entity.position.minus(this.targetEntity.position).normalize();
+      const retreatPos = this.bot.entity.position.plus(awayVector.scaled(10));
+      
+      this.bot.pathfinder.setGoal(new goals.GoalNear(retreatPos.x, retreatPos.y, retreatPos.z, 2));
+    }
+    
+    // Log evasive action
+    this.trackingLog.activities.push({
+      timestamp: Date.now(),
+      type: 'evasive_action',
+      reason: 'possible_detection',
+      position: this.bot.entity.position
+    });
+  }
+  
+  monitorActivity() {
+    if (!this.targetEntity) return;
+    
+    // Monitor for significant position changes
+    if (this.lastKnownPosition) {
+      const moved = this.targetEntity.position.distanceTo(this.lastKnownPosition);
+      if (moved > 5) {
+        this.lastMovementTime = Date.now();
+      }
+    }
+  }
+  
+  detectAFK() {
+    const timeSinceMovement = Date.now() - this.lastMovementTime;
+    
+    if (timeSinceMovement > config.tracking.afkDetectionTime) {
+      console.log(`[TRACKER] 🛌 ${this.targetUsername} appears to be AFK`);
+      
+      // Log AFK detection
+      const lastAfk = this.trackingLog.afkPeriods[this.trackingLog.afkPeriods.length - 1];
+      if (!lastAfk || lastAfk.endTime) {
+        this.trackingLog.afkPeriods.push({
+          startTime: Date.now(),
+          position: this.lastKnownPosition,
+          duration: timeSinceMovement
+        });
+        
+        if (config.tracking.intelligenceReporting) {
+          this.bot.chat(`📊 Target is AFK at ${Math.floor(this.lastKnownPosition.x)}, ${Math.floor(this.lastKnownPosition.y)}, ${Math.floor(this.lastKnownPosition.z)}`);
+        }
+      }
+    }
+  }
+  
+  checkForRepeatedLocation() {
+    if (!this.lastKnownPosition) return;
+    
+    // Round to nearest location proximity radius
+    const radius = config.tracking.locationProximityRadius;
+    const locationKey = `${Math.floor(this.lastKnownPosition.x / radius) * radius},${Math.floor(this.lastKnownPosition.y / radius) * radius},${Math.floor(this.lastKnownPosition.z / radius) * radius}`;
+    
+    // Update visit count
+    const currentCount = (this.visitedLocations.get(locationKey) || 0) + 1;
+    this.visitedLocations.set(locationKey, currentCount);
+    
+    // Check if this location should be marked as a suspected base
+    if (currentCount >= config.tracking.repeatedLocationThreshold) {
+      const [x, y, z] = locationKey.split(',').map(Number);
+      const baseExists = this.suspectedBases.some(b => 
+        Math.abs(b.x - x) < radius && Math.abs(b.z - z) < radius
+      );
+      
+      if (!baseExists) {
+        const suspectedBase = {
+          x, y, z,
+          visitCount: currentCount,
+          firstSeen: Date.now(),
+          lastSeen: Date.now(),
+          threatLevel: this.assessThreatLevel(currentCount),
+          explored: false
+        };
+        
+        this.suspectedBases.push(suspectedBase);
+        this.trackingLog.suspectedBases.push(suspectedBase);
+        
+        console.log(`[TRACKER] 🏠 Suspected base detected at ${x}, ${y}, ${z} (visits: ${currentCount})`);
+        
+        if (config.tracking.intelligenceReporting) {
+          this.bot.chat(`🏠 Potential base location marked: ${x}, ${y}, ${z} (threat level: ${suspectedBase.threatLevel})`);
+        }
+        
+        // Initiate stealth exploration if safe
+        this.initiateStealthExploration(suspectedBase);
+      }
+    }
+  }
+  
+  assessThreatLevel(visitCount) {
+    if (visitCount >= 10) return 'high';
+    if (visitCount >= 5) return 'medium';
+    return 'low';
+  }
+  
+  async initiateStealthExploration(base) {
+    // Check bot health - cooperate with Lifesteal mode
+    if (this.bot.health < 10) {
+      console.log('[TRACKER] ⚠️ Health too low for risky infiltration, postponing exploration');
+      return;
+    }
+    
+    console.log(`[TRACKER] 🔍 Initiating stealth exploration of suspected base at ${base.x}, ${base.y}, ${base.z}`);
+    
+    // Log activity
+    this.trackingLog.activities.push({
+      timestamp: Date.now(),
+      type: 'base_exploration',
+      location: { x: base.x, y: base.y, z: base.z },
+      threatLevel: base.threatLevel
+    });
+    
+    // Enable maximum stealth
+    this.bot.setControlState('sneak', true);
+    this.isCrouching = true;
+    
+    // Approach slowly
+    const goal = new goals.GoalNear(base.x, base.y, base.z, 5);
+    this.bot.pathfinder.setGoal(goal);
+    
+    await sleep(5000); // Wait for approach
+    
+    // Scan for storage blocks and valuable information
+    await this.scanBaseArea(base);
+    
+    base.explored = true;
+    base.explorationTime = Date.now();
+    
+    console.log('[TRACKER] ✅ Base exploration complete');
+  }
+  
+  async scanBaseArea(base) {
+    console.log('[TRACKER] Scanning base area for intel...');
+    
+    const scanRadius = 30;
+    const storageBlocks = [];
+    const centerPos = new Vec3(base.x, base.y, base.z);
+    
+    // Scan for chests, shulkers, ender chests
+    for (let x = -scanRadius; x <= scanRadius; x++) {
+      for (let y = -10; y <= 10; y++) {
+        for (let z = -scanRadius; z <= scanRadius; z++) {
+          const pos = centerPos.offset(x, y, z);
+          const block = this.bot.blockAt(pos);
+          
+          if (block && STORAGE_BLOCKS[block.name]) {
+            storageBlocks.push({
+              type: block.name,
+              position: pos,
+              value: STORAGE_BLOCKS[block.name]
+            });
+          }
+        }
+      }
+    }
+    
+    if (storageBlocks.length > 0) {
+      console.log(`[TRACKER] 💎 Found ${storageBlocks.length} storage blocks in base area!`);
+      
+      base.storageBlocks = storageBlocks;
+      base.estimatedValue = storageBlocks.reduce((sum, b) => sum + b.value, 0);
+      
+      if (config.tracking.intelligenceReporting) {
+        this.bot.chat(`💎 Base has ${storageBlocks.length} storage containers (value: ${base.estimatedValue})`);
+      }
+      
+      // Log for future loot extraction
+      this.trackingLog.activities.push({
+        timestamp: Date.now(),
+        type: 'storage_discovered',
+        location: { x: base.x, y: base.y, z: base.z },
+        storageCount: storageBlocks.length,
+        estimatedValue: base.estimatedValue
+      });
+    }
+  }
+  
+  async searchLastKnownLocation() {
+    if (!this.lastKnownPosition) return;
+    
+    console.log(`[TRACKER] Searching last known location: ${Math.floor(this.lastKnownPosition.x)}, ${Math.floor(this.lastKnownPosition.y)}, ${Math.floor(this.lastKnownPosition.z)}`);
+    
+    const goal = new goals.GoalNear(
+      this.lastKnownPosition.x,
+      this.lastKnownPosition.y,
+      this.lastKnownPosition.z,
+      10
+    );
+    
+    this.bot.pathfinder.setGoal(goal);
+    await sleep(3000);
+  }
+  
+  monitorTargetPresence() {
+    // Monitor for player join/leave
+    this.bot.on('playerJoined', (player) => {
+      if (player.username === this.targetUsername) {
+        console.log(`[TRACKER] 🎯 Target ${this.targetUsername} joined the server!`);
+        if (config.tracking.intelligenceReporting) {
+          this.bot.chat(`🎯 Target ${this.targetUsername} is now online`);
+        }
+      }
+    });
+    
+    this.bot.on('playerLeft', (player) => {
+      if (player.username === this.targetUsername) {
+        console.log(`[TRACKER] 👋 Target ${this.targetUsername} left the server`);
+        if (config.tracking.intelligenceReporting) {
+          this.bot.chat(`👋 Target ${this.targetUsername} went offline`);
+        }
+        this.saveTrackingData();
+      }
+    });
+  }
+  
+  setupPacketListeners() {
+    // Listen for block dig packets (mining activity)
+    this.bot._client.on('block_dig', (packet) => {
+      if (this.targetEntity) {
+        const distance = this.bot.entity.position.distanceTo(this.targetEntity.position);
+        if (distance < 50) {
+          this.trackingLog.activities.push({
+            timestamp: Date.now(),
+            type: 'mining',
+            targetPosition: this.targetEntity.position,
+            distance: distance
+          });
+          console.log(`[TRACKER] 🔨 Target is mining nearby`);
+        }
+      }
+    });
+    
+    // Listen for container open (chest access)
+    this.bot._client.on('open_window', (packet) => {
+      if (this.targetEntity) {
+        const distance = this.bot.entity.position.distanceTo(this.targetEntity.position);
+        if (distance < 50) {
+          this.trackingLog.activities.push({
+            timestamp: Date.now(),
+            type: 'container_opened',
+            targetPosition: this.targetEntity.position,
+            distance: distance
+          });
+          console.log(`[TRACKER] 📦 Target opened a container nearby`);
+        }
+      }
+    });
+  }
+  
+  reportIntelligence() {
+    if (!this.targetEntity) return;
+    
+    const distance = Math.floor(this.bot.entity.position.distanceTo(this.targetEntity.position));
+    const pos = this.targetEntity.position;
+    
+    console.log(`[TRACKER] 📊 Intel: ${this.targetUsername} at (${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)}) - distance: ${distance}m`);
+    
+    // Periodically save tracking data
+    this.saveTrackingData();
+  }
+  
+  saveTrackingData() {
+    try {
+      // Convert Map to object for JSON serialization
+      const visitedLocationsObj = {};
+      this.visitedLocations.forEach((value, key) => {
+        visitedLocationsObj[key] = value;
+      });
+      
+      const dataToSave = {
+        ...this.trackingLog,
+        visitedLocations: visitedLocationsObj,
+        suspectedBases: this.suspectedBases,
+        sessionEnd: Date.now()
+      };
+      
+      fs.writeFileSync(this.logFilePath, JSON.stringify(dataToSave, null, 2));
+      console.log(`[TRACKER] Data saved to ${this.logFilePath}`);
+    } catch (err) {
+      console.log(`[TRACKER] Error saving data: ${err.message}`);
+    }
+  }
+}
+
 // === PLUGIN ANALYZER ===
 class PluginAnalyzer {
   constructor() {
     this.vulnerabilities = [];
     this.analysisResults = [];
+    this.scanQueue = [];
+    this.continuousScanning = false;
+    this.scanInterval = null;
+    this.scanIntervalMs = 300000; // 5 minutes default
+    this.historicalScans = [];
+    this.pluginRegistry = new Map(); // Track uploaded plugins
+    this.loadContinuousScanData();
+  }
+  
+  loadContinuousScanData() {
+    try {
+      if (fs.existsSync('./dupes/continuous_scan.json')) {
+        const data = JSON.parse(fs.readFileSync('./dupes/continuous_scan.json'));
+        this.historicalScans = data.scans || [];
+        this.pluginRegistry = new Map(data.plugins || []);
+        console.log(`[CONTINUOUS SCANNER] Loaded ${this.historicalScans.length} historical scans`);
+      }
+    } catch (err) {
+      console.log(`[CONTINUOUS SCANNER] Error loading scan data: ${err.message}`);
+    }
+  }
+  
+  saveContinuousScanData() {
+    try {
+      const data = {
+        scans: this.historicalScans,
+        plugins: Array.from(this.pluginRegistry.entries()),
+        lastUpdate: Date.now(),
+        scanningActive: this.continuousScanning,
+        queueSize: this.scanQueue.length
+      };
+      fs.writeFileSync('./dupes/continuous_scan.json', JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.log(`[CONTINUOUS SCANNER] Error saving scan data: ${err.message}`);
+    }
+  }
+  
+  startContinuousScanning(intervalMs = 300000) {
+    if (this.continuousScanning) {
+      console.log('[CONTINUOUS SCANNER] Already running');
+      return { success: false, message: 'Scanner already running' };
+    }
+    
+    this.scanIntervalMs = intervalMs;
+    this.continuousScanning = true;
+    
+    console.log(`[CONTINUOUS SCANNER] Starting continuous scanning (interval: ${intervalMs / 1000}s)`);
+    
+    // Initial scan
+    this.processQueue();
+    
+    // Set up periodic scanning
+    this.scanInterval = setInterval(() => {
+      this.processQueue();
+    }, this.scanIntervalMs);
+    
+    this.saveContinuousScanData();
+    return { success: true, message: 'Continuous scanning started', interval: intervalMs };
+  }
+  
+  stopContinuousScanning() {
+    if (!this.continuousScanning) {
+      console.log('[CONTINUOUS SCANNER] Not running');
+      return { success: false, message: 'Scanner not running' };
+    }
+    
+    console.log('[CONTINUOUS SCANNER] Stopping continuous scanning');
+    this.continuousScanning = false;
+    
+    if (this.scanInterval) {
+      clearInterval(this.scanInterval);
+      this.scanInterval = null;
+    }
+    
+    this.saveContinuousScanData();
+    return { success: true, message: 'Continuous scanning stopped' };
+  }
+  
+  addToScanQueue(filePath, fileName, priority = 'normal') {
+    const queueItem = {
+      filePath,
+      fileName,
+      priority,
+      addedAt: Date.now(),
+      scanCount: 0,
+      lastScan: null
+    };
+    
+    // Check if already in queue
+    const existing = this.scanQueue.find(item => item.fileName === fileName);
+    if (existing) {
+      console.log(`[CONTINUOUS SCANNER] Plugin ${fileName} already in queue`);
+      return { success: false, message: 'Already in queue' };
+    }
+    
+    this.scanQueue.push(queueItem);
+    
+    // Register plugin if not already registered
+    if (!this.pluginRegistry.has(fileName)) {
+      this.pluginRegistry.set(fileName, {
+        filePath,
+        fileName,
+        firstAdded: Date.now(),
+        scanCount: 0,
+        lastScan: null,
+        lastRiskScore: 0,
+        trendData: []
+      });
+    }
+    
+    console.log(`[CONTINUOUS SCANNER] Added ${fileName} to scan queue (priority: ${priority})`);
+    this.saveContinuousScanData();
+    
+    return { success: true, message: 'Added to scan queue', queueSize: this.scanQueue.length };
+  }
+  
+  async processQueue() {
+    if (this.scanQueue.length === 0) {
+      console.log('[CONTINUOUS SCANNER] Queue empty, checking for plugins to re-scan');
+      this.repopulateQueue();
+      return;
+    }
+    
+    // Sort queue by priority
+    this.scanQueue.sort((a, b) => {
+      const priorityOrder = { high: 3, normal: 2, low: 1 };
+      return priorityOrder[b.priority] - priorityOrder[a.priority];
+    });
+    
+    // Process one plugin from queue
+    const item = this.scanQueue.shift();
+    console.log(`[CONTINUOUS SCANNER] Processing ${item.fileName} from queue`);
+    
+    try {
+      const analysis = await this.analyzeJarFile(item.filePath, item.fileName);
+      
+      // Update registry
+      const pluginData = this.pluginRegistry.get(item.fileName);
+      if (pluginData) {
+        pluginData.scanCount++;
+        pluginData.lastScan = Date.now();
+        
+        // Track trends
+        const trendEntry = {
+          timestamp: Date.now(),
+          riskScore: analysis.riskScore,
+          vulnerabilityCount: analysis.vulnerabilities.length,
+          exploitCount: analysis.exploitOpportunities.length
+        };
+        
+        pluginData.trendData.push(trendEntry);
+        
+        // Calculate trend (increasing/decreasing risk)
+        if (pluginData.trendData.length > 1) {
+          const previous = pluginData.trendData[pluginData.trendData.length - 2];
+          const current = trendEntry;
+          
+          const riskChange = current.riskScore - previous.riskScore;
+          trendEntry.riskChange = riskChange;
+          trendEntry.trend = riskChange > 0 ? 'increasing' : (riskChange < 0 ? 'decreasing' : 'stable');
+          
+          // Calculate exploit effectiveness decay
+          if (current.exploitCount < previous.exploitCount) {
+            trendEntry.exploitEffectivenessDecay = true;
+            console.log(`[CONTINUOUS SCANNER] ⚠️ Exploit effectiveness decay detected for ${item.fileName}`);
+          }
+        }
+        
+        // Keep only last 50 trend entries
+        if (pluginData.trendData.length > 50) {
+          pluginData.trendData = pluginData.trendData.slice(-50);
+        }
+        
+        pluginData.lastRiskScore = analysis.riskScore;
+        this.pluginRegistry.set(item.fileName, pluginData);
+      }
+      
+      // Add to historical scans
+      const scanRecord = {
+        fileName: item.fileName,
+        timestamp: Date.now(),
+        analysis,
+        queuePriority: item.priority,
+        scanNumber: (pluginData?.scanCount || 0)
+      };
+      
+      this.historicalScans.push(scanRecord);
+      
+      // Keep only last 500 scans
+      if (this.historicalScans.length > 500) {
+        this.historicalScans = this.historicalScans.slice(-500);
+      }
+      
+      // Propagate to swarm if significant findings
+      if (analysis.riskScore > 50 || analysis.exploitOpportunities.length > 0) {
+        this.propagateToSwarm(analysis);
+        this.updateAnalytics(analysis);
+      }
+      
+      this.saveContinuousScanData();
+      
+    } catch (err) {
+      console.log(`[CONTINUOUS SCANNER] Error processing ${item.fileName}: ${err.message}`);
+    }
+  }
+  
+  repopulateQueue() {
+    // Re-add plugins that need scanning based on time elapsed
+    const now = Date.now();
+    const rescanThreshold = this.scanIntervalMs * 2; // Re-scan if not scanned in 2x interval
+    
+    for (const [fileName, pluginData] of this.pluginRegistry.entries()) {
+      const timeSinceLastScan = now - (pluginData.lastScan || 0);
+      
+      if (timeSinceLastScan > rescanThreshold) {
+        // Check if not already in queue
+        const inQueue = this.scanQueue.find(item => item.fileName === fileName);
+        if (!inQueue && fs.existsSync(pluginData.filePath)) {
+          this.scanQueue.push({
+            filePath: pluginData.filePath,
+            fileName: fileName,
+            priority: 'normal',
+            addedAt: now,
+            scanCount: pluginData.scanCount,
+            lastScan: pluginData.lastScan
+          });
+          console.log(`[CONTINUOUS SCANNER] Re-queued ${fileName} for periodic scan`);
+        }
+      }
+    }
+  }
+  
+  propagateToSwarm(analysis) {
+    try {
+      if (config.swarm.wsServer && config.swarm.wsServer.clients) {
+        const message = {
+          type: 'PLUGIN_VULNERABILITY_DISCOVERED',
+          timestamp: Date.now(),
+          plugin: analysis.fileName,
+          riskScore: analysis.riskScore,
+          vulnerabilities: analysis.vulnerabilities.length,
+          exploitOpportunities: analysis.exploitOpportunities,
+          summary: `Found ${analysis.vulnerabilities.length} vulnerabilities in ${analysis.fileName}`
+        };
+        
+        // Broadcast to all connected bots
+        config.swarm.wsServer.clients.forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(message));
+          }
+        });
+        
+        console.log(`[CONTINUOUS SCANNER] Propagated findings to ${config.swarm.wsServer.clients.size} swarm bots`);
+      }
+      
+      // Update shared memory
+      if (!config.swarm.sharedMemory.pluginVulnerabilities) {
+        config.swarm.sharedMemory.pluginVulnerabilities = [];
+      }
+      
+      config.swarm.sharedMemory.pluginVulnerabilities.push({
+        plugin: analysis.fileName,
+        timestamp: Date.now(),
+        riskScore: analysis.riskScore,
+        exploitOpportunities: analysis.exploitOpportunities
+      });
+      
+      // Keep only last 100 entries
+      if (config.swarm.sharedMemory.pluginVulnerabilities.length > 100) {
+        config.swarm.sharedMemory.pluginVulnerabilities = 
+          config.swarm.sharedMemory.pluginVulnerabilities.slice(-100);
+      }
+      
+    } catch (err) {
+      console.log(`[CONTINUOUS SCANNER] Error propagating to swarm: ${err.message}`);
+    }
+  }
+  
+  updateAnalytics(analysis) {
+    try {
+      // Add exploits to active exploits list
+      for (const exploit of analysis.exploitOpportunities) {
+        const existingExploit = config.analytics.dupe.activeExploits.find(
+          e => e.method === exploit.method && e.plugin === analysis.fileName
+        );
+        
+        if (!existingExploit) {
+          config.analytics.dupe.activeExploits.push({
+            ...exploit,
+            plugin: analysis.fileName,
+            discovered: Date.now(),
+            attempts: 0,
+            successes: 0
+          });
+          
+          console.log(`[CONTINUOUS SCANNER] Added new exploit to analytics: ${exploit.method}`);
+        }
+      }
+      
+      // Keep only last 50 active exploits
+      if (config.analytics.dupe.activeExploits.length > 50) {
+        config.analytics.dupe.activeExploits = config.analytics.dupe.activeExploits.slice(-50);
+      }
+      
+    } catch (err) {
+      console.log(`[CONTINUOUS SCANNER] Error updating analytics: ${err.message}`);
+    }
+  }
+  
+  getContinuousScanStatus() {
+    return {
+      active: this.continuousScanning,
+      intervalMs: this.scanIntervalMs,
+      queueSize: this.scanQueue.length,
+      totalPlugins: this.pluginRegistry.size,
+      totalScans: this.historicalScans.length,
+      recentScans: this.historicalScans.slice(-10).map(scan => ({
+        fileName: scan.fileName,
+        timestamp: scan.timestamp,
+        riskScore: scan.analysis.riskScore,
+        vulnerabilities: scan.analysis.vulnerabilities.length,
+        exploits: scan.analysis.exploitOpportunities.length
+      })),
+      plugins: Array.from(this.pluginRegistry.entries()).map(([name, data]) => ({
+        name,
+        scanCount: data.scanCount,
+        lastScan: data.lastScan,
+        lastRiskScore: data.lastRiskScore,
+        trend: data.trendData.length > 1 ? 
+          data.trendData[data.trendData.length - 1].trend : 'unknown'
+      }))
+    };
   }
   
   async analyzeJarFile(filePath, fileName) {
@@ -6037,6 +7576,7 @@ const dashboardHTML = `
       <button class="quick-btn" onclick="quickCommand('start dupe testing')">Start Dupe Test</button>
       <button class="quick-btn" onclick="quickCommand('stop dupe testing')">Stop Dupe Test</button>
       <button class="quick-btn" onclick="quickCommand('dupe report')">Dupe Stats</button>
+      <button class="quick-btn" onclick="quickCommand('scanner status')">Scanner Status</button>
       <button class="quick-btn" onclick="quickCommand('what are you doing')">Status</button>
     </div>
     
@@ -6108,6 +7648,29 @@ const dashboardHTML = `
         <button class="quick-btn" onclick="quickCommand('go home')">Go Home</button>
         <button class="quick-btn" onclick="quickCommand('deposit valuables')">Deposit Items</button>
       </div>
+    </div>
+    
+    <div class="panel">
+      <h2>🔄 Continuous Plugin Scanner</h2>
+      <div class="stat"><span>Status:</span><span id="scannerStatus">Stopped</span></div>
+      <div class="stat"><span>Scan Interval:</span><span id="scannerInterval">N/A</span></div>
+      <div class="stat"><span>Queue Size:</span><span id="scannerQueue">0</span></div>
+      <div class="stat"><span>Total Plugins:</span><span id="scannerPlugins">0</span></div>
+      <div class="stat"><span>Total Scans:</span><span id="scannerTotalScans">0</span></div>
+      
+      <div style="margin-top: 10px;">
+        <button class="quick-btn" onclick="startScanner()">▶️ Start Scanner</button>
+        <button class="quick-btn" onclick="stopScanner()">⏹️ Stop Scanner</button>
+        <button class="quick-btn" onclick="refreshScannerStatus()">🔄 Refresh</button>
+      </div>
+      
+      <h3 style="margin-top: 15px; border-top: 1px solid #0f0; padding-top: 10px;">📊 Recent Scans</h3>
+      <div id="recentScansList" style="margin-top: 10px; max-height: 200px; overflow-y: auto; font-size: 11px;"></div>
+      
+      <h3 style="margin-top: 15px; border-top: 1px solid #0f0; padding-top: 10px;">📦 Tracked Plugins</h3>
+      <div id="trackedPluginsList" style="margin-top: 10px; max-height: 150px; overflow-y: auto; font-size: 11px;"></div>
+      
+      <div id="scannerMessage" style="margin-top: 10px; padding: 5px; background: #111; border: 1px solid #0f0; color: #ff0;"></div>
     </div>
     
     <div class="panel">
@@ -6342,8 +7905,109 @@ const dashboardHTML = `
       });
     }
     
+    async function startScanner() {
+      const intervalMs = prompt('Enter scan interval in seconds (default: 300):', '300');
+      const ms = (parseInt(intervalMs) || 300) * 1000;
+      
+      try {
+        const response = await fetch('/scanner/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ intervalMs: ms })
+        });
+        
+        const result = await response.json();
+        const msgDiv = document.getElementById('scannerMessage');
+        
+        if (result.success) {
+          msgDiv.innerHTML = '✅ ' + result.message;
+          msgDiv.style.color = '#0f0';
+        } else {
+          msgDiv.innerHTML = '⚠️ ' + result.message;
+          msgDiv.style.color = '#ff0';
+        }
+        
+        setTimeout(() => refreshScannerStatus(), 500);
+      } catch (err) {
+        document.getElementById('scannerMessage').innerHTML = '❌ Error: ' + err.message;
+        document.getElementById('scannerMessage').style.color = '#f00';
+      }
+    }
+    
+    async function stopScanner() {
+      try {
+        const response = await fetch('/scanner/stop', { method: 'POST' });
+        const result = await response.json();
+        const msgDiv = document.getElementById('scannerMessage');
+        
+        if (result.success) {
+          msgDiv.innerHTML = '✅ ' + result.message;
+          msgDiv.style.color = '#0f0';
+        } else {
+          msgDiv.innerHTML = '⚠️ ' + result.message;
+          msgDiv.style.color = '#ff0';
+        }
+        
+        setTimeout(() => refreshScannerStatus(), 500);
+      } catch (err) {
+        document.getElementById('scannerMessage').innerHTML = '❌ Error: ' + err.message;
+        document.getElementById('scannerMessage').style.color = '#f00';
+      }
+    }
+    
+    async function refreshScannerStatus() {
+      try {
+        const response = await fetch('/scanner/status');
+        const status = await response.json();
+        
+        document.getElementById('scannerStatus').textContent = status.active ? '✅ Running' : '⏹️ Stopped';
+        document.getElementById('scannerStatus').style.color = status.active ? '#0f0' : '#f00';
+        document.getElementById('scannerInterval').textContent = status.active ? 
+          (status.intervalMs / 1000) + 's' : 'N/A';
+        document.getElementById('scannerQueue').textContent = status.queueSize;
+        document.getElementById('scannerPlugins').textContent = status.totalPlugins;
+        document.getElementById('scannerTotalScans').textContent = status.totalScans;
+        
+        // Update recent scans
+        if (status.recentScans && status.recentScans.length > 0) {
+          document.getElementById('recentScansList').innerHTML = status.recentScans.map(scan => {
+            const timeAgo = Math.floor((Date.now() - scan.timestamp) / 1000);
+            const riskColor = scan.riskScore > 70 ? '#f00' : (scan.riskScore > 40 ? '#ff0' : '#0f0');
+            return \`<div class="stash-entry" style="border-color: \${riskColor}; margin: 3px 0; padding: 5px;">
+              📦 \${scan.fileName}<br>
+              Risk: \${scan.riskScore} | Vulns: \${scan.vulnerabilities} | Exploits: \${scan.exploits}<br>
+              ⏱️ \${timeAgo}s ago
+            </div>\`;
+          }).join('');
+        } else {
+          document.getElementById('recentScansList').innerHTML = '<em>No scans yet</em>';
+        }
+        
+        // Update tracked plugins
+        if (status.plugins && status.plugins.length > 0) {
+          document.getElementById('trackedPluginsList').innerHTML = status.plugins.map(plugin => {
+            const trendColor = plugin.trend === 'increasing' ? '#f00' : 
+                              (plugin.trend === 'decreasing' ? '#0f0' : '#ff0');
+            const lastScanAgo = plugin.lastScan ? 
+              Math.floor((Date.now() - plugin.lastScan) / 60000) : 'Never';
+            return \`<div class="stash-entry" style="border-color: \${trendColor}; margin: 3px 0; padding: 5px;">
+              📦 \${plugin.name}<br>
+              Scans: \${plugin.scanCount} | Risk: \${plugin.lastRiskScore} | Trend: \${plugin.trend}<br>
+              Last: \${typeof lastScanAgo === 'number' ? lastScanAgo + 'm ago' : lastScanAgo}
+            </div>\`;
+          }).join('');
+        } else {
+          document.getElementById('trackedPluginsList').innerHTML = '<em>No plugins tracked</em>';
+        }
+      } catch (err) {
+        console.error('Failed to refresh scanner status:', err);
+      }
+    }
+    
     setInterval(update, 1000);
+    setInterval(refreshScannerStatus, 5000); // Update scanner status every 5 seconds
     update();
+    refreshScannerStatus();
   </script>
 </body>
 </html>
@@ -6440,7 +8104,25 @@ http.createServer((req, res) => {
           trusted: config.whitelist.filter(e => e.level === 'trusted').length,
           guest: config.whitelist.filter(e => e.level === 'guest').length
         }
-      }
+      },
+      tracking: globalBot?.playerTracker ? {
+        active: globalBot.playerTracker.isTracking,
+        target: globalBot.playerTracker.targetUsername,
+        sightings: globalBot.playerTracker.trackingLog.sightings.length,
+        suspectedBases: globalBot.playerTracker.suspectedBases.length,
+        afkPeriods: globalBot.playerTracker.trackingLog.afkPeriods.length,
+        lastKnownPosition: globalBot.playerTracker.lastKnownPosition ? 
+          `${Math.floor(globalBot.playerTracker.lastKnownPosition.x)}, ${Math.floor(globalBot.playerTracker.lastKnownPosition.y)}, ${Math.floor(globalBot.playerTracker.lastKnownPosition.z)}` :
+          'Unknown',
+        bases: globalBot.playerTracker.suspectedBases.map(b => ({
+          coords: `${b.x}, ${b.y}, ${b.z}`,
+          visitCount: b.visitCount,
+          threatLevel: b.threatLevel,
+          explored: b.explored,
+          storageBlocks: b.storageBlocks?.length || 0,
+          estimatedValue: b.estimatedValue || 0
+        }))
+      } : null
     }));
   } else if (req.url === '/swarm') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -6527,6 +8209,41 @@ http.createServer((req, res) => {
       }
     });
     */
+  } else if (req.url === '/scanner/start' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { intervalMs } = JSON.parse(body || '{}');
+        const result = globalPluginAnalyzer.startContinuousScanning(intervalMs || 300000);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+  } else if (req.url === '/scanner/stop' && req.method === 'POST') {
+    const result = globalPluginAnalyzer.stopContinuousScanning();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+  } else if (req.url === '/scanner/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(globalPluginAnalyzer.getContinuousScanStatus()));
+  } else if (req.url === '/scanner/queue' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { filePath, fileName, priority } = JSON.parse(body);
+        const result = globalPluginAnalyzer.addToScanQueue(filePath, fileName, priority);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
   } else if (req.url === '/command' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -7447,6 +9164,7 @@ async function launchBot(username, role = 'fighter') {
   
   const combatAI = new CombatAI(bot);
   const conversationAI = new ConversationAI(bot);
+  const schematicLoader = new SchematicLoader(bot);
   let stashScanner = null;
   let dupeFramework = null;
   let lootOperation = null;
@@ -7457,6 +9175,9 @@ async function launchBot(username, role = 'fighter') {
   // Store component references on bot for access
   bot.combatAI = combatAI;
   bot.schematicBuilder = schematicBuilder;
+  // Store combatAI and schematicLoader references on bot for stats/access
+  bot.combatAI = combatAI;
+  bot.schematicLoader = schematicLoader;
   
   bot.once('spawn', async () => {
     console.log(`[SPAWN] ${username} joined ${config.server}`);
@@ -7651,6 +9372,19 @@ async function launchBot(username, role = 'fighter') {
           await dupeFramework.startTesting();
         }, 3000);
       }, 2000); // Wait 2 seconds for bot to fully initialize
+    } else if (config.mode === 'tracking') {
+      if (config.tracking.targetPlayer) {
+        const playerTracker = new PlayerTracker(bot, config.tracking.targetPlayer);
+        bot.playerTracker = playerTracker;
+        console.log(`[TRACKING] Player tracker initialized for target: ${config.tracking.targetPlayer}`);
+        
+        // Start tracking after a short delay
+        setTimeout(() => {
+          playerTracker.start();
+        }, 2000);
+      } else {
+        console.log('[TRACKING] ⚠️ No target player set! Use menu option 7 to configure.');
+      }
     }
     
     // Chat handler
@@ -7785,6 +9519,8 @@ function showMenu() {
 ║  [5] Swarm Multi-Bot (Coordinated Operations)         ║
 ║  [6] Build Mode (Schematic Builder)                    ║
 ║  [7] Configure Whitelist                              ║
+║  [6] Configure Whitelist                              ║
+║  [7] Player Tracking Mode (Stealth Intelligence)      ║
 ╠═══════════════════════════════════════════════════════╣
 ║  🏠 Home Base: ${config.homeBase.coords ? '✅' : '❌'}                                 ║
 ║  🐝 Swarm Coordinator: ${globalSwarmCoordinator ? '✅' : '❌'}                       ║
@@ -7801,6 +9537,8 @@ function showMenu() {
       case '5': config.mode = 'swarm'; launchSwarm(); break;
       case '6': config.mode = 'build'; askServer(); break;
       case '7': configureWhitelist(); break;
+      case '6': configureWhitelist(); break;
+      case '7': config.mode = 'tracking'; askTrackingConfig(); break;
       default: console.log('Invalid choice'); showMenu(); break;
     }
   });
@@ -7819,6 +9557,30 @@ function askStashConfig() {
         askServer();
       });
     });
+  });
+}
+
+function askTrackingConfig() {
+  console.log('\n🕵️ PLAYER TRACKING MODE - Stealth Intelligence Gathering\n');
+  
+  rl.question('Target player username: ', (target) => {
+    config.tracking.targetPlayer = target.trim();
+    
+    if (!config.tracking.targetPlayer) {
+      console.log('❌ Invalid username. Please try again.');
+      setTimeout(showMenu, 1000);
+      return;
+    }
+    
+    console.log(`\n🎯 Target set: ${config.tracking.targetPlayer}`);
+    console.log('Tracking configuration:');
+    console.log(`  - Shadow distance: ${config.tracking.shadowDistance} blocks`);
+    console.log(`  - Stealth mode: ${config.tracking.stealthMode ? 'ON' : 'OFF'}`);
+    console.log(`  - Crouch when close: ${config.tracking.crouchWhenClose ? 'YES' : 'NO'}`);
+    console.log(`  - Intelligence reporting: ${config.tracking.intelligenceReporting ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`  - Log file: ./data/tracking_${config.tracking.targetPlayer}.json\n`);
+    
+    askServer();
   });
 }
 
