@@ -16,6 +16,22 @@ stashes/
 dupes/*.txt
 dupes/*.json
 dupes/uploaded_*
+# Node modules
+node_modules/
+package-lock.json
+
+# Data directories
+models/
+dupes/
+replays/
+logs/
+data/
+training/
+stashes/
+
+# Environment
+.env
+*.log
 
 # OS files
 .DS_Store
