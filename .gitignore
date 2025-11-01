@@ -1,32 +1,20 @@
 # Node modules
 node_modules/
+package-lock.json
 
 # Data directories
-data/
-logs/
 models/
 dupes/
 replays/
+logs/
+data/
 training/
 stashes/
 
-# Temporary files
-*.log
-*.tmp
-
-# Environment files
+# Environment
 .env
-.env.local
-
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
+*.log
 
 # OS files
 .DS_Store
 Thumbs.db
-
-# Tracking data (sensitive)
-tracking_*.json

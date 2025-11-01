@@ -40,9 +40,11 @@ const readline = require('readline');
 const http = require('http');
 const WebSocket = require('ws');
 const { SocksClient } = require('socks');
+const nbt = require('prismarine-nbt');
+const { promisify } = require('util');
 
 // === SAFE DIRECTORIES ===
-['./models', './dupes', './replays', './logs', './data', './training', './stashes'].forEach(d => 
+['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics'].forEach(d => 
   fs.mkdirSync(d, { recursive: true })
 );
 
@@ -1201,6 +1203,553 @@ ${c.items.map(item => `  - ${item.count}x ${item.name} (Value: ${item.value})`).
     
     fs.writeFileSync(`./stashes/stash_${stash.timestamp}.txt`, report);
     fs.appendFileSync('./stashes/all_stashes.txt', `\n${stash.coords.toString()} | ${stash.chestCount} chests | Value: ${stash.totalValue} | ${new Date().toISOString()}\n`);
+  }
+}
+
+// === SCHEMATIC LOADER ===
+class SchematicLoader {
+  constructor(bot = null) {
+    this.bot = bot;
+    this.loadedSchematics = new Map();
+    this.blockFallbacks = {
+      'minecraft:air': 'minecraft:air',
+      'default': 'minecraft:air'
+    };
+    this.parseNBT = promisify(nbt.parse);
+  }
+
+  async loadSchematic(input, name = null) {
+    try {
+      let buffer;
+      let schematicName = name;
+
+      if (typeof input === 'string') {
+        if (!schematicName) {
+          schematicName = input.split('/').pop().replace(/\.(schem|schematic)$/, '');
+        }
+        console.log(`[SCHEMATIC] Loading from file: ${input}`);
+        buffer = fs.readFileSync(input);
+      } else if (Buffer.isBuffer(input)) {
+        if (!schematicName) {
+          schematicName = `schematic_${Date.now()}`;
+        }
+        console.log(`[SCHEMATIC] Loading from buffer`);
+        buffer = input;
+      } else {
+        throw new Error('Invalid input: expected file path or buffer');
+      }
+
+      const format = this.detectFormat(buffer);
+      console.log(`[SCHEMATIC] Detected format: ${format}`);
+
+      const parsed = await this.parseSchematic(buffer, format);
+      
+      const schematic = {
+        name: schematicName,
+        format: format,
+        metadata: parsed.metadata,
+        blocks: parsed.blocks,
+        palette: parsed.palette,
+        entities: parsed.entities || [],
+        tileEntities: parsed.tileEntities || [],
+        materialCounts: this.calculateMaterialCounts(parsed.blocks, parsed.palette),
+        loadedAt: Date.now()
+      };
+
+      this.validateBlocks(schematic);
+      
+      this.saveSchematicToFile(schematic);
+      
+      this.loadedSchematics.set(schematicName, schematic);
+      
+      console.log(`[SCHEMATIC] Successfully loaded: ${schematicName}`);
+      console.log(`[SCHEMATIC] Dimensions: ${parsed.metadata.width}x${parsed.metadata.height}x${parsed.metadata.length}`);
+      console.log(`[SCHEMATIC] Total blocks: ${parsed.blocks.length}`);
+      console.log(`[SCHEMATIC] Materials: ${Object.keys(schematic.materialCounts).length} types`);
+
+      return schematic;
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error loading schematic:`, err.message);
+      throw err;
+    }
+  }
+
+  detectFormat(buffer) {
+    try {
+      const firstByte = buffer[0];
+      
+      if (firstByte === 0x0a) {
+        const header = buffer.slice(0, 20).toString('latin1');
+        if (header.includes('Schematic')) {
+          return 'sponge_v2';
+        }
+        return 'legacy';
+      }
+      
+      if (buffer[0] === 0x1f && buffer[1] === 0x8b) {
+        return 'legacy_gzip';
+      }
+
+      return 'sponge_v2';
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error detecting format:`, err.message);
+      return 'sponge_v2';
+    }
+  }
+
+  async parseSchematic(buffer, format) {
+    try {
+      const { parsed, type } = await this.parseNBT(buffer);
+      
+      if (format === 'legacy' || format === 'legacy_gzip') {
+        return this.parseLegacySchematic(parsed);
+      } else {
+        return this.parseSpongeSchematic(parsed);
+      }
+    } catch (err) {
+      console.error(`[SCHEMATIC] NBT parsing error:`, err.message);
+      throw new Error(`Failed to parse NBT data: ${err.message}`);
+    }
+  }
+
+  parseSpongeSchematic(data) {
+    try {
+      const schematic = data.Schematic || data;
+      
+      const width = schematic.Width?.value || 0;
+      const height = schematic.Height?.value || 0;
+      const length = schematic.Length?.value || 0;
+      
+      const offsetX = schematic.Offset?.value?.[0] || 0;
+      const offsetY = schematic.Offset?.value?.[1] || 0;
+      const offsetZ = schematic.Offset?.value?.[2] || 0;
+
+      const paletteData = schematic.Palette?.value || {};
+      const palette = {};
+      
+      for (const [blockName, id] of Object.entries(paletteData)) {
+        palette[id.value] = this.normalizeBlockName(blockName);
+      }
+
+      const blockData = schematic.BlockData?.value || [];
+      
+      const blocks = [];
+      let blockIndex = 0;
+
+      for (let y = 0; y < height; y++) {
+        for (let z = 0; z < length; z++) {
+          for (let x = 0; x < width; x++) {
+            if (blockIndex < blockData.length) {
+              const paletteId = this.readVarint(blockData, blockIndex);
+              const blockName = palette[paletteId] || 'minecraft:air';
+              
+              if (blockName !== 'minecraft:air') {
+                blocks.push({
+                  x: x + offsetX,
+                  y: y + offsetY,
+                  z: z + offsetZ,
+                  name: blockName,
+                  relX: x,
+                  relY: y,
+                  relZ: z
+                });
+              }
+              
+              blockIndex++;
+            }
+          }
+        }
+      }
+
+      const entities = [];
+      if (schematic.Entities?.value?.value) {
+        for (const entity of schematic.Entities.value.value) {
+          entities.push(this.parseEntity(entity));
+        }
+      }
+
+      const tileEntities = [];
+      if (schematic.BlockEntities?.value?.value) {
+        for (const tileEntity of schematic.BlockEntities.value.value) {
+          tileEntities.push(this.parseTileEntity(tileEntity));
+        }
+      }
+
+      return {
+        metadata: {
+          width,
+          height,
+          length,
+          offsetX,
+          offsetY,
+          offsetZ,
+          version: schematic.Version?.value || 2
+        },
+        blocks,
+        palette,
+        entities,
+        tileEntities
+      };
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error parsing Sponge schematic:`, err.message);
+      throw err;
+    }
+  }
+
+  parseLegacySchematic(data) {
+    try {
+      const schematic = data.Schematic || data;
+      
+      const width = schematic.Width?.value || 0;
+      const height = schematic.Height?.value || 0;
+      const length = schematic.Length?.value || 0;
+      
+      const offsetX = schematic.WEOffsetX?.value || 0;
+      const offsetY = schematic.WEOffsetY?.value || 0;
+      const offsetZ = schematic.WEOffsetZ?.value || 0;
+
+      const blocks = schematic.Blocks?.value || [];
+      const blockDataValues = schematic.Data?.value || [];
+      
+      const palette = {};
+      const blockList = [];
+
+      for (let y = 0; y < height; y++) {
+        for (let z = 0; z < length; z++) {
+          for (let x = 0; x < width; x++) {
+            const index = (y * length + z) * width + x;
+            
+            if (index < blocks.length) {
+              const blockId = blocks[index];
+              const blockData = blockDataValues[index] || 0;
+              
+              const blockName = this.legacyIdToName(blockId, blockData);
+              
+              if (blockName !== 'minecraft:air') {
+                blockList.push({
+                  x: x + offsetX,
+                  y: y + offsetY,
+                  z: z + offsetZ,
+                  name: blockName,
+                  relX: x,
+                  relY: y,
+                  relZ: z
+                });
+              }
+              
+              palette[blockId] = blockName;
+            }
+          }
+        }
+      }
+
+      const entities = [];
+      if (schematic.Entities?.value?.value) {
+        for (const entity of schematic.Entities.value.value) {
+          entities.push(this.parseEntity(entity));
+        }
+      }
+
+      const tileEntities = [];
+      if (schematic.TileEntities?.value?.value) {
+        for (const tileEntity of schematic.TileEntities.value.value) {
+          tileEntities.push(this.parseTileEntity(tileEntity));
+        }
+      }
+
+      return {
+        metadata: {
+          width,
+          height,
+          length,
+          offsetX,
+          offsetY,
+          offsetZ,
+          version: 1
+        },
+        blocks: blockList,
+        palette,
+        entities,
+        tileEntities
+      };
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error parsing legacy schematic:`, err.message);
+      throw err;
+    }
+  }
+
+  readVarint(buffer, startIndex) {
+    let value = 0;
+    let position = 0;
+    let currentByte;
+    let index = startIndex;
+
+    do {
+      if (index >= buffer.length) break;
+      currentByte = buffer[index++];
+      value |= (currentByte & 0x7F) << position;
+
+      if ((currentByte & 0x80) === 0) break;
+
+      position += 7;
+      if (position >= 32) throw new Error('VarInt too big');
+    } while (true);
+
+    return value;
+  }
+
+  normalizeBlockName(blockName) {
+    if (!blockName.includes(':')) {
+      return `minecraft:${blockName}`;
+    }
+    return blockName;
+  }
+
+  legacyIdToName(id, data = 0) {
+    const legacyMap = {
+      0: 'minecraft:air',
+      1: 'minecraft:stone',
+      2: 'minecraft:grass_block',
+      3: 'minecraft:dirt',
+      4: 'minecraft:cobblestone',
+      5: 'minecraft:oak_planks',
+      6: 'minecraft:oak_sapling',
+      7: 'minecraft:bedrock',
+      8: 'minecraft:water',
+      9: 'minecraft:water',
+      10: 'minecraft:lava',
+      11: 'minecraft:lava',
+      12: 'minecraft:sand',
+      13: 'minecraft:gravel',
+      14: 'minecraft:gold_ore',
+      15: 'minecraft:iron_ore',
+      16: 'minecraft:coal_ore',
+      17: 'minecraft:oak_log',
+      18: 'minecraft:oak_leaves',
+      19: 'minecraft:sponge',
+      20: 'minecraft:glass',
+      35: 'minecraft:white_wool',
+      41: 'minecraft:gold_block',
+      42: 'minecraft:iron_block',
+      43: 'minecraft:stone_slab',
+      44: 'minecraft:stone_slab',
+      45: 'minecraft:bricks',
+      46: 'minecraft:tnt',
+      47: 'minecraft:bookshelf',
+      48: 'minecraft:mossy_cobblestone',
+      49: 'minecraft:obsidian',
+      50: 'minecraft:torch',
+      51: 'minecraft:fire',
+      52: 'minecraft:spawner',
+      53: 'minecraft:oak_stairs',
+      54: 'minecraft:chest',
+      56: 'minecraft:diamond_ore',
+      57: 'minecraft:diamond_block',
+      58: 'minecraft:crafting_table',
+      61: 'minecraft:furnace',
+      62: 'minecraft:furnace',
+      63: 'minecraft:oak_sign',
+      64: 'minecraft:oak_door',
+      65: 'minecraft:ladder',
+      66: 'minecraft:rail',
+      67: 'minecraft:cobblestone_stairs',
+      68: 'minecraft:oak_wall_sign',
+      73: 'minecraft:redstone_ore',
+      74: 'minecraft:redstone_ore',
+      79: 'minecraft:ice',
+      80: 'minecraft:snow_block',
+      81: 'minecraft:cactus',
+      82: 'minecraft:clay',
+      85: 'minecraft:oak_fence',
+      89: 'minecraft:glowstone',
+      98: 'minecraft:stone_bricks',
+      99: 'minecraft:brown_mushroom_block',
+      100: 'minecraft:red_mushroom_block',
+      130: 'minecraft:ender_chest',
+      133: 'minecraft:emerald_block',
+      137: 'minecraft:command_block',
+      145: 'minecraft:anvil',
+      146: 'minecraft:trapped_chest',
+      152: 'minecraft:redstone_block',
+      155: 'minecraft:quartz_block',
+      158: 'minecraft:dropper',
+      159: 'minecraft:white_terracotta',
+      166: 'minecraft:barrier',
+      168: 'minecraft:prismarine',
+      172: 'minecraft:terracotta',
+      173: 'minecraft:coal_block',
+      174: 'minecraft:packed_ice'
+    };
+
+    return legacyMap[id] || 'minecraft:air';
+  }
+
+  parseEntity(entityData) {
+    try {
+      return {
+        id: entityData.Id?.value || entityData.id?.value || 'unknown',
+        pos: entityData.Pos?.value?.value || [0, 0, 0]
+      };
+    } catch (err) {
+      return { id: 'unknown', pos: [0, 0, 0] };
+    }
+  }
+
+  parseTileEntity(tileEntityData) {
+    try {
+      return {
+        id: tileEntityData.Id?.value || tileEntityData.id?.value || 'unknown',
+        x: tileEntityData.x?.value || tileEntityData.Pos?.value?.value?.[0] || 0,
+        y: tileEntityData.y?.value || tileEntityData.Pos?.value?.value?.[1] || 0,
+        z: tileEntityData.z?.value || tileEntityData.Pos?.value?.value?.[2] || 0
+      };
+    } catch (err) {
+      return { id: 'unknown', x: 0, y: 0, z: 0 };
+    }
+  }
+
+  validateBlocks(schematic) {
+    const warnings = [];
+    const unknownBlocks = new Set();
+
+    for (const block of schematic.blocks) {
+      if (this.bot && this.bot.registry && this.bot.registry.blocksByName) {
+        const mcData = this.bot.registry.blocksByName;
+        const blockNameSimple = block.name.replace('minecraft:', '');
+        
+        if (!mcData[blockNameSimple] && !mcData[block.name]) {
+          unknownBlocks.add(block.name);
+          
+          const fallback = this.blockFallbacks[block.name] || this.blockFallbacks.default;
+          block.originalName = block.name;
+          block.name = fallback;
+        }
+      }
+    }
+
+    if (unknownBlocks.size > 0) {
+      console.warn(`[SCHEMATIC] Unknown blocks found (using fallbacks):`);
+      unknownBlocks.forEach(blockName => {
+        console.warn(`  - ${blockName} -> ${this.blockFallbacks[blockName] || this.blockFallbacks.default}`);
+      });
+    }
+
+    return warnings;
+  }
+
+  calculateMaterialCounts(blocks, palette) {
+    const counts = {};
+    
+    for (const block of blocks) {
+      const blockName = block.name;
+      counts[blockName] = (counts[blockName] || 0) + 1;
+    }
+
+    return counts;
+  }
+
+  saveSchematicToFile(schematic) {
+    try {
+      const filePath = `./data/schematics/${schematic.name}.json`;
+      const data = {
+        name: schematic.name,
+        format: schematic.format,
+        metadata: schematic.metadata,
+        materialCounts: schematic.materialCounts,
+        blockCount: schematic.blocks.length,
+        loadedAt: schematic.loadedAt,
+        blocks: schematic.blocks.map(b => ({
+          x: b.x,
+          y: b.y,
+          z: b.z,
+          relX: b.relX,
+          relY: b.relY,
+          relZ: b.relZ,
+          name: b.name,
+          originalName: b.originalName
+        })),
+        entities: schematic.entities,
+        tileEntities: schematic.tileEntities
+      };
+
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      console.log(`[SCHEMATIC] Saved to ${filePath}`);
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error saving to file:`, err.message);
+    }
+  }
+
+  getSchematic(name) {
+    if (this.loadedSchematics.has(name)) {
+      return this.loadedSchematics.get(name);
+    }
+
+    try {
+      const filePath = `./data/schematics/${name}.json`;
+      if (fs.existsSync(filePath)) {
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        this.loadedSchematics.set(name, data);
+        console.log(`[SCHEMATIC] Loaded ${name} from cache`);
+        return data;
+      }
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error loading ${name} from cache:`, err.message);
+    }
+
+    return null;
+  }
+
+  listSchematics() {
+    try {
+      const files = fs.readdirSync('./data/schematics');
+      return files
+        .filter(f => f.endsWith('.json'))
+        .map(f => f.replace('.json', ''));
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error listing schematics:`, err.message);
+      return [];
+    }
+  }
+
+  deleteSchematic(name) {
+    try {
+      const filePath = `./data/schematics/${name}.json`;
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        this.loadedSchematics.delete(name);
+        console.log(`[SCHEMATIC] Deleted ${name}`);
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error(`[SCHEMATIC] Error deleting ${name}:`, err.message);
+      return false;
+    }
+  }
+
+  getBlockAt(schematic, x, y, z) {
+    if (!schematic || !schematic.blocks) return null;
+    
+    return schematic.blocks.find(b => 
+      b.relX === x && b.relY === y && b.relZ === z
+    );
+  }
+
+  getBlocksInRegion(schematic, x1, y1, z1, x2, y2, z2) {
+    if (!schematic || !schematic.blocks) return [];
+    
+    const minX = Math.min(x1, x2);
+    const maxX = Math.max(x1, x2);
+    const minY = Math.min(y1, y2);
+    const maxY = Math.max(y1, y2);
+    const minZ = Math.min(z1, z2);
+    const maxZ = Math.max(z1, z2);
+
+    return schematic.blocks.filter(b =>
+      b.relX >= minX && b.relX <= maxX &&
+      b.relY >= minY && b.relY <= maxY &&
+      b.relZ >= minZ && b.relZ <= maxZ
+    );
   }
 }
 
@@ -7129,14 +7678,16 @@ async function launchBot(username, role = 'fighter') {
   
   const combatAI = new CombatAI(bot);
   const conversationAI = new ConversationAI(bot);
+  const schematicLoader = new SchematicLoader(bot);
   let stashScanner = null;
   let dupeFramework = null;
   let lootOperation = null;
   let enderManager = null;
   let wsClient = null;
   
-  // Store combatAI reference on bot for stats access
+  // Store combatAI and schematicLoader references on bot for stats/access
   bot.combatAI = combatAI;
+  bot.schematicLoader = schematicLoader;
   
   bot.once('spawn', async () => {
     console.log(`[SPAWN] ${username} joined ${config.server}`);
