@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+
+# Data files
+data/
+models/
+replays/
+training/
+stashes/
+
+# Generated files
+dupes/*.txt
+dupes/*.json
+dupes/uploaded_*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
