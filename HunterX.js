@@ -77,7 +77,26 @@ const config = {
     retreatHealth: 8,
     totemThreshold: 8,
     autoLoot: true,
-    smartEquip: true
+    smartEquip: true,
+    logger: {
+      enabled: true,
+      healthThreshold: 6,
+      multipleAttackers: 2,
+      triggerScore: 60,
+      cooldownMs: 20000,
+      escapeDistance: 120,
+      sweepRadius: 16,
+      distressOnReconnect: true
+    },
+    emergency: {
+      pendingLog: null,
+      lastTrigger: null
+    }
+  },
+  
+  lifesteal: {
+    enabled: false,
+    keywords: ['lifesteal']
   },
   
   // Neural networks
@@ -101,7 +120,9 @@ const config = {
   tasks: {
     current: null,
     queue: [],
-    history: []
+    history: [],
+    pausedForSafety: false,
+    suspendedSnapshot: null
   },
   
   // Home Base System
@@ -130,7 +151,7 @@ const config = {
     activeDefense: {}
   },
   analytics: {
-    combat: { kills: 0, deaths: 0, damageDealt: 0, damageTaken: 0 },
+    combat: { kills: 0, deaths: 0, damageDealt: 0, damageTaken: 0, combatLogs: 0, lastCombatLog: null },
     dupe: { 
       attempts: 0, 
       success: 0, 
@@ -373,6 +394,153 @@ function safeAction(fn, context = 'action') {
   };
 }
 
+// === COMBAT RISK ASSESSMENT UTILITIES ===
+class RiskAssessmentHelper {
+  static isLifestealMode() {
+    const mode = (config.mode || '').toLowerCase();
+    const server = (config.server || '').toLowerCase();
+    const keywords = ((config.lifesteal && config.lifesteal.keywords) || ['lifesteal']).map(k => (k || '').toLowerCase());
+    if (keywords.some(keyword => keyword && mode.includes(keyword))) return true;
+    if (keywords.some(keyword => keyword && server.includes(keyword))) return true;
+    return !!(config.lifesteal && config.lifesteal.enabled);
+  }
+
+  static isTrustedPlayer(username) {
+    if (!username) return false;
+    const lowered = username.toLowerCase();
+    return config.whitelist.some(entry => {
+      if (!entry || !entry.name) return false;
+      const level = entry.level || 'guest';
+      return entry.name.toLowerCase() === lowered && ['trusted', 'admin', 'owner'].includes(level);
+    });
+  }
+
+  static countItem(bot, itemName) {
+    if (!bot || !bot.inventory || typeof bot.inventory.items !== 'function') return 0;
+    return bot.inventory.items()
+      .filter(item => item && item.name === itemName)
+      .reduce((sum, item) => sum + (item.count || 1), 0);
+  }
+
+  static hasTotem(bot) {
+    if (!bot || !bot.inventory) return false;
+    const inventory = bot.inventory;
+    if (typeof inventory.items === 'function') {
+      const hasInventoryTotem = inventory.items().some(item => item && item.name === 'totem_of_undying');
+      if (hasInventoryTotem) return true;
+    }
+    const offHand = inventory.slots ? inventory.slots[45] : null;
+    if (offHand && offHand.name === 'totem_of_undying') return true;
+    if (bot.heldItem && bot.heldItem.name === 'totem_of_undying') return true;
+    return false;
+  }
+
+  static getNearbyHostiles(bot, radius = 8) {
+    if (!bot || !bot.entity || !bot.entity.position) return [];
+    const position = bot.entity.position;
+    const hostiles = [];
+
+    Object.values(bot.entities || {}).forEach(entity => {
+      if (!entity || !entity.position) return;
+      if (entity.type === 'player' && entity.username && entity.username !== bot.username) {
+        if (this.isTrustedPlayer(entity.username)) return;
+        const distance = entity.position.distanceTo(position);
+        if (distance <= radius) {
+          hostiles.push({
+            username: entity.username,
+            type: 'player',
+            distance: Number(distance.toFixed(2)),
+            lastSeen: Date.now()
+          });
+        }
+      }
+    });
+
+    return hostiles;
+  }
+
+  static evaluateCombatRisk(bot, context = {}) {
+    const loggerConfig = (config.combat && config.combat.logger) || {};
+    const radius = context.radius || loggerConfig.sweepRadius || 16;
+    const healthThreshold = context.healthThreshold !== undefined ? context.healthThreshold :
+      (loggerConfig.healthThreshold !== undefined ? loggerConfig.healthThreshold : 6);
+    const multiThreshold = context.multipleAttackersThreshold !== undefined ? context.multipleAttackersThreshold :
+      (loggerConfig.multipleAttackers !== undefined ? loggerConfig.multipleAttackers : 2);
+    const triggerScore = context.triggerScore !== undefined ? context.triggerScore :
+      (loggerConfig.triggerScore !== undefined ? loggerConfig.triggerScore : 60);
+
+    let attackers = Array.isArray(context.attackers) ? context.attackers.filter(Boolean) : null;
+    if (!attackers || attackers.length === 0) {
+      attackers = this.getNearbyHostiles(bot, radius);
+    }
+
+    const hasCrystalResources = typeof context.hasCrystalResources === 'boolean' ? context.hasCrystalResources : false;
+    const hasTotem = typeof context.hasTotem === 'boolean' ? context.hasTotem : this.hasTotem(bot);
+    const crystals = typeof context.crystals === 'number' ? context.crystals : this.countItem(bot, 'end_crystal');
+    const obsidian = typeof context.obsidian === 'number' ? context.obsidian : this.countItem(bot, 'obsidian');
+    const totems = typeof context.totems === 'number' ? context.totems : this.countItem(bot, 'totem_of_undying');
+    const health = bot && typeof bot.health === 'number' ? bot.health : 20;
+    const food = bot && typeof bot.food === 'number' ? bot.food : 20;
+
+    const triggers = [];
+    let score = 0;
+
+    if (attackers.length >= multiThreshold) {
+      score += 40;
+      triggers.push('multiple_attackers');
+    } else if (attackers.length > 0) {
+      score += 20;
+      triggers.push('under_attack');
+    }
+
+    if (health <= healthThreshold) {
+      if (!hasTotem) {
+        score += 40;
+        triggers.push('low_health_no_totem');
+      } else {
+        score += 20;
+        triggers.push('low_health');
+      }
+    }
+
+    if (!hasTotem && attackers.length > 0) {
+      score += 15;
+      triggers.push('no_totems');
+    } else if (totems <= 1 && attackers.length > 0) {
+      score += 5;
+      triggers.push('low_totems');
+    }
+
+    if (!hasCrystalResources && attackers.length > 0) {
+      score += 20;
+      triggers.push('no_crystals');
+    }
+
+    if (food <= 6) {
+      score += 10;
+      triggers.push('low_hunger');
+    }
+
+    const threatLevel = score >= 80 ? 'critical' : score >= 60 ? 'high' : score >= 35 ? 'medium' : 'low';
+    const shouldLog = score >= triggerScore;
+
+    return {
+      attackers,
+      hasTotem,
+      totemCount: totems,
+      crystals,
+      obsidian,
+      health,
+      food,
+      score,
+      threatLevel,
+      triggers,
+      timestamp: Date.now(),
+      shouldLog
+    };
+  }
+}
+
 // === STASH VALUE CALCULATOR ===
 const STORAGE_BLOCKS = {
   chest: 5, trapped_chest: 5, barrel: 5,
@@ -483,6 +651,33 @@ class SwarmCoordinator {
           position: message.position,
           attacker: message.attacker,
           timestamp: Date.now()
+        }, botId);
+        break;
+        
+      case 'DISTRESS_SIGNAL':
+        console.log(`[SWARM] 🚨 Distress signal from ${botId} (level: ${message.threatLevel || 'unknown'})`);
+        config.swarm.threats.push({
+          type: 'distress',
+          botId,
+          attackers: message.attackers || [],
+          threatLevel: message.threatLevel || 'unknown',
+          position: message.position || null,
+          triggers: message.triggers || [],
+          riskScore: message.riskScore || null,
+          timestamp: message.timestamp || Date.now()
+        });
+        if (config.swarm.threats.length > 100) {
+          config.swarm.threats = config.swarm.threats.slice(-100);
+        }
+        this.broadcast({
+          type: 'DISTRESS_CALL',
+          botId,
+          position: message.position,
+          threatLevel: message.threatLevel,
+          attackers: message.attackers,
+          triggers: message.triggers,
+          timestamp: message.timestamp || Date.now(),
+          riskScore: message.riskScore || null
         }, botId);
         break;
         
@@ -2327,14 +2522,24 @@ class CombatAI {
     this.bot = bot;
     this.inCombat = false;
     this.currentTarget = null;
+    this.combatLogger = null;
+    this.combatCheck = null;
+  }
+  
+  setCombatLogger(logger) {
+    this.combatLogger = logger;
   }
   
   async handleCombat(attacker) {
     console.log(`[COMBAT] ⚔️ Engaged with ${attacker.username}!`);
+    this.abortCombat('new engagement');
     this.inCombat = true;
     this.currentTarget = attacker;
     
-    // Initialize crystal PvP if we have resources
+    if (this.combatLogger) {
+      this.combatLogger.startMonitoring(attacker);
+    }
+    
     const useCrystalPvP = this.hasCrystalResources();
     let crystalPvP = null;
     
@@ -2342,51 +2547,71 @@ class CombatAI {
       crystalPvP = this.getCrystalPvP();
       console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
       
-      // Evaluate combat situation and execute strategy
       const strategy = await crystalPvP.evaluateCombatSituation(attacker);
       console.log(`[COMBAT] Strategy: ${strategy}`);
       
-      // Execute initial strategy
       await crystalPvP.executeStrategy(strategy, attacker);
     } else {
-      // Fall back to traditional sword PvP
       console.log('[COMBAT] ⚔️ Sword PvP mode (no crystal resources)');
       if (this.bot.pvp) {
         this.bot.pvp.attack(attacker);
       }
     }
     
-    // Monitor combat
-    const combatCheck = setInterval(async () => {
+    this.combatCheck = setInterval(async () => {
+      if (!this.inCombat) {
+        if (this.combatCheck) {
+          clearInterval(this.combatCheck);
+          this.combatCheck = null;
+        }
+        return;
+      }
+      
       if (!attacker || attacker.isValid === false) {
-        clearInterval(combatCheck);
+        if (this.combatCheck) {
+          clearInterval(this.combatCheck);
+          this.combatCheck = null;
+        }
         this.inCombat = false;
         console.log('[COMBAT] Target eliminated or escaped');
         
-        // Log crystal PvP performance
+        if (this.combatLogger) {
+          this.combatLogger.stopMonitoring('target_lost');
+        }
+        
         if (crystalPvP) {
           crystalPvP.logPerformance();
         }
         
-        // Loot drops
         await sleep(1000);
         await this.collectNearbyLoot();
         return;
       }
       
-      // Crystal PvP combat loop
+      if (this.combatLogger) {
+        const emergencyTriggered = await this.combatLogger.evaluateFightState({
+          attacker,
+          useCrystalPvP,
+          hasCrystalResources: this.hasCrystalResources()
+        });
+        if (emergencyTriggered) {
+          if (this.combatCheck) {
+            clearInterval(this.combatCheck);
+            this.combatCheck = null;
+          }
+          return;
+        }
+      }
+      
       if (useCrystalPvP && crystalPvP) {
-        // Continuous totem management
         await crystalPvP.autoTotemManagement();
         
-        // Adaptive strategy based on health
         if (this.bot.health < config.combat.retreatHealth) {
           await crystalPvP.tacticalRetreat(attacker);
-        } else if (Math.random() < 0.3) { // 30% chance to place crystal each tick
+        } else if (Math.random() < 0.3) {
           await crystalPvP.executeCrystalCombo(attacker);
         }
       } else {
-        // Traditional health management
         if (this.bot.health < config.combat.retreatHealth) {
           const totem = this.bot.inventory.items().find(i => i.name === 'totem_of_undying');
           if (totem) {
@@ -2403,6 +2628,28 @@ class CombatAI {
     }, 500);
   }
   
+  abortCombat(reason = 'aborted') {
+    if (this.combatCheck) {
+      clearInterval(this.combatCheck);
+      this.combatCheck = null;
+    }
+    
+    if (this.bot.pvp && this.bot.pvp.target) {
+      this.bot.pvp.stop();
+    }
+    
+    if (this.combatLogger) {
+      this.combatLogger.stopMonitoring(reason);
+    }
+    
+    if (this.inCombat) {
+      console.log(`[COMBAT] Combat aborted: ${reason}`);
+    }
+    
+    this.inCombat = false;
+    this.currentTarget = null;
+  }
+  
   async collectNearbyLoot() {
     console.log('[LOOT] Collecting dropped items...');
     
@@ -2416,7 +2663,6 @@ class CombatAI {
         this.bot.pathfinder.setGoal(new goals.GoalNear(item.position.x, item.position.y, item.position.z, 1));
         await sleep(1000);
         
-        // Auto-equip better items
         if (config.combat.smartEquip) {
           await this.evaluateAndEquipLoot();
         }
@@ -2425,14 +2671,12 @@ class CombatAI {
   }
   
   async evaluateAndEquipLoot() {
-    // Compare inventory items and equip best gear
     const weapons = this.bot.inventory.items().filter(i => i.name.includes('sword') || i.name.includes('axe'));
     weapons.sort((a, b) => (ITEM_VALUES[b.name] || 0) - (ITEM_VALUES[a.name] || 0));
     if (weapons[0]) {
       await this.bot.equip(weapons[0], 'hand');
     }
     
-    // Armor
     for (const slot of ['head', 'torso', 'legs', 'feet']) {
       const armors = this.bot.inventory.items().filter(i => i.name.includes(this.getArmorType(slot)));
       armors.sort((a, b) => (ITEM_VALUES[b.name] || 0) - (ITEM_VALUES[a.name] || 0));
@@ -2447,7 +2691,6 @@ class CombatAI {
     return map[slot];
   }
   
-  // === CRYSTAL PVP INTEGRATION ===
   getCrystalPvP() {
     if (!this.crystalPvP) {
       this.crystalPvP = new CrystalPvP(this.bot, this);
@@ -2459,6 +2702,411 @@ class CombatAI {
     const crystals = this.bot.inventory.items().find(i => i.name === 'end_crystal');
     const obsidian = this.bot.inventory.items().find(i => i.name === 'obsidian');
     return !!(crystals && obsidian);
+  }
+}
+
+// === COMBAT LOGGER ===
+class CombatLogger {
+  constructor(bot, combatAI) {
+    this.bot = bot;
+    this.combatAI = combatAI;
+    this.isMonitoring = false;
+    this.pendingEmergency = false;
+    this.attackers = new Map();
+    this.lastTriggerAt = (config.combat.emergency && config.combat.emergency.lastTrigger) || 0;
+    this.logFilePath = './logs/combat_logs.json';
+    this.lastRiskAssessment = null;
+
+    if (!fs.existsSync(this.logFilePath)) {
+      try {
+        fs.writeFileSync(this.logFilePath, '[]');
+      } catch (err) {
+        console.log(`[COMBAT LOGGER] Failed to initialize log file: ${err.message}`);
+      }
+    }
+  }
+
+  get loggerConfig() {
+    return (config.combat && config.combat.logger) || {};
+  }
+
+  startMonitoring(attacker) {
+    if (RiskAssessmentHelper.isLifestealMode()) return;
+    if (!this.loggerConfig.enabled) return;
+
+    this.isMonitoring = true;
+    this.pendingEmergency = false;
+    this.lastRiskAssessment = null;
+    this.attackers.clear();
+
+    if (attacker) {
+      this.noteAttacker(attacker);
+    }
+  }
+
+  stopMonitoring(reason = 'ended') {
+    if (!this.isMonitoring) return;
+    this.isMonitoring = false;
+
+    if (reason === 'new engagement') return;
+    this.attackers.clear();
+  }
+
+  noteAttacker(entity) {
+    if (!entity || !entity.username || !this.bot || !this.bot.entity || !this.bot.entity.position) return;
+    if (RiskAssessmentHelper.isTrustedPlayer(entity.username)) return;
+    if (entity.username === this.bot.username) return;
+
+    let distance = null;
+    if (entity.position && this.bot.entity && this.bot.entity.position) {
+      distance = entity.position.distanceTo(this.bot.entity.position);
+    }
+
+    this.attackers.set(entity.username, {
+      username: entity.username,
+      type: entity.type || 'player',
+      distance: distance !== null ? Number(distance.toFixed(2)) : null,
+      lastSeen: Date.now()
+    });
+  }
+
+  scanNearbyAttackers(radius) {
+    if (!this.bot || !this.bot.entity || !this.bot.entity.position) return;
+    const range = radius || this.loggerConfig.sweepRadius || 16;
+
+    Object.values(this.bot.entities || {}).forEach(entity => {
+      if (!entity || !entity.username || entity.username === this.bot.username) return;
+      if (RiskAssessmentHelper.isTrustedPlayer(entity.username)) return;
+      if (!entity.position) return;
+      const distance = entity.position.distanceTo(this.bot.entity.position);
+      if (distance <= range) {
+        this.attackers.set(entity.username, {
+          username: entity.username,
+          type: entity.type || 'player',
+          distance: Number(distance.toFixed(2)),
+          lastSeen: Date.now()
+        });
+      }
+    });
+  }
+
+  pruneAttackers(timeoutMs) {
+    const timeout = timeoutMs || 8000;
+    const now = Date.now();
+    this.attackers.forEach((info, username) => {
+      if (!info || now - info.lastSeen > timeout) {
+        this.attackers.delete(username);
+      }
+    });
+  }
+
+  getAttackers() {
+    return Array.from(this.attackers.values());
+  }
+
+  async evaluateFightState(context = {}) {
+    const loggerConfig = this.loggerConfig;
+    if (!loggerConfig.enabled) return false;
+    if (!this.isMonitoring) return false;
+    if (this.pendingEmergency) return false;
+    if (RiskAssessmentHelper.isLifestealMode()) return false;
+
+    this.scanNearbyAttackers(loggerConfig.sweepRadius || 16);
+    this.pruneAttackers();
+
+    const risk = RiskAssessmentHelper.evaluateCombatRisk(this.bot, {
+      attackers: this.getAttackers(),
+      hasCrystalResources: typeof context.hasCrystalResources === 'boolean'
+        ? context.hasCrystalResources
+        : this.combatAI.hasCrystalResources()
+    });
+
+    this.lastRiskAssessment = risk;
+
+    if (!this.shouldTriggerEmergency(risk)) {
+      return false;
+    }
+
+    await this.triggerEmergencyLog(risk);
+    return true;
+  }
+
+  shouldTriggerEmergency(risk) {
+    const loggerConfig = this.loggerConfig;
+    if (!loggerConfig.enabled) return false;
+    if (!risk || !risk.attackers) return false;
+
+    const cooldown = loggerConfig.cooldownMs || 20000;
+    if (Date.now() - this.lastTriggerAt < cooldown) {
+      return false;
+    }
+
+    if (RiskAssessmentHelper.isLifestealMode()) return false;
+
+    if (risk.shouldLog) return true;
+
+    if (risk.attackers.length >= (loggerConfig.multipleAttackers || 2) && !risk.hasTotem) {
+      return true;
+    }
+
+    return false;
+  }
+
+  serializeAttackers(attackers) {
+    return (attackers || []).map(attacker => ({
+      username: attacker && attacker.username ? attacker.username : 'unknown',
+      type: attacker && attacker.type ? attacker.type : 'player',
+      distance: attacker && typeof attacker.distance === 'number' ? Number(attacker.distance.toFixed(2)) : null,
+      lastSeen: attacker && attacker.lastSeen ? attacker.lastSeen : Date.now()
+    }));
+  }
+
+  async triggerEmergencyLog(risk) {
+    this.pendingEmergency = true;
+    this.lastTriggerAt = Date.now();
+
+    const position = this.bot && this.bot.entity && this.bot.entity.position ? {
+      x: Math.round(this.bot.entity.position.x),
+      y: Math.round(this.bot.entity.position.y),
+      z: Math.round(this.bot.entity.position.z)
+    } : null;
+
+    const escapeGoal = this.generateEscapeGoal();
+    const attackers = this.serializeAttackers(risk.attackers);
+
+    const entry = {
+      timestamp: risk.timestamp,
+      bot: this.bot.username,
+      server: config.server,
+      mode: config.mode,
+      position,
+      threatLevel: risk.threatLevel,
+      riskScore: risk.score,
+      triggers: risk.triggers,
+      reason: Array.isArray(risk.triggers) && risk.triggers.length > 0 ? risk.triggers.join(', ') : 'unspecified',
+      attackers,
+      health: risk.health,
+      food: risk.food,
+      hasTotem: risk.hasTotem,
+      totemCount: risk.totemCount,
+      crystals: risk.crystals,
+      obsidian: risk.obsidian,
+      escapeGoal
+    };
+
+    console.log(`[COMBAT LOGGER] Emergency disconnect triggered (threat: ${entry.threatLevel}, reason: ${entry.reason})`);
+
+    this.persistLog(entry);
+
+    if (!config.analytics.combat.combatLogs) {
+      config.analytics.combat.combatLogs = 0;
+    }
+    config.analytics.combat.combatLogs += 1;
+    config.analytics.combat.lastCombatLog = entry;
+
+    config.combat.emergency.pendingLog = {
+      ...entry,
+      resolved: false
+    };
+    config.combat.emergency.lastTrigger = entry.timestamp;
+
+    if (!config.tasks.suspendedSnapshot && config.tasks.current) {
+      try {
+        config.tasks.suspendedSnapshot = JSON.parse(JSON.stringify(config.tasks.current));
+      } catch (err) {
+        config.tasks.suspendedSnapshot = config.tasks.current;
+      }
+    }
+    config.tasks.pausedForSafety = true;
+
+    this.sendDistressSignal(entry);
+
+    if (this.combatAI) {
+      this.combatAI.abortCombat('combat logger triggered');
+    }
+
+    await sleep(100);
+
+    try {
+      if (this.bot && typeof this.bot.quit === 'function') {
+        this.bot.quit('Emergency combat logger');
+      }
+    } catch (err) {
+      console.log(`[COMBAT LOGGER] Failed to disconnect cleanly: ${err.message}`);
+    }
+
+    this.attackers.clear();
+
+    return true;
+  }
+
+  persistLog(entry) {
+    let logs = [];
+    try {
+      if (fs.existsSync(this.logFilePath)) {
+        const raw = fs.readFileSync(this.logFilePath, 'utf8');
+        logs = JSON.parse(raw || '[]');
+      }
+    } catch (err) {
+      logs = [];
+    }
+
+    logs.push(entry);
+
+    if (logs.length > 200) {
+      logs = logs.slice(-200);
+    }
+
+    try {
+      fs.writeFileSync(this.logFilePath, JSON.stringify(logs, null, 2));
+    } catch (err) {
+      console.log(`[COMBAT LOGGER] Failed to persist log: ${err.message}`);
+    }
+  }
+
+  generateEscapeGoal() {
+    if (!this.bot || !this.bot.entity || !this.bot.entity.position) return null;
+    const loggerConfig = this.loggerConfig;
+    const distance = loggerConfig.escapeDistance || 120;
+    const angle = Math.random() * Math.PI * 2;
+    const base = this.bot.entity.position;
+    return {
+      x: Math.round(base.x + Math.cos(angle) * distance),
+      y: clamp(Math.round(base.y + (Math.random() * 6 - 3)), 5, 250),
+      z: Math.round(base.z + Math.sin(angle) * distance)
+    };
+  }
+
+  sendDistressSignal(entry) {
+    if (!entry) return;
+    const payload = {
+      type: 'DISTRESS_SIGNAL',
+      botId: this.bot.username,
+      position: entry.position,
+      threatLevel: entry.threatLevel,
+      attackers: entry.attackers,
+      triggers: entry.triggers,
+      timestamp: entry.timestamp,
+      riskScore: entry.riskScore
+    };
+
+    try {
+      if (this.bot.swarmWs && this.bot.swarmWs.readyState === WebSocket.OPEN) {
+        this.bot.swarmWs.send(JSON.stringify(payload));
+      } else if (this.bot.swarmCoordinator && typeof this.bot.swarmCoordinator.broadcast === 'function') {
+        this.bot.swarmCoordinator.broadcast({
+          type: 'DISTRESS_CALL',
+          botId: this.bot.username,
+          position: entry.position,
+          threatLevel: entry.threatLevel,
+          attackers: entry.attackers,
+          triggers: entry.triggers,
+          timestamp: entry.timestamp,
+          riskScore: entry.riskScore,
+          forwarded: true
+        }, this.bot.username);
+      }
+    } catch (err) {
+      console.log(`[COMBAT LOGGER] Failed to send distress signal: ${err.message}`);
+    }
+  }
+
+  detectNearbyThreats(radius) {
+    return RiskAssessmentHelper.getNearbyHostiles(this.bot, radius || (this.loggerConfig.sweepRadius || 16));
+  }
+
+  async performSafetySweep(pendingLog) {
+    const loggerConfig = this.loggerConfig;
+    const radius = loggerConfig.sweepRadius || 16;
+    const result = { safe: false, threats: [], attempts: 0 };
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await sleep(600);
+      const threats = this.detectNearbyThreats(radius);
+      result.attempts = attempt + 1;
+      result.threats = threats;
+
+      if (threats.length === 0) {
+        result.safe = true;
+        break;
+      }
+
+      if (loggerConfig.distressOnReconnect !== false) {
+        this.sendDistressSignal({
+          ...pendingLog,
+          position: pendingLog.position,
+          threatLevel: pendingLog.threatLevel || 'high',
+          attackers: this.serializeAttackers(threats),
+          triggers: (pendingLog.triggers || []).concat(['reconnect_threat']),
+          timestamp: Date.now(),
+          riskScore: pendingLog.riskScore || 0
+        });
+      }
+    }
+
+    if (result.safe) {
+      console.log('[COMBAT LOGGER] Safety sweep clear, area is safe.');
+    } else if (result.threats.length > 0) {
+      console.log(`[COMBAT LOGGER] Threats remain after safety sweep: ${result.threats.map(t => t.username).join(', ')}`);
+    }
+
+    return result;
+  }
+
+  async onSpawn() {
+    const pending = config.combat.emergency && config.combat.emergency.pendingLog;
+    if (!pending || pending.resolved) return;
+
+    console.log('[COMBAT LOGGER] Reconnected after emergency disconnect. Running safety sweep...');
+    const sweep = await this.performSafetySweep(pending);
+
+    let escapeTarget = pending.escapeGoal;
+    if (sweep.safe) {
+      const regenerated = this.generateEscapeGoal();
+      if (regenerated) {
+        escapeTarget = regenerated;
+      }
+    }
+
+    if (escapeTarget && this.bot && this.bot.pathfinder && sweep.safe) {
+      const goal = new goals.GoalNear(
+        escapeTarget.x,
+        escapeTarget.y,
+        escapeTarget.z,
+        6
+      );
+      this.bot.pathfinder.setGoal(goal);
+      console.log(`[COMBAT LOGGER] Navigating to escape vector at ${escapeTarget.x}, ${escapeTarget.y}, ${escapeTarget.z}`);
+    }
+
+    config.tasks.pausedForSafety = !sweep.safe;
+
+    if (sweep.safe) {
+      this.handleResumeTasks();
+    }
+
+    config.combat.emergency.pendingLog = {
+      ...pending,
+      escapeGoal: escapeTarget,
+      resolved: sweep.safe,
+      lastSweep: {
+        attempts: sweep.attempts,
+        threats: this.serializeAttackers(sweep.threats),
+        finishedAt: Date.now()
+      }
+    };
+
+    this.pendingEmergency = false;
+    this.isMonitoring = false;
+  }
+
+  handleResumeTasks() {
+    if (config.tasks.suspendedSnapshot) {
+      config.tasks.current = config.tasks.suspendedSnapshot;
+      config.tasks.suspendedSnapshot = null;
+    }
+    config.tasks.pausedForSafety = false;
+    console.log('[COMBAT LOGGER] Resuming tasks after safe reconnect.');
   }
 }
 
@@ -8047,7 +8695,19 @@ http.createServer((req, res) => {
             ? (crystalMetrics.damageDealt / crystalMetrics.damageTaken).toFixed(2)
             : 'N/A',
           avgReactionTime: crystalMetrics.avgReactionTime.toFixed(0) + 'ms'
-        } : null
+        } : null,
+        emergency: {
+          active: !!(config.combat.emergency.pendingLog && config.combat.emergency.pendingLog.resolved === false),
+          lastTrigger: config.combat.emergency.lastTrigger,
+          pausedForSafety: config.tasks.pausedForSafety,
+          pending: config.combat.emergency.pendingLog ? {
+            bot: config.combat.emergency.pendingLog.bot,
+            threatLevel: config.combat.emergency.pendingLog.threatLevel,
+            timestamp: config.combat.emergency.pendingLog.timestamp,
+            position: config.combat.emergency.pendingLog.position,
+            escapeGoal: config.combat.emergency.pendingLog.escapeGoal
+          } : null
+        }
       },
       dupe: {
         totalAttempts: config.analytics.dupe.totalAttempts,
@@ -8079,10 +8739,13 @@ http.createServer((req, res) => {
         activeOperations: 0,
         homeBase: config.homeBase.coords ? config.homeBase.coords.toString() : 'Not set',
         threats: config.swarm.threats.slice(-10).map(t => ({
-          attacker: t.attacker || t.intruder,
-          victim: t.victim || t.zone,
+          type: t.type || 'alert',
+          attacker: t.attacker || (Array.isArray(t.attackers) ? t.attackers.map(a => a.username).join(', ') : t.intruder || null),
+          victim: t.victim || t.zone || t.botId || null,
           timestamp: t.timestamp,
-          location: t.location
+          location: t.location || t.position || null,
+          threatLevel: t.threatLevel || null,
+          riskScore: t.riskScore || null
         })),
         guardZones: config.swarm.guardZones.map(z => ({
           name: z.name,
@@ -9163,6 +9826,7 @@ async function launchBot(username, role = 'fighter') {
   globalBot = bot;
   
   const combatAI = new CombatAI(bot);
+  const combatLogger = new CombatLogger(bot, combatAI);
   const conversationAI = new ConversationAI(bot);
   const schematicLoader = new SchematicLoader(bot);
   let stashScanner = null;
@@ -9174,10 +9838,10 @@ async function launchBot(username, role = 'fighter') {
   
   // Store component references on bot for access
   bot.combatAI = combatAI;
+  bot.combatLogger = combatLogger;
   bot.schematicBuilder = schematicBuilder;
-  // Store combatAI and schematicLoader references on bot for stats/access
-  bot.combatAI = combatAI;
   bot.schematicLoader = schematicLoader;
+  combatAI.setCombatLogger(combatLogger);
   
   bot.once('spawn', async () => {
     console.log(`[SPAWN] ${username} joined ${config.server}`);
@@ -9189,6 +9853,8 @@ async function launchBot(username, role = 'fighter') {
     }
     
     bot.pathfinder.setMovements(new Movements(bot));
+
+    await combatLogger.onSpawn();
     
     // Initialize ender chest manager
     enderManager = new EnderChestManager(bot);
@@ -9202,6 +9868,8 @@ async function launchBot(username, role = 'fighter') {
       globalSwarmCoordinator = new SwarmCoordinator(9090);
       console.log('[SWARM] Coordinator initialized');
     }
+    
+    bot.swarmCoordinator = globalSwarmCoordinator;
     
     // Start periodic memory cleanup
     setInterval(cleanupOldData, 300000); // Every 5 minutes
@@ -9263,6 +9931,23 @@ async function launchBot(username, role = 'fighter') {
                   message.position.z,
                   10
                 ));
+              }
+              break;
+              
+            case 'DISTRESS_CALL':
+              console.log(`[SWARM] 🚨 Distress call from ${message.botId}!`);
+              if (username !== message.botId && message.position) {
+                const distressVec = new Vec3(message.position.x, message.position.y, message.position.z);
+                const distance = bot.entity.position.distanceTo(distressVec);
+                if (distance < 200) {
+                  bot.chat(`Heading to assist ${message.botId}!`);
+                  bot.pathfinder.setGoal(new goals.GoalNear(
+                    distressVec.x,
+                    distressVec.y,
+                    distressVec.z,
+                    12
+                  ));
+                }
               }
               break;
               
@@ -9401,8 +10086,11 @@ async function launchBot(username, role = 'fighter') {
           e.position.distanceTo(bot.entity.position) < 5
         );
         
+        if (attacker) {
+          combatLogger.noteAttacker(attacker);
+        }
+        
         if (attacker && !combatAI.inCombat) {
-          // Alert swarm
           if (wsClient && wsClient.readyState === WebSocket.OPEN) {
             wsClient.send(JSON.stringify({
               type: 'ATTACK_ALERT',
@@ -9432,6 +10120,7 @@ async function launchBot(username, role = 'fighter') {
     bot.on('death', () => {
       console.log('[DEATH] Respawning...');
       config.analytics.combat.deaths++;
+      combatLogger.stopMonitoring('death');
     });
     
     // Kill handler
@@ -9439,6 +10128,7 @@ async function launchBot(username, role = 'fighter') {
       if (entity.type === 'player' && combatAI.currentTarget === entity) {
         console.log(`[KILL] Eliminated ${entity.username}!`);
         config.analytics.combat.kills++;
+        combatLogger.stopMonitoring('target_down');
       }
     });
     
@@ -9458,6 +10148,9 @@ async function launchBot(username, role = 'fighter') {
         bot.combatAI.crystalPvP = null;
         bot.combatAI = null;
       }
+      
+      combatLogger.stopMonitoring('disconnect');
+      bot.combatLogger = null;
       
       // Close WebSocket connection
       if (wsClient && wsClient.readyState === WebSocket.OPEN) {
