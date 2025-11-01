@@ -129,6 +129,42 @@ const config = {
     guardZones: [],
     activeDefense: {}
   },
+  
+  // Movement Mode Manager
+  movement: {
+    currentMode: 'normal',
+    modes: {
+      normal: {
+        maxSpeedScale: 1.0,
+        allowLiquid: false,
+        canOpenDoors: true,
+        allowParkour: true,
+        allowSprinting: true
+      },
+      exploit: {
+        maxSpeedScale: 2.5,
+        allowLiquid: true, // e.g., for boatfly
+        canOpenDoors: false,
+        allowParkour: false,
+        allowSprinting: true
+      },
+      highway: {
+        maxSpeedScale: 1.5,
+        allowLiquid: false,
+        canOpenDoors: false,
+        allowParkour: false,
+        allowSprinting: true
+      },
+      boatfly: {
+        maxSpeedScale: 5.0,
+        allowLiquid: true,
+        canOpenDoors: false,
+        allowParkour: false,
+        allowSprinting: false
+      }
+    }
+  },
+
   analytics: {
     combat: { kills: 0, deaths: 0, damageDealt: 0, damageTaken: 0 },
     dupe: { 
@@ -396,6 +432,64 @@ const ENDER_CHEST_PRIORITY_ITEMS = [
   'diamond', 'diamond_block', 'emerald', 'emerald_block',
   'shulker_box', 'black_shulker_box', 'white_shulker_box'
 ];
+
+// === MOVEMENT MODE MANAGER ===
+class MovementModeManager {
+  constructor(bot) {
+    this.bot = bot;
+    this.mode = config.movement.currentMode;
+    this.preMovementHooks = [];
+    this.postMovementHooks = [];
+  }
+
+  get currentMode() {
+    return this.mode;
+  }
+
+  setMode(newMode) {
+    if (config.movement.modes[newMode]) {
+      this.mode = newMode;
+      config.movement.currentMode = newMode;
+      this.updateMovements();
+      console.log(`[MOVEMENT] Mode switched to: ${newMode}`);
+      this.bot.emit('movementModeChanged', newMode);
+      return true;
+    }
+    return false;
+  }
+
+  requestMode(goal, requestedMode) {
+    const currentSettings = config.movement.modes[this.mode];
+    this.preMovementHooks.forEach(hook => hook(goal, currentSettings));
+
+    this.bot.movementModeManager.requestMode(goal);
+
+    this.postMovementHooks.forEach(hook => hook(goal, currentSettings));
+  }
+  
+  updateMovements() {
+    const modeSettings = config.movement.modes[this.mode];
+    if (!modeSettings || !this.bot.pathfinder) return;
+
+    const movements = new Movements(this.bot, require('minecraft-data')(this.bot.version));
+    movements.allowSprinting = modeSettings.allowSprinting;
+    movements.canOpenDoors = modeSettings.canOpenDoors;
+    movements.allowParkour = modeSettings.allowParkour;
+    
+    if (this.mode === 'boatfly' || this.mode === 'exploit') {
+        movements.allow112Swimming = true;
+        movements.canDig = false; 
+    }
+    
+    if (modeSettings.allowLiquid) {
+        movements.liquidCost = 1;
+    } else {
+        movements.liquidCost = 20;
+    }
+
+    this.bot.pathfinder.setMovements(movements);
+  }
+}
 
 // === SWARM COORDINATOR ===
 class SwarmCoordinator {
@@ -823,7 +917,7 @@ class LootOperation {
       assignment.target.z
     );
     
-    this.bot.pathfinder.setGoal(new goals.GoalNear(guardPos.x, guardPos.y, guardPos.z, 5));
+    this.bot.movementModeManager.requestMode(new goals.GoalNear(guardPos.x, guardPos.y, guardPos.z, 5));
     
     await sleep(3000);
     
@@ -857,7 +951,7 @@ class LootOperation {
   async executeLooterRole(assignment) {
     console.log(`[LOOTER] Moving to loot stash at ${assignment.target}`);
     
-    this.bot.pathfinder.setGoal(new goals.GoalNear(
+    this.bot.movementModeManager.requestMode(new goals.GoalNear(
       assignment.target.x,
       assignment.target.y,
       assignment.target.z,
@@ -883,7 +977,7 @@ class LootOperation {
       const enderManager = new EnderChestManager(this.bot);
       await enderManager.depositValuables();
       
-      this.bot.pathfinder.setGoal(new goals.GoalNear(
+      this.bot.movementModeManager.requestMode(new goals.GoalNear(
         config.homeBase.coords.x,
         config.homeBase.coords.y,
         config.homeBase.coords.z,
@@ -961,14 +1055,14 @@ class StashScanner {
         await sleep(500);
       }
       
-      this.bot.pathfinder.setGoal(new goals.GoalNear(escapePos.x, escapePos.y, escapePos.z, 10));
+      this.bot.movementModeManager.requestMode(new goals.GoalNear(escapePos.x, escapePos.y, escapePos.z, 10));
       await sleep(5000);
     } else {
       // Ground escape
       const escapePos = this.bot.entity.position.offset(
         Math.random() * 100 - 50, 0, Math.random() * 100 - 50
       );
-      this.bot.pathfinder.setGoal(new goals.GoalNear(escapePos.x, escapePos.y, escapePos.z, 5));
+      this.bot.movementModeManager.requestMode(new goals.GoalNear(escapePos.x, escapePos.y, escapePos.z, 5));
       await sleep(3000);
     }
   }
@@ -1069,7 +1163,7 @@ class StashScanner {
       
       if (config.homeBase.coords) {
         console.log('[STASH] 🏠 Heading home with loot');
-        this.bot.pathfinder.setGoal(new goals.GoalNear(
+        this.bot.movementModeManager.requestMode(new goals.GoalNear(
           config.homeBase.coords.x,
           config.homeBase.coords.y,
           config.homeBase.coords.z,
@@ -1167,7 +1261,7 @@ class StashScanner {
   }
   
   async navigateToStash(pos) {
-    this.bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, 3));
+    this.bot.movementModeManager.requestMode(new goals.GoalNear(pos.x, pos.y, pos.z, 3));
     await sleep(2000);
   }
   
@@ -1840,7 +1934,7 @@ class GuardMode {
       const targetPoint = this.perimeter[this.currentSector];
       
       try {
-        this.bot.pathfinder.setGoal(new goals.GoalNear(targetPoint.x, targetPoint.y, targetPoint.z, 2));
+        this.bot.movementModeManager.requestMode(new goals.GoalNear(targetPoint.x, targetPoint.y, targetPoint.z, 2));
         await sleep(3000);
         
         // Scan for threats at this position
@@ -1984,7 +2078,7 @@ class CoordinatedAttack {
       );
       
       // Navigate to position
-      bot.pathfinder.setGoal(new goals.GoalNear(targetPos.x, targetPos.y, targetPos.z, 1));
+      bot.movementModeManager.requestMode(new goals.GoalNear(targetPos.x, targetPos.y, targetPos.z, 1));
       
       // Delay attack slightly to stagger
       setTimeout(() => {
@@ -2114,7 +2208,7 @@ class DefenseCoordinator {
     console.log(`[DEFENSE] ${bot.username} responding (ETA: ${eta}s)`);
     
     // Navigate to threat location
-    bot.pathfinder.setGoal(new goals.GoalNear(alert.location.x, alert.location.y, alert.location.z, 5));
+    bot.movementModeManager.requestMode(new goals.GoalNear(alert.location.x, alert.location.y, alert.location.z, 5));
     
     // Set up combat when arriving
     setTimeout(async () => {
@@ -2158,7 +2252,7 @@ class DefenseCoordinator {
     
     // All bots retreat to regroup point
     for (const bot of bots) {
-      bot.pathfinder.setGoal(new goals.GoalNear(regroupPoint.x, regroupPoint.y, regroupPoint.z, 3));
+      bot.movementModeManager.requestMode(new goals.GoalNear(regroupPoint.x, regroupPoint.y, regroupPoint.z, 3));
       
       // Stop attacking
       if (bot.pvp && bot.pvp.target) {
@@ -2413,7 +2507,7 @@ class CombatAI {
     
     for (const item of items) {
       try {
-        this.bot.pathfinder.setGoal(new goals.GoalNear(item.position.x, item.position.y, item.position.z, 1));
+        this.bot.movementModeManager.requestMode(new goals.GoalNear(item.position.x, item.position.y, item.position.z, 1));
         await sleep(1000);
         
         // Auto-equip better items
@@ -2909,7 +3003,7 @@ class CrystalPvP {
       -enemy.position.z + this.bot.entity.position.z
     ).normalize().scaled(10).plus(this.bot.entity.position);
     
-    this.bot.pathfinder.setGoal(
+    this.bot.movementModeManager.requestMode(
       new goals.GoalNear(escapePos.x, escapePos.y, escapePos.z, 3)
     );
     
@@ -3275,7 +3369,7 @@ class ConversationAI {
     if (lower.includes('go home') || lower.includes('head home')) {
       if (config.homeBase.coords) {
         this.bot.chat(`🏠 Heading home to ${config.homeBase.coords.toString()}`);
-        this.bot.pathfinder.setGoal(new goals.GoalNear(
+        this.bot.movementModeManager.requestMode(new goals.GoalNear(
           config.homeBase.coords.x,
           config.homeBase.coords.y,
           config.homeBase.coords.z,
@@ -3333,13 +3427,13 @@ class ConversationAI {
       const coords = this.extractCoords(message);
       if (coords) {
         this.bot.chat(`On my way to ${coords.x}, ${coords.y}, ${coords.z}!`);
-        this.bot.pathfinder.setGoal(new goals.GoalNear(coords.x, coords.y, coords.z, 2));
+        this.bot.movementModeManager.requestMode(new goals.GoalNear(coords.x, coords.y, coords.z, 2));
       } else {
         // Come to player
         const player = this.bot.players[username];
         if (player) {
           this.bot.chat(`Coming to you, ${username}!`);
-          this.bot.pathfinder.setGoal(new goals.GoalFollow(player.entity, 2));
+          this.bot.movementModeManager.requestMode(new goals.GoalFollow(player.entity, 2));
         }
       }
       return;
@@ -4020,7 +4114,7 @@ class ConversationAI {
     const targetY = -54;
     const currentPos = this.bot.entity.position;
     
-    this.bot.pathfinder.setGoal(new goals.GoalBlock(currentPos.x, targetY, currentPos.z));
+    this.bot.movementModeManager.requestMode(new goals.GoalBlock(currentPos.x, targetY, currentPos.z));
     await sleep(10000); // Wait for descent
     
     await this.mineOre('diamond_ore', amount);
@@ -4064,7 +4158,7 @@ class ConversationAI {
           Math.random() * 32 - 16
         );
         const newPos = this.bot.entity.position.plus(randomOffset);
-        this.bot.pathfinder.setGoal(new goals.GoalNear(newPos.x, newPos.y, newPos.z, 1));
+        this.bot.movementModeManager.requestMode(new goals.GoalNear(newPos.x, newPos.y, newPos.z, 1));
         await sleep(5000);
       }
       
@@ -4376,7 +4470,7 @@ class PlayerTracker {
         this.targetEntity.position.z,
         targetDist
       );
-      this.bot.pathfinder.setGoal(goal);
+      this.bot.movementModeManager.requestMode(goal);
     } else if (distance < config.tracking.minShadowDistance) {
       // Too close, back off to avoid detection
       const awayVector = this.bot.entity.position.minus(this.targetEntity.position).normalize();
@@ -4388,11 +4482,11 @@ class PlayerTracker {
         retreatPos.z,
         2
       );
-      this.bot.pathfinder.setGoal(goal);
+      this.bot.movementModeManager.requestMode(goal);
     } else {
       // Good distance, maintain with offset goal
       const goal = new goals.GoalFollow(this.targetEntity, targetDist);
-      this.bot.pathfinder.setGoal(goal);
+      this.bot.movementModeManager.requestMode(goal);
     }
   }
   
@@ -4467,14 +4561,14 @@ class PlayerTracker {
     if (coverBlock) {
       // Move behind cover
       const coverPos = coverBlock.position;
-      this.bot.pathfinder.setGoal(new goals.GoalNear(coverPos.x, coverPos.y, coverPos.z, 1));
+      this.bot.movementModeManager.requestMode(new goals.GoalNear(coverPos.x, coverPos.y, coverPos.z, 1));
       await sleep(2000);
     } else {
       // No cover, increase distance
       const awayVector = this.bot.entity.position.minus(this.targetEntity.position).normalize();
       const retreatPos = this.bot.entity.position.plus(awayVector.scaled(10));
       
-      this.bot.pathfinder.setGoal(new goals.GoalNear(retreatPos.x, retreatPos.y, retreatPos.z, 2));
+      this.bot.movementModeManager.requestMode(new goals.GoalNear(retreatPos.x, retreatPos.y, retreatPos.z, 2));
     }
     
     // Log evasive action
@@ -4592,7 +4686,7 @@ class PlayerTracker {
     
     // Approach slowly
     const goal = new goals.GoalNear(base.x, base.y, base.z, 5);
-    this.bot.pathfinder.setGoal(goal);
+    this.bot.movementModeManager.requestMode(goal);
     
     await sleep(5000); // Wait for approach
     
@@ -4663,7 +4757,7 @@ class PlayerTracker {
       10
     );
     
-    this.bot.pathfinder.setGoal(goal);
+    this.bot.movementModeManager.requestMode(goal);
     await sleep(3000);
   }
   
@@ -5711,7 +5805,7 @@ class DupeTestingFramework {
           Math.random() * 10 - 5
         );
         const target = this.bot.entity.position.plus(randomOffset);
-        this.bot.pathfinder.setGoal(new goals.GoalNear(target.x, target.y, target.z, 1));
+        this.bot.movementModeManager.requestMode(new goals.GoalNear(target.x, target.y, target.z, 1));
         await sleep(2000);
       },
       async () => {
@@ -5947,7 +6041,7 @@ class LagExploiter {
         const startPos = this.bot.entity.position;
         for (let i = 0; i < 5; i++) {
           const offset = 100 * (i + 1);
-          this.bot.pathfinder.setGoal(
+          this.bot.movementModeManager.requestMode(
             new goals.GoalNear(startPos.x + offset, startPos.y, startPos.z, 1)
           );
           await sleep(500);
@@ -6135,7 +6229,7 @@ class ChunkBoundaryTester {
     
     // Navigate to boundary
     try {
-      this.bot.pathfinder.setGoal(
+      this.bot.movementModeManager.requestMode(
         new goals.GoalNear(boundary.x, this.bot.entity.position.y, boundary.z, 1)
       );
       await sleep(3000);
@@ -6167,7 +6261,7 @@ class ChunkBoundaryTester {
       
       // Move across boundary
       const currentPos = this.bot.entity.position;
-      this.bot.pathfinder.setGoal(
+      this.bot.movementModeManager.requestMode(
         new goals.GoalNear(currentPos.x + 2, currentPos.y, currentPos.z, 0.5)
       );
       await sleep(500);
@@ -9257,7 +9351,7 @@ async function launchBot(username, role = 'fighter') {
               console.log(`[SWARM] 🚨 ${message.botId} needs backup!`);
               if (bot.entity.position.distanceTo(message.position) < 200) {
                 bot.chat(`On my way to help ${message.botId}!`);
-                bot.pathfinder.setGoal(new goals.GoalNear(
+                bot.movementModeManager.requestMode(new goals.GoalNear(
                   message.position.x,
                   message.position.y,
                   message.position.z,
@@ -9278,7 +9372,7 @@ async function launchBot(username, role = 'fighter') {
                 const distance = bot.entity.position.distanceTo(new Vec3(message.location.x, message.location.y, message.location.z));
                 if (distance < 100) {
                   console.log(`[SWARM] Responding to threat! Distance: ${Math.floor(distance)} blocks`);
-                  bot.pathfinder.setGoal(new goals.GoalNear(
+                  bot.movementModeManager.requestMode(new goals.GoalNear(
                     message.location.x,
                     message.location.y,
                     message.location.z,
@@ -9292,7 +9386,7 @@ async function launchBot(username, role = 'fighter') {
               console.log(`[SWARM] 🚨 Intruder ${message.intruder} detected in ${message.zone}!`);
               // Guards respond to intruder alerts
               if (role === 'guard') {
-                bot.pathfinder.setGoal(new goals.GoalNear(
+                bot.movementModeManager.requestMode(new goals.GoalNear(
                   message.location.x,
                   message.location.y,
                   message.location.z,
@@ -9321,7 +9415,7 @@ async function launchBot(username, role = 'fighter') {
               
             case 'REGROUP':
               console.log(`[SWARM] 📍 Regrouping at ${message.location.x}, ${message.location.y}, ${message.location.z}`);
-              bot.pathfinder.setGoal(new goals.GoalNear(
+              bot.movementModeManager.requestMode(new goals.GoalNear(
                 message.location.x,
                 message.location.y,
                 message.location.z,
