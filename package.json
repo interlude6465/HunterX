@@ -1,0 +1,26 @@
+{
+  "name": "hunterx-minecraft-bot",
+  "version": "22.0.0",
+  "description": "Advanced Minecraft automation bot with PvP, dupe testing, stash hunting, and schematic building capabilities",
+  "main": "HunterX.js",
+  "scripts": {
+    "start": "node HunterX.js"
+  },
+  "keywords": [
+    "minecraft",
+    "bot",
+    "mineflayer",
+    "pvp",
+    "automation"
+  ],
+  "dependencies": {
+    "mineflayer": "^4.0.0",
+    "mineflayer-pvp": "^1.0.0",
+    "mineflayer-pathfinder": "^2.0.0",
+    "vec3": "^0.1.8",
+    "brain.js": "^2.0.0",
+    "ws": "^8.0.0",
+    "socks": "^2.7.0",
+    "prismarine-nbt": "^2.0.0"
+  }
+}
