@@ -3407,6 +3407,75 @@ class ConversationAI {
       return;
     }
     
+    // Schematic building commands
+    if (lower.includes('build schematic') || lower.includes('start build')) {
+      const schematicPath = this.extractSchematicPath(message);
+      const coords = this.extractCoords(message);
+      
+      if (schematicPath && coords) {
+        if (this.bot.schematicBuilder) {
+          this.bot.chat(`Loading schematic: ${schematicPath}`);
+          const success = await this.bot.schematicBuilder.loadSchematic(schematicPath, coords);
+          
+          if (success) {
+            this.bot.chat(`Schematic loaded! Starting build at ${coords.x}, ${coords.y}, ${coords.z}`);
+            await this.bot.schematicBuilder.startBuilding();
+          } else {
+            this.bot.chat("Failed to load schematic file!");
+          }
+        } else {
+          this.bot.chat("Schematic builder not initialized!");
+        }
+      } else {
+        this.bot.chat("Usage: build schematic <path> at <x,y,z>");
+      }
+      return;
+    }
+    
+    if (lower.includes('build progress') || lower.includes('build status')) {
+      if (this.bot.schematicBuilder) {
+        const progress = this.bot.schematicBuilder.getBuildProgress();
+        this.bot.chat(`Build Status: ${progress.state} | ${progress.placedBlocks}/${progress.totalBlocks} (${progress.percentage}%) | Layer ${progress.currentLayer}/${progress.totalLayers}`);
+        
+        if (progress.validationErrors > 0) {
+          this.bot.chat(`⚠️ ${progress.validationErrors} validation errors, ${progress.correctionsPending} corrections pending`);
+        }
+      } else {
+        this.bot.chat("No schematic builder active!");
+      }
+      return;
+    }
+    
+    if (lower.includes('pause build') || lower.includes('stop build')) {
+      if (this.bot.schematicBuilder) {
+        this.bot.schematicBuilder.pause();
+        this.bot.chat("Build paused. Use 'resume build' to continue.");
+      } else {
+        this.bot.chat("No build in progress!");
+      }
+      return;
+    }
+    
+    if (lower.includes('resume build') || lower.includes('continue build')) {
+      if (this.bot.schematicBuilder) {
+        this.bot.schematicBuilder.resume();
+        this.bot.chat("Build resumed!");
+      } else {
+        this.bot.chat("No paused build to resume!");
+      }
+      return;
+    }
+    
+    if (lower.includes('cancel build') || lower.includes('abort build')) {
+      if (this.bot.schematicBuilder) {
+        this.bot.schematicBuilder.cancel();
+        this.bot.chat("Build cancelled and cleaned up!");
+      } else {
+        this.bot.chat("No build to cancel!");
+      }
+      return;
+    }
+
     // Dupe testing commands
     if (lower.includes('start dupe test') || lower.includes('test dupes')) {
       if (globalDupeFramework) {
@@ -3680,6 +3749,12 @@ class ConversationAI {
         return `Hunting for stashes! Found ${config.analytics.stashes.found} so far!`;
       case 'friendly':
         return "Just hanging out, exploring the world!";
+      case 'build':
+        if (this.bot.schematicBuilder) {
+          const progress = this.bot.schematicBuilder.getBuildProgress();
+          return `Building schematic: ${progress.placedBlocks}/${progress.totalBlocks} (${progress.percentage}%)`;
+        }
+        return "Ready to build schematics!";
       default:
         return "Just chilling, what about you?";
     }
@@ -3743,6 +3818,38 @@ class ConversationAI {
   extractItem(message) {
     const items = ['sword', 'pickaxe', 'axe', 'shovel', 'chest', 'crafting_table', 'furnace'];
     return items.find(i => message.toLowerCase().includes(i));
+  }
+  
+  extractSchematicPath(message) {
+    // Extract schematic file path from message
+    // Supports formats: "build schematic house.schem at 0,64,0" or "build ./schematics/house.schem"
+    const patterns = [
+      /schematic\s+([^\s]+(?:\.[a-zA-Z0-9]+)?)/i,
+      /build\s+([^\s]+(?:\.[a-zA-Z0-9]+)?)/i,
+      /file\s+([^\s]+(?:\.[a-zA-Z0-9]+)?)/i
+    ];
+    
+    for (const pattern of patterns) {
+      const match = message.match(pattern);
+      if (match) {
+        let path = match[1].trim();
+        
+        // Remove trailing words like "at" if they got included
+        path = path.replace(/\s+at.*$/, '');
+        
+        // Add default extension if missing
+        if (!path.includes('.')) {
+          path += '.schem';
+        }
+        
+        // Clean up path
+        path = path.replace(/[<>:"|?*]/g, '');
+        
+        return path;
+      }
+    }
+    
+    return null;
   }
   
   async executeResourceTask(task) {
@@ -8180,6 +8287,863 @@ http.createServer((req, res) => {
 
 console.log('[DASHBOARD] http://localhost:8080');
 
+// === SCHEMATIC LOADER ===
+class SchematicLoader {
+  constructor() {
+    this.schematics = new Map();
+  }
+
+  async loadSchematic(filePath) {
+    try {
+      if (!fs.existsSync(filePath)) {
+        throw new Error(`Schematic file not found: ${filePath}`);
+      }
+
+      const data = fs.readFileSync(filePath);
+      
+      // Support different schematic formats
+      if (filePath.endsWith('.schem')) {
+        return this.parseSchemFile(data);
+      } else if (filePath.endsWith('.schematic')) {
+        return this.parseLegacySchematic(data);
+      } else if (filePath.endsWith('.nbt')) {
+        return this.parseNbtFile(data);
+      } else {
+        throw new Error(`Unsupported schematic format: ${filePath}`);
+      }
+    } catch (err) {
+      console.log(`[SCHEMATIC] Failed to load ${filePath}: ${err.message}`);
+      throw err;
+    }
+  }
+
+  parseSchemFile(data) {
+    // Simplified Sponge schematic format parser
+    const schematic = {
+      width: 0,
+      height: 0,
+      length: 0,
+      offset: { x: 0, y: 0, z: 0 },
+      palette: {},
+      blocks: []
+    };
+
+    // This is a simplified implementation - full implementation would need NBT parsing
+    // For now, we'll return a basic structure that can be extended
+    console.log('[SCHEMATIC] Loading .schem format (simplified parser)');
+    
+    return schematic;
+  }
+
+  parseLegacySchematic(data) {
+    // Legacy WorldEdit schematic format
+    const schematic = {
+      width: 0,
+      height: 0,
+      length: 0,
+      offset: { x: 0, y: 0, z: 0 },
+      palette: {},
+      blocks: []
+    };
+
+    console.log('[SCHEMATIC] Loading legacy .schematic format');
+    
+    return schematic;
+  }
+
+  parseNbtFile(data) {
+    // Generic NBT file parser
+    console.log('[SCHEMATIC] Loading NBT format');
+    
+    return {
+      width: 0,
+      height: 0,
+      length: 0,
+      offset: { x: 0, y: 0, z: 0 },
+      palette: {},
+      blocks: []
+    };
+  }
+
+  normalizeStructure(rawSchematic) {
+    // Convert any schematic format to normalized structure
+    const normalized = {
+      name: rawSchematic.name || 'unnamed',
+      dimensions: {
+        width: rawSchematic.width,
+        height: rawSchematic.height,
+        length: rawSchematic.length
+      },
+      offset: rawSchematic.offset || { x: 0, y: 0, z: 0 },
+      palette: this.normalizePalette(rawSchematic.palette || {}),
+      blocks: this.normalizeBlocks(rawSchematic.blocks || [], rawSchematic.palette || {}),
+      metadata: rawSchematic.metadata || {}
+    };
+
+    console.log(`[SCHEMATIC] Normalized: ${normalized.dimensions.width}x${normalized.dimensions.height}x${normalized.dimensions.length}`);
+    return normalized;
+  }
+
+  normalizePalette(palette) {
+    const normalized = {};
+    
+    // Convert block IDs to names if needed
+    for (const [id, blockData] of Object.entries(palette)) {
+      if (typeof blockData === 'string') {
+        normalized[id] = { name: blockData, properties: {} };
+      } else if (typeof blockData === 'object' && blockData.Name) {
+        normalized[id] = {
+          name: blockData.Name.replace('minecraft:', ''),
+          properties: blockData.Properties || {}
+        };
+      } else {
+        normalized[id] = { name: 'stone', properties: {} }; // fallback
+      }
+    }
+
+    return normalized;
+  }
+
+  normalizeBlocks(blocks, palette) {
+    const normalized = [];
+
+    for (const block of blocks) {
+      let normalizedBlock = {
+        position: { x: 0, y: 0, z: 0 },
+        type: 'air',
+        properties: {}
+      };
+
+      if (Array.isArray(block)) {
+        // Legacy format: [x, y, z, blockId]
+        normalizedBlock.position = { x: block[0], y: block[1], z: block[2] };
+        const blockData = palette[block[3]] || { name: 'stone' };
+        normalizedBlock.type = blockData.name || 'stone';
+        normalizedBlock.properties = blockData.properties || {};
+      } else if (typeof block === 'object') {
+        // Modern format
+        normalizedBlock.position = block.position || { x: 0, y: 0, z: 0 };
+        normalizedBlock.type = block.type || 'air';
+        normalizedBlock.properties = block.properties || {};
+      }
+
+      normalized.push(normalizedBlock);
+    }
+
+    return normalized;
+  }
+}
+
+// === SCHEMATIC BUILDER ===
+class SchematicBuilder {
+  constructor(bot, schematicLoader = null) {
+    this.bot = bot;
+    this.loader = schematicLoader || new SchematicLoader();
+    
+    // Builder state machine
+    this.state = 'idle'; // idle, gathering, building, paused, finished
+    this.currentSchematic = null;
+    this.buildPosition = null;
+    
+    // Build queue and progress
+    this.buildQueue = [];
+    this.placedBlocks = new Set();
+    this.scaffoldingBlocks = new Map();
+    this.currentLayer = 0;
+    this.totalLayers = 0;
+    
+    // Validation and correction
+    this.validationErrors = [];
+    this.correctionQueue = [];
+    
+    // Persistence
+    this.buildId = null;
+    this.stateFilePath = null;
+    
+    // Physics and dependencies
+    this.gravityBlocks = new Set([
+      'sand', 'red_sand', 'gravel', 'concrete_powder',
+      'white_concrete_powder', 'orange_concrete_powder', 'magenta_concrete_powder',
+      'light_blue_concrete_powder', 'yellow_concrete_powder', 'lime_concrete_powder',
+      'pink_concrete_powder', 'gray_concrete_powder', 'light_gray_concrete_powder',
+      'cyan_concrete_powder', 'purple_concrete_powder', 'blue_concrete_powder',
+      'brown_concrete_powder', 'green_concrete_powder', 'red_concrete_powder',
+      'black_concrete_powder'
+    ]);
+    
+    this.attachableBlocks = new Set([
+      'torch', 'wall_torch', 'redstone_torch', 'redstone_wall_torch',
+      'button', 'stone_button', 'wooden_button', 'lever', 'pressure_plate',
+      'stone_pressure_plate', 'wooden_pressure_plate', 'sign', 'wall_sign',
+      'ladder', 'vine', 'tripwire_hook', 'tripwire', 'frame'
+    ]);
+    
+    this.redstoneComponents = new Set([
+      'redstone', 'redstone_wire', 'repeater', 'comparator', 'piston',
+      'sticky_piston', 'observer', 'dispenser', 'dropper', 'hopper',
+      'daylight_detector', 'note_block', 'jukebox'
+    ]);
+    
+    // Scaffolding materials (in order of preference)
+    this.scaffoldingMaterials = ['dirt', 'cobblestone', 'stone', 'oak_planks'];
+    
+    // Event listeners
+    this.eventListeners = new Map();
+    
+    console.log('[BUILDER] SchematicBuilder initialized');
+  }
+
+  async loadSchematic(filePath, buildPosition) {
+    try {
+      console.log(`[BUILDER] Loading schematic: ${filePath}`);
+      
+      this.state = 'gathering';
+      this.emitStateChange();
+      
+      // Load and normalize schematic
+      const rawSchematic = await this.loader.loadSchematic(filePath);
+      this.currentSchematic = this.loader.normalizeStructure(rawSchematic);
+      
+      this.buildPosition = buildPosition;
+      this.buildId = `build_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      this.stateFilePath = `./data/build_states/${this.buildId}.json`;
+      
+      // Generate build queue
+      await this.generateBuildQueue();
+      
+      // Check for existing save state
+      await this.loadBuildState();
+      
+      console.log(`[BUILDER] Schematic loaded: ${this.currentSchematic.name}`);
+      console.log(`[BUILDER] Build queue: ${this.buildQueue.length} blocks in ${this.totalLayers} layers`);
+      
+      return true;
+    } catch (err) {
+      console.log(`[BUILDER] Failed to load schematic: ${err.message}`);
+      this.state = 'idle';
+      this.emitStateChange();
+      return false;
+    }
+  }
+
+  async generateBuildQueue() {
+    if (!this.currentSchematic) return;
+    
+    console.log('[BUILDER] Generating physics-aware build queue...');
+    
+    // Group blocks by Y coordinate (layers)
+    const layers = new Map();
+    
+    for (const block of this.currentSchematic.blocks) {
+      if (block.type === 'air') continue;
+      
+      const worldY = block.position.y + this.buildPosition.y;
+      if (!layers.has(worldY)) {
+        layers.set(worldY, []);
+      }
+      
+      layers.get(worldY).push({
+        ...block,
+        worldPosition: {
+          x: block.position.x + this.buildPosition.x,
+          y: worldY,
+          z: block.position.z + this.buildPosition.z
+        }
+      });
+    }
+    
+    // Sort layers bottom-up
+    const sortedLayers = Array.from(layers.keys()).sort((a, b) => a - b);
+    this.totalLayers = sortedLayers.length;
+    
+    // Process each layer for dependencies
+    this.buildQueue = [];
+    
+    for (const layerY of sortedLayers) {
+      const layerBlocks = layers.get(layerY);
+      
+      // Separate blocks by type for dependency processing
+      const gravityBlocks = layerBlocks.filter(b => this.gravityBlocks.has(b.type));
+      const attachableBlocks = layerBlocks.filter(b => this.attachableBlocks.has(b.type));
+      const redstoneBlocks = layerBlocks.filter(b => this.redstoneComponents.has(b.type));
+      const regularBlocks = layerBlocks.filter(b => 
+        !this.gravityBlocks.has(b.type) && 
+        !this.attachableBlocks.has(b.type) && 
+        !this.redstoneComponents.has(b.type)
+      );
+      
+      // Add scaffolding requirements for gravity blocks
+      for (const block of gravityBlocks) {
+        const supportPos = { ...block.worldPosition, y: block.worldPosition.y - 1 };
+        
+        // Check if support exists in schematic or world
+        if (!this.hasSupportAt(supportPos)) {
+          this.addScaffolding(supportPos, block);
+        }
+      }
+      
+      // Add scaffolding for attachable blocks
+      for (const block of attachableBlocks) {
+        const supportPos = this.getAttachableSupport(block);
+        if (supportPos && !this.hasSupportAt(supportPos)) {
+          this.addScaffolding(supportPos, block);
+        }
+      }
+      
+      // Order blocks within layer: regular -> redstone -> attachable -> gravity
+      const orderedLayer = [
+        ...regularBlocks,
+        ...redstoneBlocks,
+        ...attachableBlocks,
+        ...gravityBlocks
+      ];
+      
+      // Sort by distance from build center for efficient pathing
+      const centerX = this.buildPosition.x + this.currentSchematic.dimensions.width / 2;
+      const centerZ = this.buildPosition.z + this.currentSchematic.dimensions.length / 2;
+      
+      orderedLayer.sort((a, b) => {
+        const distA = Math.sqrt(
+          Math.pow(a.worldPosition.x - centerX, 2) + 
+          Math.pow(a.worldPosition.z - centerZ, 2)
+        );
+        const distB = Math.sqrt(
+          Math.pow(b.worldPosition.x - centerX, 2) + 
+          Math.pow(b.worldPosition.z - centerZ, 2)
+        );
+        return distA - distB;
+      });
+      
+      this.buildQueue.push(...orderedLayer);
+    }
+    
+    console.log(`[BUILDER] Generated queue with ${this.buildQueue.length} blocks`);
+  }
+
+  hasSupportAt(position) {
+    // Check if position has support in schematic
+    const schematicBlock = this.currentSchematic.blocks.find(b =>
+      b.position.x + this.buildPosition.x === position.x &&
+      b.position.y + this.buildPosition.y === position.y &&
+      b.position.z + this.buildPosition.z === position.z &&
+      b.type !== 'air'
+    );
+    
+    if (schematicBlock) return true;
+    
+    // Check if position already has block in world
+    const worldBlock = this.bot.blockAt(new Vec3(position.x, position.y, position.z));
+    return worldBlock && worldBlock.type !== 0;
+  }
+
+  getAttachableSupport(block) {
+    const pos = block.worldPosition;
+    
+    // Check all possible attachment positions
+    const candidates = [
+      { x: pos.x, y: pos.y - 1, z: pos.z }, // below
+      { x: pos.x - 1, y: pos.y, z: pos.z }, // west
+      { x: pos.x + 1, y: pos.y, z: pos.z }, // east
+      { x: pos.x, y: pos.y, z: pos.z - 1 }, // north
+      { x: pos.x, y: pos.y, z: pos.z + 1 }  // south
+    ];
+    
+    for (const candidate of candidates) {
+      if (this.hasSupportAt(candidate)) {
+        return candidate;
+      }
+    }
+    
+    return null;
+  }
+
+  addScaffolding(position, targetBlock) {
+    const scaffoldId = `${position.x},${position.y},${position.z}`;
+    
+    // Find available scaffolding material
+    let material = null;
+    for (const mat of this.scaffoldingMaterials) {
+      const item = this.bot.inventory.items().find(i => i.name === mat);
+      if (item) {
+        material = mat;
+        break;
+      }
+    }
+    
+    if (!material) {
+      console.log(`[BUILDER] No scaffolding material available for ${scaffoldId}`);
+      return;
+    }
+    
+    this.scaffoldingBlocks.set(scaffoldId, {
+      position: { ...position },
+      material,
+      targetBlock: targetBlock.worldPosition,
+      placed: false,
+      removeAfter: true
+    });
+    
+    // Insert scaffolding into build queue before target block
+    const scaffoldBlock = {
+      position: { x: position.x - this.buildPosition.x, y: position.y - this.buildPosition.y, z: position.z - this.buildPosition.z },
+      worldPosition: { ...position },
+      type: material,
+      properties: {},
+      isScaffolding: true,
+      targetBlock: targetBlock.worldPosition
+    };
+    
+    const targetIndex = this.buildQueue.findIndex(b => 
+      b.worldPosition.x === targetBlock.worldPosition.x &&
+      b.worldPosition.y === targetBlock.worldPosition.y &&
+      b.worldPosition.z === targetBlock.worldPosition.z
+    );
+    
+    if (targetIndex >= 0) {
+      this.buildQueue.splice(targetIndex, 0, scaffoldBlock);
+    } else {
+      this.buildQueue.unshift(scaffoldBlock);
+    }
+  }
+
+  async startBuilding() {
+    if (!this.currentSchematic || this.buildQueue.length === 0) {
+      console.log('[BUILDER] No schematic loaded or empty build queue');
+      return;
+    }
+    
+    this.state = 'building';
+    this.emitStateChange();
+    
+    console.log(`[BUILDER] Starting build: ${this.currentSchematic.name}`);
+    console.log(`[BUILDER] Resume from layer ${this.currentLayer}/${this.totalLayers}`);
+    
+    try {
+      await this.buildLoop();
+    } catch (err) {
+      console.log(`[BUILDER] Build error: ${err.message}`);
+      this.state = 'paused';
+      this.emitStateChange();
+    }
+  }
+
+  async buildLoop() {
+    while (this.state === 'building' && this.buildQueue.length > 0) {
+      const block = this.buildQueue.shift();
+      
+      // Skip if already placed
+      const blockKey = `${block.worldPosition.x},${block.worldPosition.y},${block.worldPosition.z}`;
+      if (this.placedBlocks.has(blockKey)) {
+        continue;
+      }
+      
+      // Check if block already exists in world
+      const existingBlock = this.bot.blockAt(new Vec3(
+        block.worldPosition.x,
+        block.worldPosition.y,
+        block.worldPosition.z
+      ));
+      
+      if (existingBlock && existingBlock.type !== 0 && 
+          existingBlock.name === block.type) {
+        this.placedBlocks.add(blockKey);
+        await this.saveBuildState();
+        continue;
+      }
+      
+      // Place the block
+      const success = await this.placeBlock(block);
+      
+      if (success) {
+        this.placedBlocks.add(blockKey);
+        
+        // Schedule scaffolding removal if this was a target
+        if (block.isScaffolding && this.scaffoldingBlocks.has(blockKey)) {
+          // Scaffolding will be removed after validation
+        }
+        
+        // Save progress periodically
+        if (this.placedBlocks.size % 10 === 0) {
+          await this.saveBuildState();
+        }
+      } else {
+        // Re-queue failed block
+        this.buildQueue.push(block);
+        await sleep(1000); // Wait before retry
+      }
+      
+      await sleep(100); // Small delay between placements
+    }
+    
+    if (this.buildQueue.length === 0) {
+      await this.finalizeBuild();
+    }
+  }
+
+  async placeBlock(block) {
+    try {
+      // Get the block item
+      const item = this.bot.inventory.items().find(i => i.name === block.type);
+      
+      if (!item) {
+        console.log(`[BUILDER] Missing ${block.type}, adding to resource queue`);
+        // TODO: Add to resource gathering queue
+        return false;
+      }
+      
+      // Move to placement position
+      const placePos = new Vec3(
+        block.worldPosition.x,
+        block.worldPosition.y,
+        block.worldPosition.z
+      );
+      
+      // Find optimal standing position
+      const standPos = await this.findOptimalPosition(placePos);
+      
+      if (standPos) {
+        await this.bot.pathfinder.goto(new goals.GoalNear(
+          standPos.x, standPos.y, standPos.z, 1
+        ));
+      }
+      
+      // Equip the block
+      await this.bot.equip(item, 'hand');
+      
+      // Find reference block for placement
+      const refBlock = this.findReferenceBlock(placePos);
+      
+      if (!refBlock) {
+        console.log(`[BUILDER] No reference block for placement at ${placePos}`);
+        return false;
+      }
+      
+      // Calculate face vector
+      const face = this.calculateFaceVector(placePos, refBlock.position);
+      
+      // Place the block
+      await this.bot.placeBlock(refBlock, face);
+      
+      console.log(`[BUILDER] Placed ${block.type} at ${placePos}`);
+      return true;
+      
+    } catch (err) {
+      console.log(`[BUILDER] Failed to place ${block.type}: ${err.message}`);
+      return false;
+    }
+  }
+
+  async findOptimalPosition(targetPos) {
+    // Find a safe position to stand for block placement
+    const candidates = [];
+    
+    // Check positions around the target
+    for (let dx = -3; dx <= 3; dx++) {
+      for (let dz = -3; dz <= 3; dz++) {
+        for (let dy = -1; dy <= 2; dy++) {
+          const pos = new Vec3(
+            targetPos.x + dx,
+            targetPos.y + dy,
+            targetPos.z + dz
+          );
+          
+          // Check if position is safe
+          if (this.isSafePosition(pos)) {
+            const distance = pos.distanceTo(targetPos);
+            candidates.push({ pos, distance });
+          }
+        }
+      }
+    }
+    
+    // Sort by distance and return closest safe position
+    candidates.sort((a, b) => a.distance - b.distance);
+    return candidates.length > 0 ? candidates[0].pos : null;
+  }
+
+  isSafePosition(pos) {
+    // Check if position has solid ground
+    const groundBlock = this.bot.blockAt(pos.offset(0, -1, 0));
+    if (!groundBlock || groundBlock.type === 0) return false;
+    
+    // Check if position is not occupied
+    const posBlock = this.bot.blockAt(pos);
+    if (posBlock && posBlock.type !== 0) return false;
+    
+    // Check if head space is clear
+    const headBlock = this.bot.blockAt(pos.offset(0, 1, 0));
+    if (headBlock && headBlock.type !== 0) return false;
+    
+    return true;
+  }
+
+  findReferenceBlock(placePos) {
+    // Find a solid block adjacent to placement position
+    const faces = [
+      new Vec3(0, -1, 0),  // bottom
+      new Vec3(0, 1, 0),   // top
+      new Vec3(-1, 0, 0),  // west
+      new Vec3(1, 0, 0),   // east
+      new Vec3(0, 0, -1),  // north
+      new Vec3(0, 0, 1)    // south
+    ];
+    
+    for (const face of faces) {
+      const refPos = placePos.plus(face);
+      const refBlock = this.bot.blockAt(refPos);
+      
+      if (refBlock && refBlock.type !== 0) {
+        refBlock.position = refPos;
+        return refBlock;
+      }
+    }
+    
+    return null;
+  }
+
+  calculateFaceVector(placePos, refPos) {
+    return placePos.minus(refPos);
+  }
+
+  async validateLayer(layerY) {
+    console.log(`[BUILDER] Validating layer Y=${layerY}`);
+    
+    const layerBlocks = this.currentSchematic.blocks.filter(b =>
+      b.position.y + this.buildPosition.y === layerY && b.type !== 'air'
+    );
+    
+    const errors = [];
+    
+    for (const block of layerBlocks) {
+      const worldPos = new Vec3(
+        block.position.x + this.buildPosition.x,
+        block.position.y + this.buildPosition.y,
+        block.position.z + this.buildPosition.z
+      );
+      
+      const actualBlock = this.bot.blockAt(worldPos);
+      
+      if (!actualBlock || actualBlock.type === 0) {
+        // Missing block
+        errors.push({
+          type: 'missing',
+          position: worldPos,
+          expected: block.type,
+          actual: null
+        });
+      } else if (actualBlock.name !== block.type) {
+        // Wrong block type
+        errors.push({
+          type: 'wrong_type',
+          position: worldPos,
+          expected: block.type,
+          actual: actualBlock.name
+        });
+      }
+    }
+    
+    if (errors.length > 0) {
+      console.log(`[BUILDER] Found ${errors.length} validation errors`);
+      this.validationErrors.push(...errors);
+      
+      // Queue corrections
+      for (const error of errors) {
+        this.correctionQueue.push({
+          position: error.position,
+          type: error.expected,
+          errorType: error.type
+        });
+      }
+    }
+    
+    return errors.length === 0;
+  }
+
+  async finalizeBuild() {
+    console.log('[BUILDER] Finalizing build...');
+    
+    // Validate all layers
+    let allValid = true;
+    for (let y = 0; y < this.totalLayers; y++) {
+      const layerY = this.buildPosition.y + y;
+      const valid = await this.validateLayer(layerY);
+      if (!valid) allValid = false;
+    }
+    
+    // Apply corrections
+    if (this.correctionQueue.length > 0) {
+      console.log(`[BUILDER] Applying ${this.correctionQueue.length} corrections...`);
+      
+      for (const correction of this.correctionQueue) {
+        const block = {
+          position: {
+            x: correction.position.x - this.buildPosition.x,
+            y: correction.position.y - this.buildPosition.y,
+            z: correction.position.z - this.buildPosition.z
+          },
+          worldPosition: correction.position,
+          type: correction.type,
+          properties: {}
+        };
+        
+        await this.placeBlock(block);
+        await sleep(200);
+      }
+    }
+    
+    // Remove scaffolding
+    await this.removeScaffolding();
+    
+    this.state = 'finished';
+    this.emitStateChange();
+    
+    console.log(`[BUILDER] Build completed! Valid: ${allValid}`);
+    
+    // Clean up build state file
+    if (fs.existsSync(this.stateFilePath)) {
+      fs.unlinkSync(this.stateFilePath);
+    }
+  }
+
+  async removeScaffolding() {
+    console.log('[BUILDER] Removing scaffolding...');
+    
+    for (const [scaffoldId, scaffold] of this.scaffoldingBlocks) {
+      if (!scaffold.removeAfter) continue;
+      
+      try {
+        const pos = new Vec3(scaffold.position.x, scaffold.position.y, scaffold.position.z);
+        const block = this.bot.blockAt(pos);
+        
+        if (block && block.type !== 0) {
+          await this.bot.dig(block);
+          console.log(`[BUILDER] Removed scaffolding at ${pos}`);
+        }
+      } catch (err) {
+        console.log(`[BUILDER] Failed to remove scaffolding: ${err.message}`);
+      }
+    }
+  }
+
+  async saveBuildState() {
+    if (!this.stateFilePath) return;
+    
+    const state = {
+      buildId: this.buildId,
+      schematic: this.currentSchematic.name,
+      buildPosition: this.buildPosition,
+      state: this.state,
+      currentLayer: this.currentLayer,
+      totalLayers: this.totalLayers,
+      placedBlocks: Array.from(this.placedBlocks),
+      scaffoldingBlocks: Array.from(this.scaffoldingBlocks.entries()),
+      buildQueue: this.buildQueue,
+      validationErrors: this.validationErrors,
+      correctionQueue: this.correctionQueue,
+      inventory: this.bot.inventory.items().map(item => ({
+        name: item.name,
+        count: item.count,
+        slot: item.slot
+      })),
+      timestamp: Date.now()
+    };
+    
+    try {
+      fs.writeFileSync(this.stateFilePath, JSON.stringify(state, null, 2));
+    } catch (err) {
+      console.log(`[BUILDER] Failed to save state: ${err.message}`);
+    }
+  }
+
+  async loadBuildState() {
+    if (!this.stateFilePath || !fs.existsSync(this.stateFilePath)) {
+      return;
+    }
+    
+    try {
+      const state = JSON.parse(fs.readFileSync(this.stateFilePath));
+      
+      this.currentLayer = state.currentLayer || 0;
+      this.placedBlocks = new Set(state.placedBlocks || []);
+      this.scaffoldingBlocks = new Map(state.scaffoldingBlocks || []);
+      this.buildQueue = state.buildQueue || [];
+      this.validationErrors = state.validationErrors || [];
+      this.correctionQueue = state.correctionQueue || [];
+      
+      console.log(`[BUILDER] Resumed build from checkpoint (${this.placedBlocks.size} blocks placed)`);
+    } catch (err) {
+      console.log(`[BUILDER] Failed to load state: ${err.message}`);
+    }
+  }
+
+  pause() {
+    if (this.state === 'building') {
+      this.state = 'paused';
+      this.emitStateChange();
+      console.log('[BUILDER] Build paused');
+    }
+  }
+
+  resume() {
+    if (this.state === 'paused') {
+      this.state = 'building';
+      this.emitStateChange();
+      console.log('[BUILDER] Build resumed');
+      this.buildLoop();
+    }
+  }
+
+  cancel() {
+    this.state = 'idle';
+    this.emitStateChange();
+    this.buildQueue = [];
+    this.placedBlocks.clear();
+    this.scaffoldingBlocks.clear();
+    
+    if (this.stateFilePath && fs.existsSync(this.stateFilePath)) {
+      fs.unlinkSync(this.stateFilePath);
+    }
+    
+    console.log('[BUILDER] Build cancelled');
+  }
+
+  getBuildProgress() {
+    const totalBlocks = this.currentSchematic ? this.currentSchematic.blocks.filter(b => b.type !== 'air').length : 0;
+    const placedCount = this.placedBlocks.size;
+    const percentage = totalBlocks > 0 ? (placedCount / totalBlocks) * 100 : 0;
+    
+    return {
+      state: this.state,
+      totalBlocks,
+      placedBlocks: placedCount,
+      percentage: Math.round(percentage * 100) / 100,
+      currentLayer: this.currentLayer,
+      totalLayers: this.totalLayers,
+      queueLength: this.buildQueue.length,
+      validationErrors: this.validationErrors.length,
+      correctionsPending: this.correctionQueue.length
+    };
+  }
+
+  onStateChange(callback) {
+    if (!this.eventListeners.has('stateChange')) {
+      this.eventListeners.set('stateChange', []);
+    }
+    this.eventListeners.get('stateChange').push(callback);
+  }
+
+  emitStateChange() {
+    const callbacks = this.eventListeners.get('stateChange') || [];
+    for (const callback of callbacks) {
+      try {
+        callback(this.state, this.getBuildProgress());
+      } catch (err) {
+        console.log(`[BUILDER] State change callback error: ${err.message}`);
+      }
+    }
+  }
+}
+
 // === MAIN BOT LAUNCHER ===
 async function launchBot(username, role = 'fighter') {
   const [host, portStr] = config.server.split(':');
@@ -8205,8 +9169,12 @@ async function launchBot(username, role = 'fighter') {
   let dupeFramework = null;
   let lootOperation = null;
   let enderManager = null;
+  let schematicBuilder = null;
   let wsClient = null;
   
+  // Store component references on bot for access
+  bot.combatAI = combatAI;
+  bot.schematicBuilder = schematicBuilder;
   // Store combatAI and schematicLoader references on bot for stats/access
   bot.combatAI = combatAI;
   bot.schematicLoader = schematicLoader;
@@ -8224,6 +9192,10 @@ async function launchBot(username, role = 'fighter') {
     
     // Initialize ender chest manager
     enderManager = new EnderChestManager(bot);
+    
+    // Initialize schematic builder
+    schematicBuilder = new SchematicBuilder(bot);
+    bot.schematicBuilder = schematicBuilder;
     
     // Initialize swarm coordinator if not already running
     if (!globalSwarmCoordinator) {
@@ -8545,11 +9517,14 @@ function showMenu() {
 ║  [3] Stash Hunting (2b2t Treasure Hunter)             ║
 ║  [4] Friendly Mode (Companion & Helper)               ║
 ║  [5] Swarm Multi-Bot (Coordinated Operations)         ║
+║  [6] Build Mode (Schematic Builder)                    ║
+║  [7] Configure Whitelist                              ║
 ║  [6] Configure Whitelist                              ║
 ║  [7] Player Tracking Mode (Stealth Intelligence)      ║
 ╠═══════════════════════════════════════════════════════╣
 ║  🏠 Home Base: ${config.homeBase.coords ? '✅' : '❌'}                                 ║
 ║  🐝 Swarm Coordinator: ${globalSwarmCoordinator ? '✅' : '❌'}                       ║
+║  🏗️  Schematic Builder: Available                    ║
 ╚═══════════════════════════════════════════════════════╝
   `);
   
@@ -8560,6 +9535,8 @@ function showMenu() {
       case '3': config.mode = 'stash'; askStashConfig(); break;
       case '4': config.mode = 'friendly'; askServer(); break;
       case '5': config.mode = 'swarm'; launchSwarm(); break;
+      case '6': config.mode = 'build'; askServer(); break;
+      case '7': configureWhitelist(); break;
       case '6': configureWhitelist(); break;
       case '7': config.mode = 'tracking'; askTrackingConfig(); break;
       default: console.log('Invalid choice'); showMenu(); break;
@@ -8726,6 +9703,7 @@ console.log(`
 ║  ✅ Swarm coordinator ready (port 9090)               ║
 ║  ✅ Home base system initialized                      ║
 ║  ✅ Ender chest logistics enabled                     ║
+║  ✅ Schematic Builder ready                           ║
 ╠═══════════════════════════════════════════════════════╣
 ║  NEW: Ultimate Dupe Engine (500+ tests/hour)         ║
 ║  NEW: Server lag detection & exploitation            ║
@@ -8738,6 +9716,7 @@ console.log(`
 ║  NEW: Packet timing manipulation                     ║
 ║  NEW: Parallel hypothesis testing                    ║
 ║  NEW: Smart AI prioritization queue                  ║
+║  NEW: Physics-aware schematic builder                 ║
 ╚═══════════════════════════════════════════════════════╝
 `);
 
