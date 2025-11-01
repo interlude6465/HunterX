@@ -3175,7 +3175,7 @@ class ConversationAI {
   }
   
   isCommand(message) {
-    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard'];
+    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'scanner', 'start scanner', 'stop scanner'];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
@@ -3431,6 +3431,36 @@ class ConversationAI {
       return;
     }
     
+    // Continuous Scanner commands (admin+ only)
+    if (lower.includes('start scanner') || lower.includes('scanner start')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can control the continuous scanner!");
+        return;
+      }
+      
+      const result = globalPluginAnalyzer.startContinuousScanning(300000);
+      this.bot.chat(result.success ? `✅ ${result.message}` : `⚠️ ${result.message}`);
+      return;
+    }
+    
+    if (lower.includes('stop scanner') || lower.includes('scanner stop')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can control the continuous scanner!");
+        return;
+      }
+      
+      const result = globalPluginAnalyzer.stopContinuousScanning();
+      this.bot.chat(result.success ? `✅ ${result.message}` : `⚠️ ${result.message}`);
+      return;
+    }
+    
+    if (lower.includes('scanner status') || lower.includes('scanner report')) {
+      const status = globalPluginAnalyzer.getContinuousScanStatus();
+      this.bot.chat(`🔄 Scanner: ${status.active ? '✅ Running' : '⏹️ Stopped'} | Queue: ${status.queueSize} | Plugins: ${status.totalPlugins} | Scans: ${status.totalScans}`);
+      
+      if (status.recentScans && status.recentScans.length > 0) {
+        const recent = status.recentScans[status.recentScans.length - 1];
+        this.bot.chat(`Latest: ${recent.fileName} (Risk: ${recent.riskScore}, Vulns: ${recent.vulnerabilities})`);
     // Player tracking commands (admin+ only for privacy/security)
     if (lower.includes('track') && (lower.includes('player') || lower.includes('start tracking'))) {
       if (!this.hasTrustLevel(username, 'admin')) {
@@ -4626,6 +4656,338 @@ class PluginAnalyzer {
   constructor() {
     this.vulnerabilities = [];
     this.analysisResults = [];
+    this.scanQueue = [];
+    this.continuousScanning = false;
+    this.scanInterval = null;
+    this.scanIntervalMs = 300000; // 5 minutes default
+    this.historicalScans = [];
+    this.pluginRegistry = new Map(); // Track uploaded plugins
+    this.loadContinuousScanData();
+  }
+  
+  loadContinuousScanData() {
+    try {
+      if (fs.existsSync('./dupes/continuous_scan.json')) {
+        const data = JSON.parse(fs.readFileSync('./dupes/continuous_scan.json'));
+        this.historicalScans = data.scans || [];
+        this.pluginRegistry = new Map(data.plugins || []);
+        console.log(`[CONTINUOUS SCANNER] Loaded ${this.historicalScans.length} historical scans`);
+      }
+    } catch (err) {
+      console.log(`[CONTINUOUS SCANNER] Error loading scan data: ${err.message}`);
+    }
+  }
+  
+  saveContinuousScanData() {
+    try {
+      const data = {
+        scans: this.historicalScans,
+        plugins: Array.from(this.pluginRegistry.entries()),
+        lastUpdate: Date.now(),
+        scanningActive: this.continuousScanning,
+        queueSize: this.scanQueue.length
+      };
+      fs.writeFileSync('./dupes/continuous_scan.json', JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.log(`[CONTINUOUS SCANNER] Error saving scan data: ${err.message}`);
+    }
+  }
+  
+  startContinuousScanning(intervalMs = 300000) {
+    if (this.continuousScanning) {
+      console.log('[CONTINUOUS SCANNER] Already running');
+      return { success: false, message: 'Scanner already running' };
+    }
+    
+    this.scanIntervalMs = intervalMs;
+    this.continuousScanning = true;
+    
+    console.log(`[CONTINUOUS SCANNER] Starting continuous scanning (interval: ${intervalMs / 1000}s)`);
+    
+    // Initial scan
+    this.processQueue();
+    
+    // Set up periodic scanning
+    this.scanInterval = setInterval(() => {
+      this.processQueue();
+    }, this.scanIntervalMs);
+    
+    this.saveContinuousScanData();
+    return { success: true, message: 'Continuous scanning started', interval: intervalMs };
+  }
+  
+  stopContinuousScanning() {
+    if (!this.continuousScanning) {
+      console.log('[CONTINUOUS SCANNER] Not running');
+      return { success: false, message: 'Scanner not running' };
+    }
+    
+    console.log('[CONTINUOUS SCANNER] Stopping continuous scanning');
+    this.continuousScanning = false;
+    
+    if (this.scanInterval) {
+      clearInterval(this.scanInterval);
+      this.scanInterval = null;
+    }
+    
+    this.saveContinuousScanData();
+    return { success: true, message: 'Continuous scanning stopped' };
+  }
+  
+  addToScanQueue(filePath, fileName, priority = 'normal') {
+    const queueItem = {
+      filePath,
+      fileName,
+      priority,
+      addedAt: Date.now(),
+      scanCount: 0,
+      lastScan: null
+    };
+    
+    // Check if already in queue
+    const existing = this.scanQueue.find(item => item.fileName === fileName);
+    if (existing) {
+      console.log(`[CONTINUOUS SCANNER] Plugin ${fileName} already in queue`);
+      return { success: false, message: 'Already in queue' };
+    }
+    
+    this.scanQueue.push(queueItem);
+    
+    // Register plugin if not already registered
+    if (!this.pluginRegistry.has(fileName)) {
+      this.pluginRegistry.set(fileName, {
+        filePath,
+        fileName,
+        firstAdded: Date.now(),
+        scanCount: 0,
+        lastScan: null,
+        lastRiskScore: 0,
+        trendData: []
+      });
+    }
+    
+    console.log(`[CONTINUOUS SCANNER] Added ${fileName} to scan queue (priority: ${priority})`);
+    this.saveContinuousScanData();
+    
+    return { success: true, message: 'Added to scan queue', queueSize: this.scanQueue.length };
+  }
+  
+  async processQueue() {
+    if (this.scanQueue.length === 0) {
+      console.log('[CONTINUOUS SCANNER] Queue empty, checking for plugins to re-scan');
+      this.repopulateQueue();
+      return;
+    }
+    
+    // Sort queue by priority
+    this.scanQueue.sort((a, b) => {
+      const priorityOrder = { high: 3, normal: 2, low: 1 };
+      return priorityOrder[b.priority] - priorityOrder[a.priority];
+    });
+    
+    // Process one plugin from queue
+    const item = this.scanQueue.shift();
+    console.log(`[CONTINUOUS SCANNER] Processing ${item.fileName} from queue`);
+    
+    try {
+      const analysis = await this.analyzeJarFile(item.filePath, item.fileName);
+      
+      // Update registry
+      const pluginData = this.pluginRegistry.get(item.fileName);
+      if (pluginData) {
+        pluginData.scanCount++;
+        pluginData.lastScan = Date.now();
+        
+        // Track trends
+        const trendEntry = {
+          timestamp: Date.now(),
+          riskScore: analysis.riskScore,
+          vulnerabilityCount: analysis.vulnerabilities.length,
+          exploitCount: analysis.exploitOpportunities.length
+        };
+        
+        pluginData.trendData.push(trendEntry);
+        
+        // Calculate trend (increasing/decreasing risk)
+        if (pluginData.trendData.length > 1) {
+          const previous = pluginData.trendData[pluginData.trendData.length - 2];
+          const current = trendEntry;
+          
+          const riskChange = current.riskScore - previous.riskScore;
+          trendEntry.riskChange = riskChange;
+          trendEntry.trend = riskChange > 0 ? 'increasing' : (riskChange < 0 ? 'decreasing' : 'stable');
+          
+          // Calculate exploit effectiveness decay
+          if (current.exploitCount < previous.exploitCount) {
+            trendEntry.exploitEffectivenessDecay = true;
+            console.log(`[CONTINUOUS SCANNER] ⚠️ Exploit effectiveness decay detected for ${item.fileName}`);
+          }
+        }
+        
+        // Keep only last 50 trend entries
+        if (pluginData.trendData.length > 50) {
+          pluginData.trendData = pluginData.trendData.slice(-50);
+        }
+        
+        pluginData.lastRiskScore = analysis.riskScore;
+        this.pluginRegistry.set(item.fileName, pluginData);
+      }
+      
+      // Add to historical scans
+      const scanRecord = {
+        fileName: item.fileName,
+        timestamp: Date.now(),
+        analysis,
+        queuePriority: item.priority,
+        scanNumber: (pluginData?.scanCount || 0)
+      };
+      
+      this.historicalScans.push(scanRecord);
+      
+      // Keep only last 500 scans
+      if (this.historicalScans.length > 500) {
+        this.historicalScans = this.historicalScans.slice(-500);
+      }
+      
+      // Propagate to swarm if significant findings
+      if (analysis.riskScore > 50 || analysis.exploitOpportunities.length > 0) {
+        this.propagateToSwarm(analysis);
+        this.updateAnalytics(analysis);
+      }
+      
+      this.saveContinuousScanData();
+      
+    } catch (err) {
+      console.log(`[CONTINUOUS SCANNER] Error processing ${item.fileName}: ${err.message}`);
+    }
+  }
+  
+  repopulateQueue() {
+    // Re-add plugins that need scanning based on time elapsed
+    const now = Date.now();
+    const rescanThreshold = this.scanIntervalMs * 2; // Re-scan if not scanned in 2x interval
+    
+    for (const [fileName, pluginData] of this.pluginRegistry.entries()) {
+      const timeSinceLastScan = now - (pluginData.lastScan || 0);
+      
+      if (timeSinceLastScan > rescanThreshold) {
+        // Check if not already in queue
+        const inQueue = this.scanQueue.find(item => item.fileName === fileName);
+        if (!inQueue && fs.existsSync(pluginData.filePath)) {
+          this.scanQueue.push({
+            filePath: pluginData.filePath,
+            fileName: fileName,
+            priority: 'normal',
+            addedAt: now,
+            scanCount: pluginData.scanCount,
+            lastScan: pluginData.lastScan
+          });
+          console.log(`[CONTINUOUS SCANNER] Re-queued ${fileName} for periodic scan`);
+        }
+      }
+    }
+  }
+  
+  propagateToSwarm(analysis) {
+    try {
+      if (config.swarm.wsServer && config.swarm.wsServer.clients) {
+        const message = {
+          type: 'PLUGIN_VULNERABILITY_DISCOVERED',
+          timestamp: Date.now(),
+          plugin: analysis.fileName,
+          riskScore: analysis.riskScore,
+          vulnerabilities: analysis.vulnerabilities.length,
+          exploitOpportunities: analysis.exploitOpportunities,
+          summary: `Found ${analysis.vulnerabilities.length} vulnerabilities in ${analysis.fileName}`
+        };
+        
+        // Broadcast to all connected bots
+        config.swarm.wsServer.clients.forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(message));
+          }
+        });
+        
+        console.log(`[CONTINUOUS SCANNER] Propagated findings to ${config.swarm.wsServer.clients.size} swarm bots`);
+      }
+      
+      // Update shared memory
+      if (!config.swarm.sharedMemory.pluginVulnerabilities) {
+        config.swarm.sharedMemory.pluginVulnerabilities = [];
+      }
+      
+      config.swarm.sharedMemory.pluginVulnerabilities.push({
+        plugin: analysis.fileName,
+        timestamp: Date.now(),
+        riskScore: analysis.riskScore,
+        exploitOpportunities: analysis.exploitOpportunities
+      });
+      
+      // Keep only last 100 entries
+      if (config.swarm.sharedMemory.pluginVulnerabilities.length > 100) {
+        config.swarm.sharedMemory.pluginVulnerabilities = 
+          config.swarm.sharedMemory.pluginVulnerabilities.slice(-100);
+      }
+      
+    } catch (err) {
+      console.log(`[CONTINUOUS SCANNER] Error propagating to swarm: ${err.message}`);
+    }
+  }
+  
+  updateAnalytics(analysis) {
+    try {
+      // Add exploits to active exploits list
+      for (const exploit of analysis.exploitOpportunities) {
+        const existingExploit = config.analytics.dupe.activeExploits.find(
+          e => e.method === exploit.method && e.plugin === analysis.fileName
+        );
+        
+        if (!existingExploit) {
+          config.analytics.dupe.activeExploits.push({
+            ...exploit,
+            plugin: analysis.fileName,
+            discovered: Date.now(),
+            attempts: 0,
+            successes: 0
+          });
+          
+          console.log(`[CONTINUOUS SCANNER] Added new exploit to analytics: ${exploit.method}`);
+        }
+      }
+      
+      // Keep only last 50 active exploits
+      if (config.analytics.dupe.activeExploits.length > 50) {
+        config.analytics.dupe.activeExploits = config.analytics.dupe.activeExploits.slice(-50);
+      }
+      
+    } catch (err) {
+      console.log(`[CONTINUOUS SCANNER] Error updating analytics: ${err.message}`);
+    }
+  }
+  
+  getContinuousScanStatus() {
+    return {
+      active: this.continuousScanning,
+      intervalMs: this.scanIntervalMs,
+      queueSize: this.scanQueue.length,
+      totalPlugins: this.pluginRegistry.size,
+      totalScans: this.historicalScans.length,
+      recentScans: this.historicalScans.slice(-10).map(scan => ({
+        fileName: scan.fileName,
+        timestamp: scan.timestamp,
+        riskScore: scan.analysis.riskScore,
+        vulnerabilities: scan.analysis.vulnerabilities.length,
+        exploits: scan.analysis.exploitOpportunities.length
+      })),
+      plugins: Array.from(this.pluginRegistry.entries()).map(([name, data]) => ({
+        name,
+        scanCount: data.scanCount,
+        lastScan: data.lastScan,
+        lastRiskScore: data.lastRiskScore,
+        trend: data.trendData.length > 1 ? 
+          data.trendData[data.trendData.length - 1].trend : 'unknown'
+      }))
+    };
   }
   
   async analyzeJarFile(filePath, fileName) {
@@ -7107,6 +7469,7 @@ const dashboardHTML = `
       <button class="quick-btn" onclick="quickCommand('start dupe testing')">Start Dupe Test</button>
       <button class="quick-btn" onclick="quickCommand('stop dupe testing')">Stop Dupe Test</button>
       <button class="quick-btn" onclick="quickCommand('dupe report')">Dupe Stats</button>
+      <button class="quick-btn" onclick="quickCommand('scanner status')">Scanner Status</button>
       <button class="quick-btn" onclick="quickCommand('what are you doing')">Status</button>
     </div>
     
@@ -7178,6 +7541,29 @@ const dashboardHTML = `
         <button class="quick-btn" onclick="quickCommand('go home')">Go Home</button>
         <button class="quick-btn" onclick="quickCommand('deposit valuables')">Deposit Items</button>
       </div>
+    </div>
+    
+    <div class="panel">
+      <h2>🔄 Continuous Plugin Scanner</h2>
+      <div class="stat"><span>Status:</span><span id="scannerStatus">Stopped</span></div>
+      <div class="stat"><span>Scan Interval:</span><span id="scannerInterval">N/A</span></div>
+      <div class="stat"><span>Queue Size:</span><span id="scannerQueue">0</span></div>
+      <div class="stat"><span>Total Plugins:</span><span id="scannerPlugins">0</span></div>
+      <div class="stat"><span>Total Scans:</span><span id="scannerTotalScans">0</span></div>
+      
+      <div style="margin-top: 10px;">
+        <button class="quick-btn" onclick="startScanner()">▶️ Start Scanner</button>
+        <button class="quick-btn" onclick="stopScanner()">⏹️ Stop Scanner</button>
+        <button class="quick-btn" onclick="refreshScannerStatus()">🔄 Refresh</button>
+      </div>
+      
+      <h3 style="margin-top: 15px; border-top: 1px solid #0f0; padding-top: 10px;">📊 Recent Scans</h3>
+      <div id="recentScansList" style="margin-top: 10px; max-height: 200px; overflow-y: auto; font-size: 11px;"></div>
+      
+      <h3 style="margin-top: 15px; border-top: 1px solid #0f0; padding-top: 10px;">📦 Tracked Plugins</h3>
+      <div id="trackedPluginsList" style="margin-top: 10px; max-height: 150px; overflow-y: auto; font-size: 11px;"></div>
+      
+      <div id="scannerMessage" style="margin-top: 10px; padding: 5px; background: #111; border: 1px solid #0f0; color: #ff0;"></div>
     </div>
     
     <div class="panel">
@@ -7412,8 +7798,109 @@ const dashboardHTML = `
       });
     }
     
+    async function startScanner() {
+      const intervalMs = prompt('Enter scan interval in seconds (default: 300):', '300');
+      const ms = (parseInt(intervalMs) || 300) * 1000;
+      
+      try {
+        const response = await fetch('/scanner/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ intervalMs: ms })
+        });
+        
+        const result = await response.json();
+        const msgDiv = document.getElementById('scannerMessage');
+        
+        if (result.success) {
+          msgDiv.innerHTML = '✅ ' + result.message;
+          msgDiv.style.color = '#0f0';
+        } else {
+          msgDiv.innerHTML = '⚠️ ' + result.message;
+          msgDiv.style.color = '#ff0';
+        }
+        
+        setTimeout(() => refreshScannerStatus(), 500);
+      } catch (err) {
+        document.getElementById('scannerMessage').innerHTML = '❌ Error: ' + err.message;
+        document.getElementById('scannerMessage').style.color = '#f00';
+      }
+    }
+    
+    async function stopScanner() {
+      try {
+        const response = await fetch('/scanner/stop', { method: 'POST' });
+        const result = await response.json();
+        const msgDiv = document.getElementById('scannerMessage');
+        
+        if (result.success) {
+          msgDiv.innerHTML = '✅ ' + result.message;
+          msgDiv.style.color = '#0f0';
+        } else {
+          msgDiv.innerHTML = '⚠️ ' + result.message;
+          msgDiv.style.color = '#ff0';
+        }
+        
+        setTimeout(() => refreshScannerStatus(), 500);
+      } catch (err) {
+        document.getElementById('scannerMessage').innerHTML = '❌ Error: ' + err.message;
+        document.getElementById('scannerMessage').style.color = '#f00';
+      }
+    }
+    
+    async function refreshScannerStatus() {
+      try {
+        const response = await fetch('/scanner/status');
+        const status = await response.json();
+        
+        document.getElementById('scannerStatus').textContent = status.active ? '✅ Running' : '⏹️ Stopped';
+        document.getElementById('scannerStatus').style.color = status.active ? '#0f0' : '#f00';
+        document.getElementById('scannerInterval').textContent = status.active ? 
+          (status.intervalMs / 1000) + 's' : 'N/A';
+        document.getElementById('scannerQueue').textContent = status.queueSize;
+        document.getElementById('scannerPlugins').textContent = status.totalPlugins;
+        document.getElementById('scannerTotalScans').textContent = status.totalScans;
+        
+        // Update recent scans
+        if (status.recentScans && status.recentScans.length > 0) {
+          document.getElementById('recentScansList').innerHTML = status.recentScans.map(scan => {
+            const timeAgo = Math.floor((Date.now() - scan.timestamp) / 1000);
+            const riskColor = scan.riskScore > 70 ? '#f00' : (scan.riskScore > 40 ? '#ff0' : '#0f0');
+            return \`<div class="stash-entry" style="border-color: \${riskColor}; margin: 3px 0; padding: 5px;">
+              📦 \${scan.fileName}<br>
+              Risk: \${scan.riskScore} | Vulns: \${scan.vulnerabilities} | Exploits: \${scan.exploits}<br>
+              ⏱️ \${timeAgo}s ago
+            </div>\`;
+          }).join('');
+        } else {
+          document.getElementById('recentScansList').innerHTML = '<em>No scans yet</em>';
+        }
+        
+        // Update tracked plugins
+        if (status.plugins && status.plugins.length > 0) {
+          document.getElementById('trackedPluginsList').innerHTML = status.plugins.map(plugin => {
+            const trendColor = plugin.trend === 'increasing' ? '#f00' : 
+                              (plugin.trend === 'decreasing' ? '#0f0' : '#ff0');
+            const lastScanAgo = plugin.lastScan ? 
+              Math.floor((Date.now() - plugin.lastScan) / 60000) : 'Never';
+            return \`<div class="stash-entry" style="border-color: \${trendColor}; margin: 3px 0; padding: 5px;">
+              📦 \${plugin.name}<br>
+              Scans: \${plugin.scanCount} | Risk: \${plugin.lastRiskScore} | Trend: \${plugin.trend}<br>
+              Last: \${typeof lastScanAgo === 'number' ? lastScanAgo + 'm ago' : lastScanAgo}
+            </div>\`;
+          }).join('');
+        } else {
+          document.getElementById('trackedPluginsList').innerHTML = '<em>No plugins tracked</em>';
+        }
+      } catch (err) {
+        console.error('Failed to refresh scanner status:', err);
+      }
+    }
+    
     setInterval(update, 1000);
+    setInterval(refreshScannerStatus, 5000); // Update scanner status every 5 seconds
     update();
+    refreshScannerStatus();
   </script>
 </body>
 </html>
@@ -7615,6 +8102,41 @@ http.createServer((req, res) => {
       }
     });
     */
+  } else if (req.url === '/scanner/start' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { intervalMs } = JSON.parse(body || '{}');
+        const result = globalPluginAnalyzer.startContinuousScanning(intervalMs || 300000);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
+  } else if (req.url === '/scanner/stop' && req.method === 'POST') {
+    const result = globalPluginAnalyzer.stopContinuousScanning();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+  } else if (req.url === '/scanner/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(globalPluginAnalyzer.getContinuousScanStatus()));
+  } else if (req.url === '/scanner/queue' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { filePath, fileName, priority } = JSON.parse(body);
+        const result = globalPluginAnalyzer.addToScanQueue(filePath, fileName, priority);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
+      }
+    });
   } else if (req.url === '/command' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => body += chunk);

@@ -1,3 +1,21 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+
+# Data files
+data/
+models/
+replays/
+training/
+stashes/
+
+# Generated files
+dupes/*.txt
+dupes/*.json
+dupes/uploaded_*
 # Node modules
 node_modules/
 package-lock.json
@@ -18,3 +36,14 @@ stashes/
 # OS files
 .DS_Store
 Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
