@@ -1,0 +1,32 @@
+# Node modules
+node_modules/
+
+# Data directories
+data/
+logs/
+models/
+dupes/
+replays/
+training/
+stashes/
+
+# Temporary files
+*.log
+*.tmp
+
+# Environment files
+.env
+.env.local
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Tracking data (sensitive)
+tracking_*.json
