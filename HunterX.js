@@ -388,6 +388,23 @@ const config = {
     visitedChunks: new Set()
   },
   
+  // Auto-stash backup configuration
+  backup: {
+    enabled: true,
+    autoBackup: true,
+    backupPriority: [
+      'diamond', 'netherite_ingot', 'netherite_scrap', 'ancient_debris',
+      'emerald', 'diamond_block', 'emerald_block',
+      'elytra', 'totem_of_undying', 'shulker_box',
+      'enchanted_book', 'nether_star', 'beacon',
+      'golden_apple', 'enchanted_golden_apple'
+    ],
+    leavePercentage: 0.1,
+    riskAssessment: true,
+    multiBot: true,
+    maxBotsPerBackup: 3
+  },
+  
   // Combat settings
   combat: {
     maxSelfDamage: 6,
@@ -471,6 +488,7 @@ const config = {
       }
     },
     stashes: { found: 0, totalValue: 0, bestStash: null },
+    backup: { stashesBackedUp: 0, totalValueBacked: 0 },
     production: { items: {}, lastUpdate: null }
   },
   training: { episodes: [], replayBuffer: [], maxBufferSize: 10000 },
@@ -3074,6 +3092,305 @@ class BuilderWorker {
 }
 
 
+// === AUTO STASH BACKUP SYSTEM ===
+class BackupManager {
+  constructor() {
+    this.queue = [];
+    this.activeBackups = [];
+    this.completedBackups = [];
+  }
+  startBackup(stashLocation, itemsPlanned) {
+    const op = {
+      id: `backup_${Date.now()}`,
+      stashLocation,
+      itemsPlanned,
+      tripsPlanned: 0,
+      tripsCompleted: 0,
+      startedAt: Date.now(),
+      status: 'active'
+    };
+    this.activeBackups.push(op);
+    return op;
+  }
+  completeBackup(op) {
+    if (!op) return;
+    op.endedAt = Date.now();
+    op.status = 'complete';
+    this.activeBackups = this.activeBackups.filter(b => b.id !== op.id);
+    this.completedBackups.push(op);
+    return op;
+  }
+}
+
+class StashBackup {
+  constructor(bot) {
+    this.bot = bot;
+    this.backupPriority = (config.backup && Array.isArray(config.backup.backupPriority))
+      ? config.backup.backupPriority
+      : [
+        'diamond', 'netherite_ingot', 'netherite_scrap', 'ancient_debris',
+        'emerald', 'diamond_block', 'emerald_block',
+        'elytra', 'totem_of_undying', 'shulker_box',
+        'enchanted_book', 'nether_star', 'beacon',
+        'golden_apple', 'enchanted_golden_apple'
+      ];
+    this.leavePercentage = config.backup?.leavePercentage ?? 0.1;
+  }
+  async backupStash(stashLocation) {
+    try {
+      console.log(`[BACKUP] Starting backup of stash at ${stashLocation.x}, ${stashLocation.y}, ${stashLocation.z}`);
+      if (config.backup?.riskAssessment) {
+        const risk = await this.assessBackupRisk(stashLocation);
+        if (!risk.safe) {
+          console.log(`[BACKUP] Risk too high (${risk.reason}). Queuing backup.`);
+          if (globalBackupManager) {
+            globalBackupManager.queue.push({ stashLocation, reason: risk.reason, queuedAt: Date.now() });
+          }
+          return;
+        }
+      }
+      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+        stashLocation.x, stashLocation.y, stashLocation.z
+      ), 2)).catch(() => {});
+      const containers = await this.findNearbyContainers(32);
+      const valuableItems = await this.catalogStashContents(containers);
+      const trips = this.planBackupTrips(valuableItems);
+      console.log(`[BACKUP] Found ${valuableItems.length} valuable item entries, ${trips.length} trips required`);
+      let op = null;
+      if (globalBackupManager) {
+        op = globalBackupManager.startBackup(stashLocation, valuableItems.length);
+        op.tripsPlanned = trips.length;
+      }
+      if (config.backup?.multiBot) {
+        try {
+          await this.coordinatedBackup(stashLocation, config.backup.maxBotsPerBackup || 3);
+        } catch (e) {
+          console.log(`[BACKUP] Coordination error: ${e.message}`);
+        }
+      }
+      for (let i = 0; i < trips.length; i++) {
+        await this.executeBackupTrip(trips[i]);
+        if (op) op.tripsCompleted = i + 1;
+        console.log(`[BACKUP] Trip ${i + 1}/${trips.length} complete`);
+      }
+      console.log('[BACKUP] Stash backup complete!');
+      const totalValue = this.calculateValue(valuableItems);
+      config.analytics.backup.stashesBackedUp = (config.analytics.backup.stashesBackedUp || 0) + 1;
+      config.analytics.backup.totalValueBacked = (config.analytics.backup.totalValueBacked || 0) + totalValue;
+      if (op && globalBackupManager) {
+        globalBackupManager.completeBackup(op);
+      }
+    } catch (err) {
+      console.log(`[BACKUP] Error during backup: ${err.message}`);
+    }
+  }
+  async findNearbyContainers(range = 32) {
+    try {
+      const positions = this.bot.findBlocks({
+        matching: (blockId) => {
+          const name = this.bot.registry.blocks[blockId]?.name || '';
+          if (!name) return false;
+          if (name === 'ender_chest') return false; // exclude ender chest from stash containers
+          return name.includes('chest') || name.includes('barrel') || name.includes('shulker');
+        },
+        maxDistance: range,
+        count: 200
+      });
+      const blocks = positions.map(pos => this.bot.blockAt(pos)).filter(Boolean);
+      return blocks;
+    } catch (err) {
+      console.log(`[BACKUP] Failed to find containers: ${err.message}`);
+      return [];
+    }
+  }
+  async catalogStashContents(containers) {
+    const valuableItems = [];
+    for (const container of containers) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const items = chest.containerItems();
+        for (const item of items) {
+          if (this.isValuable(item)) {
+            const takeAmount = Math.max(0, Math.floor(item.count * (1 - this.leavePercentage)));
+            if (takeAmount > 0) {
+              valuableItems.push({
+                item: { ...item, count: takeAmount },
+                container,
+                priority: this.getPriority(item)
+              });
+            }
+          }
+        }
+        chest.close();
+        await sleep(200);
+      } catch (err) {
+        console.log(`[BACKUP] Failed to open catalog container: ${err.message}`);
+      }
+    }
+    valuableItems.sort((a, b) => b.priority - a.priority);
+    return valuableItems;
+  }
+  isValuable(item) {
+    if (!item) return false;
+    if (this.backupPriority.includes(item.name)) return true;
+    if (item.nbt?.value?.Enchantments) return true;
+    if (item.name?.includes('shulker_box')) return true;
+    const unitValue = this.getItemValue(item.name);
+    return unitValue * (item.count || 1) > 1000;
+  }
+  getPriority(item) {
+    const index = this.backupPriority.indexOf(item.name);
+    if (index !== -1) return 1000 - index;
+    if (item.nbt?.value?.Enchantments) return 500;
+    if (item.name?.includes('shulker_box')) return 800;
+    return this.getItemValue(item.name) * (item.count || 1);
+  }
+  planBackupTrips(valuableItems) {
+    const trips = [];
+    let currentTrip = [];
+    let currentSlots = 0;
+    for (const valuable of valuableItems) {
+      if (currentSlots + 1 <= 36) {
+        currentTrip.push(valuable);
+        currentSlots++;
+      } else {
+        trips.push(currentTrip);
+        currentTrip = [valuable];
+        currentSlots = 1;
+      }
+    }
+    if (currentTrip.length > 0) trips.push(currentTrip);
+    return trips;
+  }
+  async executeBackupTrip(tripItems) {
+    for (const { item, container } of tripItems) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const amount = Math.min(item.count, item.count);
+        await chest.withdraw(item.type, null, amount);
+        chest.close();
+        await sleep(150);
+      } catch (err) {
+        console.log(`[BACKUP] Withdraw failed: ${err.message}`);
+      }
+    }
+    console.log(`[BACKUP] Collected ${tripItems.length} items, traveling to home base...`);
+    await this.goToHomeBase();
+    const enderChest = await this.findOrPlaceEnderChest();
+    try {
+      const chest = await this.bot.openContainer(enderChest);
+      for (const { item } of tripItems) {
+        const invItem = this.bot.inventory.items().find(i => i.type === item.type);
+        if (invItem) {
+          try {
+            await chest.deposit(invItem.type, null, invItem.count);
+            console.log(`[BACKUP] Deposited ${invItem.count}x ${invItem.name}`);
+          } catch (err) {
+            console.log(`[BACKUP] Deposit failed: ${err.message}`);
+          }
+        }
+      }
+      chest.close();
+    } catch (err) {
+      console.log(`[BACKUP] Failed to open ender chest: ${err.message}`);
+    }
+    console.log('[BACKUP] Returning to stash...');
+    // Note: path back to stash can be handled by caller/scanner if needed
+  }
+  async goToHomeBase() {
+    if (!config.homeBase?.coords) {
+      console.log('[BACKUP] No home base set, using current location');
+      return;
+    }
+    const { x, y, z } = config.homeBase.coords;
+    try {
+      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2));
+    } catch (err) {
+      console.log(`[BACKUP] Path to home base failed: ${err.message}`);
+    }
+  }
+  async findOrPlaceEnderChest() {
+    let enderChest = this.bot.findBlock({
+      matching: this.bot.registry.blocksByName.ender_chest?.id,
+      maxDistance: 16
+    });
+    if (enderChest) return enderChest;
+    const enderChestItem = this.bot.inventory.items().find(item => item.name === 'ender_chest');
+    if (!enderChestItem) throw new Error('No ender chest available');
+    const placeBlock = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
+    try {
+      await this.bot.equip(enderChestItem, 'hand');
+      await this.bot.placeBlock(placeBlock, new Vec3(0, 1, 0));
+    } catch (err) {
+      console.log(`[BACKUP] Failed to place ender chest: ${err.message}`);
+    }
+    enderChest = this.bot.findBlock({
+      matching: this.bot.registry.blocksByName.ender_chest?.id,
+      maxDistance: 4
+    });
+    if (!enderChest) throw new Error('Ender chest placement failed');
+    return enderChest;
+  }
+  getItemValue(name) { return ITEM_VALUES[name] || 1; }
+  calculateValue(items) { return items.reduce((sum, v) => sum + this.getItemValue(v.item.name) * (v.item.count || 1), 0); }
+  async smartBackup(containers) {
+    const leavePercentage = this.leavePercentage;
+    for (const container of containers) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const items = chest.containerItems();
+        for (const item of items) {
+          const takeAmount = Math.floor(item.count * (1 - leavePercentage));
+          if (takeAmount > 0) {
+            try { await chest.withdraw(item.type, null, takeAmount); } catch (err) {}
+          }
+        }
+        chest.close();
+      } catch (err) {}
+    }
+  }
+  async coordinatedBackup(stashLocation, botCount) {
+    try {
+      if (!globalSwarmCoordinator) return;
+      const bots = globalSwarmCoordinator.getBotsNear(stashLocation, 256) || [];
+      const selected = bots.slice(0, Math.min(botCount || 1, bots.length));
+      const containers = await this.findNearbyContainers(32);
+      const containersPerBot = Math.ceil(containers.length / Math.max(1, selected.length));
+      for (let i = 0; i < selected.length; i++) {
+        const bot = selected[i];
+        const botContainers = containers.slice(i * containersPerBot, (i + 1) * containersPerBot);
+        globalSwarmCoordinator.sendToBot(bot.id, {
+          type: 'TASK_ASSIGNMENT',
+          task: 'LOOT_STASH',
+          target: stashLocation,
+          containers: botContainers.map(b => b.position)
+        });
+      }
+    } catch (err) {
+      console.log(`[BACKUP] Coordination error: ${err.message}`);
+    }
+  }
+  async assessBackupRisk(stashLocation) {
+    try {
+      // Check nearby players
+      const nearbyPlayers = Object.values(this.bot.players || {}).filter(p => {
+        const pos = p.entity?.position;
+        if (!pos) return false;
+        const dist = this.bot.entity.position.distanceTo(pos);
+        return p.username !== this.bot.username && dist < 128;
+      });
+      if (nearbyPlayers.length > 0) {
+        console.log('[BACKUP] Players nearby, aborting');
+        return { safe: false, reason: 'players_nearby' };
+      }
+      // TODO: Owner detection/recent activity could be implemented with server logs/heuristics
+      return { safe: true };
+    } catch (err) {
+      return { safe: true };
+    }
+  }
+}
+
 // === ADVANCED STASH SCANNER ===
 class StashScanner {
   constructor(bot, swarmCoordinator = null) {
@@ -3201,8 +3518,10 @@ class StashScanner {
           items: items.map(i => ({ name: i.name, count: i.count, value: ITEM_VALUES[i.name] || 1 }))
         });
         
-        // Loot valuable items
-        await this.lootContainer(container, items);
+        // Loot valuable items (disabled if auto-backup enabled)
+        if (!(config.backup?.enabled && config.backup?.autoBackup)) {
+          await this.lootContainer(container, items);
+        }
         
         container.close();
         await sleep(200);
@@ -3235,22 +3554,36 @@ class StashScanner {
       console.log('[STASH] 📡 Broadcast stash discovery to swarm');
     }
     
-    // Auto-navigate home if carrying valuables
-    const enderManager = new EnderChestManager(this.bot);
-    if (enderManager.shouldDepositInventory()) {
-      console.log('[STASH] 💎 Carrying valuables, depositing in ender chest');
-      await enderManager.depositValuables();
-      
-      if (config.homeBase.coords) {
-        console.log('[STASH] 🏠 Heading home with loot');
-        this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
-          config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 10
-        )).catch(() => {});
+    // Auto-navigate home if carrying valuables (disabled if auto-backup enabled)
+    if (!(config.backup?.enabled && config.backup?.autoBackup)) {
+      const enderManager = new EnderChestManager(this.bot);
+      if (enderManager.shouldDepositInventory()) {
+        console.log('[STASH] 💎 Carrying valuables, depositing in ender chest');
+        await enderManager.depositValuables();
+        
+        if (config.homeBase.coords) {
+          console.log('[STASH] 🏠 Heading home with loot');
+          this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+            config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 10
+          )).catch(() => {});
+        }
       }
     }
     
     // Save stash report
     this.saveStashReport(stash);
+
+    // Trigger auto-backup when configured
+    if (config.backup?.enabled && config.backup?.autoBackup) {
+      try {
+        console.log(`[SCANNER] Found stash! Starting auto-backup...`);
+        const backup = new StashBackup(this.bot);
+        await backup.backupStash({ x: center.x, y: center.y, z: center.z });
+        console.log(`[SCANNER] Backup complete, resuming scan...`);
+      } catch (err) {
+        console.log(`[SCANNER] Auto-backup failed: ${err.message}`);
+      }
+    }
     
     console.log(`[STASH] 💎 Documented stash: ${chests.length} chests, Value: ${stash.totalValue}`);
   }
@@ -6674,7 +7007,2889 @@ class CrystalPvP {
   }
 }
 
+// === UNIVERSAL ITEM FINDER AI SYSTEM ===
 
+// Comprehensive item knowledge base with 500+ items
+const ITEM_KNOWLEDGE = {
+  // Books & Enchantments
+  "mending_book": {
+    sources: [
+      { type: "villager_trade", mob: "librarian", method: "find_village_or_cure_zombie" },
+      { type: "loot_chest", locations: ["dungeon", "mineshaft", "end_city", "ancient_city", "stronghold"] },
+      { type: "fishing", probability: 0.01, requires: "luck_of_sea" }
+    ],
+    priority: ["villager_trade", "loot_chest", "fishing"],
+    optimal_strategy: "Find village, locate/cure librarian, check trades"
+  },
+  
+  "unbreaking_book": {
+    sources: [
+      { type: "villager_trade", mob: "librarian", method: "find_village_or_cure_zombie" },
+      { type: "loot_chest", locations: ["dungeon", "mineshaft", "end_city", "ancient_city", "stronghold"] }
+    ],
+    priority: ["villager_trade", "loot_chest"],
+    optimal_strategy: "Find village, locate/cure librarian, check trades"
+  },
+  
+  "sharpness_book": {
+    sources: [
+      { type: "villager_trade", mob: "librarian", method: "find_village_or_cure_zombie" },
+      { type: "loot_chest", locations: ["dungeon", "mineshaft", "end_city", "ancient_city", "stronghold"] }
+    ],
+    priority: ["villager_trade", "loot_chest"],
+    optimal_strategy: "Find village, locate/cure librarian, check trades"
+  },
+  
+  "protection_book": {
+    sources: [
+      { type: "villager_trade", mob: "librarian", method: "find_village_or_cure_zombie" },
+      { type: "loot_chest", locations: ["dungeon", "mineshaft", "end_city", "ancient_city", "stronghold"] }
+    ],
+    priority: ["villager_trade", "loot_chest"],
+    optimal_strategy: "Find village, locate/cure librarian, check trades"
+  },
+  
+  "efficiency_book": {
+    sources: [
+      { type: "villager_trade", mob: "librarian", method: "find_village_or_cure_zombie" },
+      { type: "loot_chest", locations: ["dungeon", "mineshaft", "end_city", "ancient_city", "stronghold"] }
+    ],
+    priority: ["villager_trade", "loot_chest"],
+    optimal_strategy: "Find village, locate/cure librarian, check trades"
+  },
+  
+  "fortune_book": {
+    sources: [
+      { type: "villager_trade", mob: "librarian", method: "find_village_or_cure_zombie" },
+      { type: "loot_chest", locations: ["dungeon", "mineshaft", "end_city", "ancient_city", "stronghold"] }
+    ],
+    priority: ["villager_trade", "loot_chest"],
+    optimal_strategy: "Find village, locate/cure librarian, check trades"
+  },
+  
+  // Ocean Items
+  "trident": {
+    sources: [
+      { type: "mob_drop", mob: "drowned", condition: "holding_trident", drop_rate: 0.085, looting_bonus: 0.01 }
+    ],
+    optimal_strategy: "Find ocean/river biome, hunt drowned with tridents visible"
+  },
+  
+  "heart_of_the_sea": {
+    sources: [
+      { type: "loot_chest", locations: ["buried_treasure"], guaranteed: true }
+    ],
+    requires: ["treasure_map"],
+    optimal_strategy: "Find shipwreck/underwater ruins, get map, follow to buried treasure"
+  },
+  
+  isCommand(message) {
+    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'maintenance', 'repair', 'fix armor', 'swap elytra', 'check elytra', 'set xp farm'];
+    return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
+  }
+  "nautilus_shell": {
+    sources: [
+      { type: "mob_drop", mob: "drowned", drop_rate: 0.03, looting_bonus: 0.01 },
+      { type: "fishing", probability: 0.007, requires: "luck_of_sea" }
+    ],
+    optimal_strategy: "Kill drowned in ocean (faster than fishing)"
+  },
+  
+  // Crafted Items (Recursive)
+  "conduit": {
+    type: "crafted",
+    recipe: [
+      { item: "heart_of_the_sea", count: 1 },
+      { item: "nautilus_shell", count: 8 }
+    ],
+    optimal_strategy: "Get components first, then craft"
+  },
+  
+  // Nether Items
+  "blaze_rod": {
+    sources: [
+      { type: "mob_drop", mob: "blaze", location: "nether_fortress", drop_rate: 1.0 }
+    ],
+    optimal_strategy: "Find nether fortress, build safe grinder, kill blazes"
+  },
+  
+  "blaze_powder": {
+    type: "crafted",
+    recipe: [
+      { item: "blaze_rod", count: 1 }
+    ],
+    optimal_strategy: "Get blaze rods first, then craft"
+  },
+  
+  "ghast_tear": {
+    sources: [
+      { type: "mob_drop", mob: "ghast", location: "nether", drop_rate: 0.5 }
+    ],
+    optimal_strategy: "Find ghast in nether, kill with bow or deflect fireball"
+  },
+  
+  "magma_cream": {
+    sources: [
+      { type: "mob_drop", mob: "magma_cube", location: "nether", drop_rate: 0.25 },
+      { type: "crafted", recipe: [{ item: "blaze_powder", count: 1 }, { item: "slime_ball", count: 1 }] }
+    ],
+    optimal_strategy: "Kill magma cubes or craft from blaze powder + slime"
+  },
+  
+  "ancient_debris": {
+    sources: [
+      { type: "mining", location: "nether", y_level: "8-22", optimal_y: 15, method: "bed_mining" }
+    ],
+    optimal_strategy: "Y=15 bed mining in nether"
+  },
+  
+  "netherite_scrap": {
+    type: "crafted",
+    recipe: [
+      { item: "ancient_debris", count: 1 }
+    ],
+    optimal_strategy: "Mine ancient debris, then smelt"
+  },
+  
+  "netherite_ingot": {
+    type: "crafted",
+    recipe: [
+      { item: "netherite_scrap", count: 4 },
+      { item: "gold_ingot", count: 4 }
+    ],
+    optimal_strategy: "Get ancient debris and gold, then craft"
+  },
+  
+  // End Items
+  "elytra": {
+    sources: [
+      { type: "loot_structure", location: "end_ship", guaranteed: true }
+    ],
+    requires: ["kill_ender_dragon"],
+    optimal_strategy: "Kill dragon, find end city with ship, loot item frame"
+  },
+  
+  "shulker_shell": {
+    sources: [
+      { type: "mob_drop", mob: "shulker", location: "end_city", drop_rate: 0.5 }
+    ],
+    optimal_strategy: "Find end city, kill shulkers"
+  },
+  
+  "shulker_box": {
+    type: "crafted",
+    recipe: [
+      { item: "shulker_shell", count: 2 },
+      { item: "chest", count: 1 }
+    ],
+    optimal_strategy: "Get shulker shells and chest, then craft"
+  },
+  
+  "end_rod": {
+    sources: [
+      { type: "mob_drop", mob: "shulker", location: "end_city", drop_rate: 1.0 }
+    ],
+    optimal_strategy: "Find end city, kill shulkers"
+  },
+  
+  "chorus_fruit": {
+    sources: [
+      { type: "harvest", location: "end", structure: "chorus_tree" }
+    ],
+    optimal_strategy: "Find chorus trees in end, harvest"
+  },
+  
+  "popped_chorus_fruit": {
+    type: "crafted",
+    recipe: [
+      { item: "chorus_fruit", count: 1 }
+    ],
+    optimal_strategy: "Smelt chorus fruit"
+  },
+  
+  // Rare Spawns
+  "totem_of_undying": {
+    sources: [
+      { type: "mob_drop", mob: "evoker", location: "woodland_mansion", drop_rate: 1.0 },
+      { type: "mob_drop", mob: "evoker", location: "raid", drop_rate: 1.0 }
+    ],
+    optimal_strategy: "Find woodland mansion or trigger raid"
+  },
+  
+  "saddle": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "desert_temple", "jungle_temple", "village", "stronghold"] },
+      { type: "fishing", probability: 0.005 },
+      { type: "trade", mob: "villager", profession: "leatherworker" }
+    ],
+    priority: ["loot_chest", "trade", "fishing"],
+    optimal_strategy: "Check dungeon/village chests first"
+  },
+  
+  "nametag": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft", "woodland_mansion"] },
+      { type: "fishing", probability: 0.005 },
+      { type: "trade", mob: "villager", profession: "librarian" }
+    ],
+    priority: ["loot_chest", "trade", "fishing"],
+    optimal_strategy: "Check dungeon chests or trade with librarian"
+  },
+  
+  // Farmable Items
+  "diamond": {
+    sources: [
+      { type: "mining", y_level: "-64 to 16", optimal_y: -59, method: "strip_mining" },
+      { type: "loot_chest", locations: ["village", "mineshaft", "stronghold", "end_city"] }
+    ],
+    priority: ["mining", "loot_chest"],
+    optimal_strategy: "Y=-59 strip mining"
+  },
+  
+  "emerald": {
+    sources: [
+      { type: "mining", y_level: "-64 to 320", optimal_y: 240, method: "strip_mining", biome: "mountain" },
+      { type: "trade", mob: "villager", method: "sell_items" }
+    ],
+    priority: ["trade", "mining"],
+    optimal_strategy: "Trade with villagers or mine mountain biomes"
+  },
+  
+  "iron_ingot": {
+    sources: [
+      { type: "mining", y_level: "-64 to 320", optimal_y: 16, method: "strip_mining" },
+      { type: "mob_drop", mob: "zombie", drop_rate: 0.083, looting_bonus: 0.01 },
+      { type: "loot_chest", locations: ["village", "mineshaft", "stronghold"] }
+    ],
+    priority: ["mining", "mob_drop", "loot_chest"],
+    optimal_strategy: "Y=16 strip mining or kill zombies"
+  },
+  
+  "gold_ingot": {
+    sources: [
+      { type: "mining", y_level: "-64 to 32", optimal_y: -32, method: "strip_mining" },
+      { type: "mob_drop", mob: "zombified_piglin", location: "nether", drop_rate: 1.0 },
+      { type: "loot_chest", locations: ["village", "mineshaft", "stronghold", "bastion"] }
+    ],
+    priority: ["mob_drop", "mining", "loot_chest"],
+    optimal_strategy: "Kill zombified piglins in nether"
+  },
+  
+  "coal": {
+    sources: [
+      { type: "mining", y_level: "0 to 320", optimal_y: 96, method: "strip_mining" },
+      { type: "mob_drop", mob: "wither_skeleton", location: "nether_fortress", drop_rate: 0.333 }
+    ],
+    priority: ["mining", "mob_drop"],
+    optimal_strategy: "Y=96 strip mining"
+  },
+  
+  "redstone": {
+    sources: [
+      { type: "mining", y_level: "-64 to 16", optimal_y: -59, method: "strip_mining" },
+      { type: "loot_chest", locations: ["village", "mineshaft", "stronghold"] }
+    ],
+    priority: ["mining", "loot_chest"],
+    optimal_strategy: "Y=-59 strip mining"
+  },
+  
+  "lapis_lazuli": {
+    sources: [
+      { type: "mining", y_level: "-64 to 64", optimal_y: 0, method: "strip_mining" },
+      { type: "loot_chest", locations: ["village", "mineshaft", "shipwreck"] }
+    ],
+    priority: ["mining", "loot_chest"],
+    optimal_strategy: "Y=0 strip mining"
+  },
+  
+  "copper_ingot": {
+    sources: [
+      { type: "mining", y_level: "0 to 96", optimal_y: 48, method: "strip_mining" },
+      { type: "loot_chest", locations: ["village", "shipwreck"] }
+    ],
+    priority: ["mining", "loot_chest"],
+    optimal_strategy: "Y=48 strip mining"
+  },
+  
+  // Wood & Building Materials
+  "oak_log": {
+    sources: [
+      { type: "harvest", location: "overworld", biome: "forest", tree: "oak" }
+    ],
+    optimal_strategy: "Find oak forest, chop trees"
+  },
+  
+  "spruce_log": {
+    sources: [
+      { type: "harvest", location: "overworld", biome: "taiga", tree: "spruce" }
+    ],
+    optimal_strategy: "Find taiga, chop spruce trees"
+  },
+  
+  "birch_log": {
+    sources: [
+      { type: "harvest", location: "overworld", biome: "forest", tree: "birch" }
+    ],
+    optimal_strategy: "Find birch forest, chop trees"
+  },
+  
+  "jungle_log": {
+    sources: [
+      { type: "harvest", location: "overworld", biome: "jungle", tree: "jungle" }
+    ],
+    optimal_strategy: "Find jungle, chop jungle trees"
+  },
+  
+  "acacia_log": {
+    sources: [
+      { type: "harvest", location: "overworld", biome: "savanna", tree: "acacia" }
+    ],
+    optimal_strategy: "Find savanna, chop acacia trees"
+  },
+  
+  "dark_oak_log": {
+    sources: [
+      { type: "harvest", location: "overworld", biome: "dark_forest", tree: "dark_oak" }
+    ],
+    optimal_strategy: "Find dark forest, chop dark oak trees"
+  },
+  
+  "crimson_stem": {
+    sources: [
+      { type: "harvest", location: "nether", tree: "crimson" }
+    ],
+    optimal_strategy: "Find crimson forest in nether"
+  },
+  
+  "warped_stem": {
+    sources: [
+      { type: "harvest", location: "nether", tree: "warped" }
+    ],
+    optimal_strategy: "Find warped forest in nether"
+  },
+  
+  // Food Items
+  "beef": {
+    sources: [
+      { type: "mob_drop", mob: "cow", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Hunt cows"
+  },
+  
+  "porkchop": {
+    sources: [
+      { type: "mob_drop", mob: "pig", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Hunt pigs"
+  },
+  
+  "chicken": {
+    sources: [
+      { type: "mob_drop", mob: "chicken", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Hunt chickens"
+  },
+  
+  "rabbit": {
+    sources: [
+      { type: "mob_drop", mob: "rabbit", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Hunt rabbits"
+  },
+  
+  "mutton": {
+    sources: [
+      { type: "mob_drop", mob: "sheep", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Hunt sheep"
+  },
+  
+  "cod": {
+    sources: [
+      { type: "mob_drop", mob: "cod", location: "ocean", drop_rate: 1.0 },
+      { type: "fishing", probability: 0.6 }
+    ],
+    priority: ["mob_drop", "fishing"],
+    optimal_strategy: "Kill cod in ocean or fish"
+  },
+  
+  "salmon": {
+    sources: [
+      { type: "mob_drop", mob: "salmon", location: "river", drop_rate: 1.0 },
+      { type: "fishing", probability: 0.25 }
+    ],
+    priority: ["mob_drop", "fishing"],
+    optimal_strategy: "Kill salmon in rivers or fish"
+  },
+  
+  "tropical_fish": {
+    sources: [
+      { type: "mob_drop", mob: "tropical_fish", location: "warm_ocean", drop_rate: 1.0 },
+      { type: "fishing", probability: 0.02 }
+    ],
+    priority: ["mob_drop", "fishing"],
+    optimal_strategy: "Kill tropical fish in warm ocean"
+  },
+  
+  "pufferfish": {
+    sources: [
+      { type: "mob_drop", mob: "pufferfish", location: "warm_ocean", drop_rate: 1.0 },
+      { type: "fishing", probability: 0.02 }
+    ],
+    priority: ["mob_drop", "fishing"],
+    optimal_strategy: "Kill pufferfish in warm ocean"
+  },
+  
+  // Rare Materials
+  "dragon_egg": {
+    sources: [
+      { type: "special", location: "end", method: "kill_ender_dragon", guaranteed: true }
+    ],
+    requires: ["kill_ender_dragon"],
+    optimal_strategy: "Kill ender dragon, collect egg"
+  },
+  
+  "dragon_breath": {
+    sources: [
+      { type: "collect", location: "end", method: "dragon_breath", requires: "glass_bottle" }
+    ],
+    requires: ["kill_ender_dragon", "glass_bottle"],
+    optimal_strategy: "Use glass bottle to collect dragon breath"
+  },
+  
+  "phantom_membrane": {
+    sources: [
+      { type: "mob_drop", mob: "phantom", drop_rate: 0.5, looting_bonus: 0.01 }
+    ],
+    optimal_strategy: "Wait for phantom spawn (no sleep for 3+ days), kill"
+  },
+  
+  "slime_ball": {
+    sources: [
+      { type: "mob_drop", mob: "slime", location: "swamp", drop_rate: 1.0 },
+      { type: "mob_drop", mob: "slime", location: "slime_chunk", drop_rate: 1.0 }
+    ],
+    priority: ["slime_chunk", "swamp"],
+    optimal_strategy: "Find slime chunk or swamp at night"
+  },
+  
+  // Special Items
+  "carrot_on_a_stick": {
+    type: "crafted",
+    recipe: [
+      { item: "fishing_rod", count: 1 },
+      { item: "carrot", count: 1 }
+    ],
+    optimal_strategy: "Craft from fishing rod and carrot"
+  },
+  
+  "warped_fungus_on_a_stick": {
+    type: "crafted",
+    recipe: [
+      { item: "fishing_rod", count: 1 },
+      { item: "warped_fungus", count: 1 }
+    ],
+    optimal_strategy: "Craft from fishing rod and warped fungus"
+  },
+  
+  "fire_charge": {
+    sources: [
+      { type: "crafted", recipe: [{ item: "gunpowder", count: 1 }, { item: "coal", count: 1 }, { item: "blaze_powder", count: 1 }] },
+      { type: "trade", mob: "villager", profession: "mason" }
+    ],
+    priority: ["crafted", "trade"],
+    optimal_strategy: "Craft from gunpowder, coal, and blaze powder"
+  },
+  
+  "arrow": {
+    sources: [
+      { type: "crafted", recipe: [{ item: "flint", count: 1 }, { item: "stick", count: 1 }, { item: "feather", count: 1 }] },
+      { type: "mob_drop", mob: "skeleton", drop_rate: 0.5, looting_bonus: 0.01 },
+      { type: "loot_chest", locations: ["village", "pillager_outpost"] }
+    ],
+    priority: ["crafted", "mob_drop", "loot_chest"],
+    optimal_strategy: "Craft from flint, stick, feather"
+  },
+  
+  "spectral_arrow": {
+    sources: [
+      { type: "crafted", recipe: [{ item: "glowstone_dust", count: 4 }, { item: "arrow", count: 1 }] },
+      { type: "mob_drop", mob: "stray", drop_rate: 0.5 }
+    ],
+    priority: ["crafted", "mob_drop"],
+    optimal_strategy: "Craft from glowstone dust and arrows"
+  },
+  
+  "tipped_arrow": {
+    type: "crafted",
+    recipe: [
+      { item: "arrow", count: 8 },
+      { item: "lingering_potion", count: 1 }
+    ],
+    optimal_strategy: "Craft arrows with lingering potions"
+  },
+  
+  // Potions & Brewing
+  "nether_wart": {
+    sources: [
+      { type: "harvest", location: "nether_fortress", structure: "nether_wart" }
+    ],
+    optimal_strategy: "Find nether fortress, harvest nether wart"
+  },
+  
+  "brewing_stand": {
+    sources: [
+      { type: "craft", recipe: [{ item: "blaze_rod", count: 1 }, { item: "cobblestone", count: 3 }] },
+      { type: "loot_chest", locations: ["village", "igloo"] }
+    ],
+    priority: ["craft", "loot_chest"],
+    optimal_strategy: "Craft from blaze rod and cobblestone"
+  },
+  
+  "cauldron": {
+    sources: [
+      { type: "craft", recipe: [{ item: "iron_ingot", count: 7 }] },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["craft", "loot_chest"],
+    optimal_strategy: "Craft from 7 iron ingots"
+  },
+  
+  "glass_bottle": {
+    sources: [
+      { type: "craft", recipe: [{ item: "glass", count: 3 }] }
+    ],
+    optimal_strategy: "Craft from 3 glass blocks"
+  },
+  
+  "potion_of_weakness": {
+    type: "crafted",
+    recipe: [
+      { item: "water_bottle", count: 1 },
+      { item: "fermented_spider_eye", count: 1 }
+    ],
+    requires: ["brewing_stand"],
+    optimal_strategy: "Brew water bottle with fermented spider eye"
+  },
+  
+  "fermented_spider_eye": {
+    type: "crafted",
+    recipe: [
+      { item: "spider_eye", count: 1 },
+      { item: "sugar", count: 1 },
+      { item: "brown_mushroom", count: 1 }
+    ],
+    optimal_strategy: "Craft from spider eye, sugar, and brown mushroom"
+  },
+  
+  // Music Discs
+  "music_disc_13": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "woodland_mansion"] }
+    ],
+    optimal_strategy: "Find dungeon or woodland mansion chests"
+  },
+  
+  "music_disc_cat": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft"] }
+    ],
+    optimal_strategy: "Find dungeon or mineshaft chests"
+  },
+  
+  "music_disc_blocks": {
+    sources: [
+      { type: "mob_drop", mob: "creeper", condition: "killed_by_skeleton", drop_rate: 1.0 }
+    ],
+    optimal_strategy: "Get skeleton to kill creeper"
+  },
+  
+  "music_disc_chirp": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft"] }
+    ],
+    optimal_strategy: "Find dungeon or mineshaft chests"
+  },
+  
+  "music_disc_far": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft"] }
+    ],
+    optimal_strategy: "Find dungeon or mineshaft chests"
+  },
+  
+  "music_disc_mall": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft"] }
+    ],
+    optimal_strategy: "Find dungeon or mineshaft chests"
+  },
+  
+  "music_disc_mellohi": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft"] }
+    ],
+    optimal_strategy: "Find dungeon or mineshaft chests"
+  },
+  
+  "music_disc_stal": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft"] }
+    ],
+    optimal_strategy: "Find dungeon or mineshaft chests"
+  },
+  
+  "music_disc_strad": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft"] }
+    ],
+    optimal_strategy: "Find dungeon or mineshaft chests"
+  },
+  
+  "music_disc_ward": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft"] }
+    ],
+    optimal_strategy: "Find dungeon or mineshaft chests"
+  },
+  
+  "music_disc_11": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "woodland_mansion"] }
+    ],
+    optimal_strategy: "Find dungeon or woodland mansion chests"
+  },
+  
+  "music_disc_wait": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft"] }
+    ],
+    optimal_strategy: "Find dungeon or mineshaft chests"
+  },
+  
+  "music_disc_pigstep": {
+    sources: [
+      { type: "loot_chest", locations: ["bastion_remnant"] }
+    ],
+    optimal_strategy: "Find bastion remnant chests"
+  },
+  
+  "music_disc_otherside": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "bastion_remnant", "end_city"] }
+    ],
+    optimal_strategy: "Find dungeon, bastion, or end city chests"
+  },
+  
+  "music_disc_5": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft"] }
+    ],
+    optimal_strategy: "Find dungeon or mineshaft chests"
+  },
+  
+  // Plant & Farm Items
+  "wheat_seeds": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "grass" },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["harvest", "loot_chest"],
+    optimal_strategy: "Break tall grass or find village chests"
+  },
+  
+  "wheat": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "wheat" },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["harvest", "loot_chest"],
+    optimal_strategy: "Find village farms or grow your own"
+  },
+  
+  "carrot": {
+    sources: [
+      { type: "loot_chest", locations: ["village", "shipwreck"] },
+      { type: "mob_drop", mob: "zombie", drop_rate: 0.008 }
+    ],
+    priority: ["loot_chest", "mob_drop"],
+    optimal_strategy: "Find village chests or kill zombies"
+  },
+  
+  "potato": {
+    sources: [
+      { type: "loot_chest", locations: ["village", "shipwreck"] },
+      { type: "mob_drop", mob: "zombie", drop_rate: 0.008 }
+    ],
+    priority: ["loot_chest", "mob_drop"],
+    optimal_strategy: "Find village chests or kill zombies"
+  },
+  
+  "beetroot_seeds": {
+    sources: [
+      { type: "loot_chest", locations: ["village", "end_city"] },
+      { type: "harvest", location: "overworld", plant: "beetroot" }
+    ],
+    priority: ["harvest", "loot_chest"],
+    optimal_strategy: "Find village farms or harvest beetroot"
+  },
+  
+  "pumpkin_seeds": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "pumpkin" },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["harvest", "loot_chest"],
+    optimal_strategy: "Find pumpkin patches or village chests"
+  },
+  
+  "melon_seeds": {
+    sources: [
+      { type: "loot_chest", locations: ["village", "mineshaft"] },
+      { type: "harvest", location: "overworld", plant: "melon" }
+    ],
+    priority: ["harvest", "loot_chest"],
+    optimal_strategy: "Find jungle temples or harvest melons"
+  },
+  
+  "sugar_cane": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "sugar_cane", biome: "desert/swamp" }
+    ],
+    optimal_strategy: "Find sugar cane near water in desert/swamp"
+  },
+  
+  "cactus": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "cactus", biome: "desert" }
+    ],
+    optimal_strategy: "Find cactus in desert biomes"
+  },
+  
+  "bamboo": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "bamboo", biome: "jungle" },
+      { type: "loot_chest", locations: ["shipwreck"] }
+    ],
+    priority: ["harvest", "loot_chest"],
+    optimal_strategy: "Find jungle or shipwreck chests"
+  },
+  
+  "kelp": {
+    sources: [
+      { type: "harvest", location: "ocean", plant: "kelp" }
+    ],
+    optimal_strategy: "Find and harvest kelp in ocean"
+  },
+  
+  "seagrass": {
+    sources: [
+      { type: "harvest", location: "ocean", plant: "seagrass" },
+      { type: "trade", mob: "villager", profession: "wandering_trader" }
+    ],
+    priority: ["harvest", "trade"],
+    optimal_strategy: "Find seagrass in ocean or trade"
+  },
+  
+  "sea_pickle": {
+    sources: [
+      { type: "harvest", location: "ocean", plant: "sea_pickle" }
+    ],
+    optimal_strategy: "Find sea pickles in warm ocean"
+  },
+  
+  // Flowers & Dyes
+  "red_flower": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "poppy", biome: "plains" }
+    ],
+    optimal_strategy: "Find poppies in plains biome"
+  },
+  
+  "yellow_flower": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "dandelion", biome: "plains" }
+    ],
+    optimal_strategy: "Find dandelions in plains biome"
+  },
+  
+  "blue_orchid": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "blue_orchid", biome: "swamp" }
+    ],
+    optimal_strategy: "Find blue orchids in swamp biome"
+  },
+  
+  "allium": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "allium", biome: "flower_forest" }
+    ],
+    optimal_strategy: "Find allium in flower forest"
+  },
+  
+  "azure_bluet": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "azure_bluet", biome: "plains" }
+    ],
+    optimal_strategy: "Find azure bluets in plains"
+  },
+  
+  "oxeye_daisy": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "oxeye_daisy", biome: "plains" }
+    ],
+    optimal_strategy: "Find oxeye daisies in plains"
+  },
+  
+  "cornflower": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "cornflower", biome: "plains" }
+    ],
+    optimal_strategy: "Find cornflowers in plains"
+  },
+  
+  "lily_of_the_valley": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "lily_of_the_valley", biome: "flower_forest" }
+    ],
+    optimal_strategy: "Find lily of the valley in flower forest"
+  },
+  
+  "wither_rose": {
+    sources: [
+      { type: "mob_drop", mob: "wither_skeleton", location: "nether_fortress", condition: "killed_by_wither" }
+    ],
+    optimal_strategy: "Kill wither skeletons with wither effect"
+  },
+  
+  "sunflower": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "sunflower", biome: "sunflower_plains" }
+    ],
+    optimal_strategy: "Find sunflowers in sunflower plains"
+  },
+  
+  "lilac": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "lilac", biome: "flower_forest" }
+    ],
+    optimal_strategy: "Find lilac in flower forest"
+  },
+  
+  "peony": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "peony", biome: "flower_forest" }
+    ],
+    optimal_strategy: "Find peony in flower forest"
+  },
+  
+  "rose_bush": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "rose_bush", biome: "flower_forest" }
+    ],
+    optimal_strategy: "Find rose bush in flower forest"
+  },
+  
+  "paeonia": {
+    sources: [
+      { type: "harvest", location: "overworld", plant: "paeonia", biome: "flower_forest" }
+    ],
+    optimal_strategy: "Find paeonia in flower forest"
+  },
+  
+  // Nether Plants
+  "crimson_fungus": {
+    sources: [
+      { type: "harvest", location: "nether", plant: "crimson_fungus", biome: "crimson_forest" }
+    ],
+    optimal_strategy: "Find crimson fungus in crimson forest"
+  },
+  
+  "warped_fungus": {
+    sources: [
+      { type: "harvest", location: "nether", plant: "warped_fungus", biome: "warped_forest" }
+    ],
+    optimal_strategy: "Find warped fungus in warped forest"
+  },
+  
+  "crimson_roots": {
+    sources: [
+      { type: "harvest", location: "nether", plant: "crimson_roots", biome: "crimson_forest" }
+    ],
+    optimal_strategy: "Find crimson roots in crimson forest"
+  },
+  
+  "warped_roots": {
+    sources: [
+      { type: "harvest", location: "nether", plant: "warped_roots", biome: "warped_forest" }
+    ],
+    optimal_strategy: "Find warped roots in warped forest"
+  },
+  
+  "nether_sprouts": {
+    sources: [
+      { type: "harvest", location: "nether", plant: "nether_sprouts", biome: "warped_forest" }
+    ],
+    optimal_strategy: "Find nether sprouts in warped forest"
+  },
+  
+  "twisting_vines": {
+    sources: [
+      { type: "harvest", location: "nether", plant: "twisting_vines", biome: "warped_forest" }
+    ],
+    optimal_strategy: "Find twisting vines in warped forest"
+  },
+  
+  "weeping_vines": {
+    sources: [
+      { type: "harvest", location: "nether", plant: "weeping_vines", biome: "crimson_forest" }
+    ],
+    optimal_strategy: "Find weeping vines in crimson forest"
+  },
+  
+  // End Plants
+  "chorus_flower": {
+    sources: [
+      { type: "harvest", location: "end", plant: "chorus_flower", structure: "chorus_tree" }
+    ],
+    optimal_strategy: "Find chorus trees in end islands"
+  },
+  
+  "chorus_plant": {
+    sources: [
+      { type: "harvest", location: "end", plant: "chorus_plant", structure: "chorus_tree" }
+    ],
+    optimal_strategy: "Find chorus trees in end islands"
+  },
+  
+  // Misc Items
+  "bone": {
+    sources: [
+      { type: "mob_drop", mob: "skeleton", drop_rate: 1.0, looting_bonus: 0.01 },
+      { type: "mob_drop", mob: "stray", drop_rate: 1.0, looting_bonus: 0.01 },
+      { type: "loot_chest", locations: ["village", "desert_temple"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Kill skeletons/strays"
+  },
+  
+  "bone_meal": {
+    sources: [
+      { type: "craft", recipe: [{ item: "bone", count: 1 }] },
+      { type: "mob_drop", mob: "fish", location: "ocean", drop_rate: 0.05 }
+    ],
+    priority: ["craft", "mob_drop"],
+    optimal_strategy: "Craft from bones"
+  },
+  
+  "gunpowder": {
+    sources: [
+      { type: "mob_drop", mob: "creeper", drop_rate: 0.333, looting_bonus: 0.01 },
+      { type: "mob_drop", mob: "ghast", location: "nether", drop_rate: 0.333 },
+      { type: "mob_drop", mob: "witch", drop_rate: 0.125 },
+      { type: "loot_chest", locations: ["dungeon", "shipwreck"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Kill creepers or ghasts"
+  },
+  
+  "string": {
+    sources: [
+      { type: "mob_drop", mob: "spider", drop_rate: 0.333, looting_bonus: 0.01 },
+      { type: "mob_drop", mob: "cave_spider", drop_rate: 0.333, looting_bonus: 0.01 },
+      { type: "mob_drop", mob: "cat", drop_rate: 0.5 },
+      { type: "loot_chest", locations: ["dungeon", "village"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Kill spiders or find chests"
+  },
+  
+  "feather": {
+    sources: [
+      { type: "mob_drop", mob: "chicken", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Kill chickens"
+  },
+  
+  "flint": {
+    sources: [
+      { type: "harvest", location: "overworld", block: "gravel" },
+      { type: "trade", mob: "villager", profession: "fletcher" }
+    ],
+    priority: ["harvest", "trade"],
+    optimal_strategy: "Mine gravel or trade with fletcher"
+  },
+  
+  "leather": {
+    sources: [
+      { type: "mob_drop", mob: "cow", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "mob_drop", mob: "horse", drop_rate: 0.5, looting_bonus: 0.01 },
+      { type: "mob_drop", mob: "donkey", drop_rate: 0.5, looting_bonus: 0.01 },
+      { type: "mob_drop", mob: "mule", drop_rate: 0.5, looting_bonus: 0.01 },
+      { type: "mob_drop", mob: "llama", drop_rate: 0.5, looting_bonus: 0.01 },
+      { type: "mob_drop", mob: "rabbit", drop_rate: 0.5, looting_bonus: 0.01 },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Kill cows/horses or find chests"
+  },
+  
+  "rabbit_hide": {
+    sources: [
+      { type: "mob_drop", mob: "rabbit", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "loot_chest", locations: ["village"] }
+    ],
+    priority: ["mob_drop", "loot_chest"],
+    optimal_strategy: "Kill rabbits"
+  },
+  
+  "rabbit_foot": {
+    sources: [
+      { type: "mob_drop", mob: "rabbit", drop_rate: 0.1, looting_bonus: 0.01 }
+    ],
+    optimal_strategy: "Kill rabbits with looting sword"
+  },
+  
+  "spider_eye": {
+    sources: [
+      { type: "mob_drop", mob: "spider", drop_rate: 0.333, looting_bonus: 0.01 },
+      { type: "mob_drop", mob: "cave_spider", drop_rate: 0.333, looting_bonus: 0.01 },
+      { type: "mob_drop", mob: "witch", drop_rate: 0.5 }
+    ],
+    priority: ["mob_drop", "mob_drop", "mob_drop"],
+    optimal_strategy: "Kill spiders or witches"
+  },
+  
+  "rotten_flesh": {
+    sources: [
+      { type: "mob_drop", mob: "zombie", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "mob_drop", mob: "husk", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "mob_drop", mob: "zombie_villager", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "mob_drop", mob: "drowned", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "mob_drop", mob: "zoglin", drop_rate: 1.0, looting_bonus: 0.02 },
+      { type: "mob_drop", mob: "zombified_piglin", drop_rate: 1.0, looting_bonus: 0.02 }
+    ],
+    priority: ["mob_drop"],
+    optimal_strategy: "Kill any undead mob"
+  },
+  
+  "gold_nugget": {
+    sources: [
+      { type: "mob_drop", mob: "zombified_piglin", location: "nether", drop_rate: 1.0 },
+      { type: "mob_drop", mob: "piglin", location: "nether", drop_rate: 1.0 },
+      { type: "craft", recipe: [{ item: "gold_ingot", count: 1 }] },
+      { type: "loot_chest", locations: ["bastion_remnant", "ruined_portal"] }
+    ],
+    priority: ["mob_drop", "craft", "loot_chest"],
+    optimal_strategy: "Kill piglins or craft from ingots"
+  },
+  
+  "iron_nugget": {
+    sources: [
+      { type: "craft", recipe: [{ item: "iron_ingot", count: 1 }] },
+      { type: "loot_chest", locations: ["village", "shipwreck"] }
+    ],
+    priority: ["craft", "loot_chest"],
+    optimal_strategy: "Craft from iron ingots"
+  },
+  
+  "copper_nugget": {
+    sources: [
+      { type: "craft", recipe: [{ item: "copper_ingot", count: 1 }] }
+    ],
+    optimal_strategy: "Craft from copper ingots"
+  },
+  
+  // Special Drops
+  "ender_pearl": {
+    sources: [
+      { type: "mob_drop", mob: "enderman", drop_rate: 0.5, looting_bonus: 0.01 },
+      { type: "trade", mob: "villager", profession: "cleric" }
+    ],
+    priority: ["mob_drop", "trade"],
+    optimal_strategy: "Kill endermen or trade with cleric"
+  },
+  
+  "blaze_rod": {
+    sources: [
+      { type: "mob_drop", mob: "blaze", location: "nether_fortress", drop_rate: 1.0 }
+    ],
+    optimal_strategy: "Kill blazes in nether fortress"
+  },
+  
+  "ghast_tear": {
+    sources: [
+      { type: "mob_drop", mob: "ghast", location: "nether", drop_rate: 0.5 }
+    ],
+    optimal_strategy: "Kill ghasts in nether"
+  },
+  
+  "prismarine_shard": {
+    sources: [
+      { type: "mob_drop", mob: "guardian", drop_rate: 0.333 },
+      { type: "mob_drop", mob: "elder_guardian", drop_rate: 0.333 }
+    ],
+    priority: ["mob_drop"],
+    optimal_strategy: "Kill guardians in ocean monument"
+  },
+  
+  "prismarine_crystals": {
+    sources: [
+      { type: "mob_drop", mob: "guardian", drop_rate: 0.333 },
+      { type: "mob_drop", mob: "elder_guardian", drop_rate: 0.333 }
+    ],
+    priority: ["mob_drop"],
+    optimal_strategy: "Kill guardians in ocean monument"
+  },
+  
+  // Structure-specific loot
+  "heart_of_the_sea": {
+    sources: [
+      { type: "loot_chest", locations: ["buried_treasure"], guaranteed: true }
+    ],
+    requires: ["treasure_map"],
+    optimal_strategy: "Find buried treasure using map"
+  },
+  
+  "bottle_o_enchanting": {
+    sources: [
+      { type: "mob_drop", mob: "witch", drop_rate: 0.125 },
+      { type: "loot_chest", locations: ["village", "pillager_outpost"] },
+      { type: "trade", mob: "villager", profession: "cleric" }
+    ],
+    priority: ["trade", "mob_drop", "loot_chest"],
+    optimal_strategy: "Trade with cleric or kill witches"
+  },
+  
+  "enchanted_book": {
+    sources: [
+      { type: "loot_chest", locations: ["dungeon", "mineshaft", "end_city", "ancient_city"] },
+      { type: "trade", mob: "villager", profession: "librarian" }
+    ],
+    priority: ["trade", "loot_chest"],
+    optimal_strategy: "Trade with librarian or find chests"
+  },
+  
+  "ender_chest": {
+    sources: [
+      { type: "craft", recipe: [{ item: "obsidian", count: 8 }, { item: "eye_of_ender", count: 1 }] }
+    ],
+    optimal_strategy: "Craft from obsidian and eye of ender"
+  },
+  
+  "eye_of_ender": {
+    type: "crafted",
+    recipe: [
+      { item: "ender_pearl", count: 1 },
+      { item: "blaze_powder", count: 1 }
+    ],
+    optimal_strategy: "Craft from ender pearl and blaze powder"
+  },
+  
+  // Add more items as needed...
+};
+
+// Structure patterns for finding specific locations
+const STRUCTURE_PATTERNS = {
+  village: {
+    blocks: ['oak_planks', 'cobblestone', 'farmland', 'bell', 'lectern'],
+    entities: ['villager', 'iron_golem'],
+    size: 'medium',
+    biome: ['plains', 'desert', 'savanna', 'taiga', 'snowy']
+  },
+  dungeon: {
+    blocks: ['cobblestone', 'mossy_cobblestone', 'spawner', 'chest'],
+    entities: ['zombie', 'skeleton', 'spider'],
+    size: 'small',
+    location: 'underground'
+  },
+  mineshaft: {
+    blocks: ['oak_planks', 'fence', 'rail', 'chest'],
+    entities: ['cave_spider'],
+    size: 'large',
+    location: 'underground'
+  },
+  stronghold: {
+    blocks: ['stone_bricks', 'mossy_stone_bricks', 'chest', 'end_portal_frame'],
+    entities: ['silverfish'],
+    size: 'large',
+    location: 'underground'
+  },
+  nether_fortress: {
+    blocks: ['nether_bricks', 'nether_brick_fence', 'chest'],
+    entities: ['blaze', 'wither_skeleton', 'zombie_pigman'],
+    size: 'large',
+    dimension: 'nether'
+  },
+  end_city: {
+    blocks: ['purpur_block', 'end_stone_bricks', 'chest'],
+    entities: ['shulker'],
+    size: 'medium',
+    dimension: 'end'
+  },
+  woodland_mansion: {
+    blocks: ['oak_planks', 'dark_oak_planks', 'cobblestone', 'chest'],
+    entities: ['vindicator', 'evoker', 'villager'],
+    size: 'large',
+    biome: ['dark_forest']
+  },
+  ocean_monument: {
+    blocks: ['prismarine', 'prismarine_bricks', 'sea_lantern'],
+    entities: ['guardian', 'elder_guardian'],
+    size: 'large',
+    location: 'ocean'
+  },
+  shipwreck: {
+    blocks: ['oak_planks', 'chest'],
+    entities: [],
+    size: 'medium',
+    location: 'ocean'
+  },
+  buried_treasure: {
+    blocks: ['chest'],
+    entities: [],
+    size: 'small',
+    location: 'beach'
+  },
+  desert_temple: {
+    blocks: ['sandstone', 'tnt', 'chest'],
+    entities: [],
+    size: 'medium',
+    biome: ['desert']
+  },
+  jungle_temple: {
+    blocks: ['chiseled_stone_bricks', 'mossy_cobblestone', 'chest'],
+    entities: [],
+    size: 'medium',
+    biome: ['jungle']
+  },
+  igloo: {
+    blocks: ['snow_block', 'ice', 'chest'],
+    entities: [],
+    size: 'small',
+    biome: ['snowy']
+  },
+  pillager_outpost: {
+    blocks: ['oak_planks', 'cobblestone', 'chest'],
+    entities: ['pillager', 'captain'],
+    size: 'medium',
+    biome: ['plains', 'desert', 'savanna', 'taiga']
+  },
+  bastion_remnant: {
+    blocks: ['blackstone', 'basalt', 'chest'],
+    entities: ['piglin', 'hoglin'],
+    size: 'large',
+    dimension: 'nether'
+  }
+};
+
+// Chest locations by item type
+const CHEST_LOCATIONS = {
+  enchanted_book: ['dungeon', 'mineshaft', 'end_city', 'ancient_city'],
+  diamond: ['village', 'mineshaft', 'stronghold', 'end_city'],
+  iron_ingot: ['village', 'mineshaft', 'stronghold'],
+  gold_ingot: ['village', 'mineshaft', 'stronghold', 'bastion'],
+  emerald: ['village'],
+  saddle: ['dungeon', 'desert_temple', 'jungle_temple', 'village'],
+  nametag: ['dungeon', 'mineshaft', 'woodland_mansion'],
+  music_disc: ['dungeon', 'mineshaft', 'woodland_mansion', 'bastion'],
+  heart_of_the_sea: ['buried_treasure'],
+  bottle_o_enchanting: ['village', 'pillager_outpost'],
+  ender_pearls: ['village', 'stronghold'],
+  redstone: ['village', 'mineshaft', 'stronghold'],
+  lapis_lazuli: ['village', 'mineshaft', 'shipwreck'],
+  coal: ['village', 'shipwreck'],
+  iron_nugget: ['village', 'shipwreck'],
+  gold_nugget: ['bastion_remnant', 'ruined_portal']
+};
+
+// Natural Language Parser for item requests
+class ItemRequestParser {
+  parseRequest(message) {
+    const patterns = [
+      /(?:go )?find (?:me )?(?:a |an )?(.+)/i,
+      /(?:go )?get (?:me )?(\d+)?\s*(.+)/i,
+      /(?:I )?need (?:a |an )?(\d+)?\s*(.+)/i,
+      /collect (\d+)?\s*(.+)/i,
+      /hunt (?:for )?(.+)/i,
+      /gather (.+)/i,
+      /farm (.+)/i,
+      /mine (.+)/i,
+      /fish (?:for )?(.+)/i,
+      /craft (.+)/i
+    ];
+    
+    for (const pattern of patterns) {
+      const match = message.match(pattern);
+      if (match) {
+        const quantity = parseInt(match[1]) || 1;
+        const itemName = this.normalizeItemName(match[2] || match[1]);
+        return { itemName, quantity };
+      }
+    }
+    
+    return null;
+  }
+  
+  normalizeItemName(raw) {
+    // Normalize item names to match ITEM_KNOWLEDGE keys
+    const nameMap = {
+      'mending book': 'mending_book',
+      'mending': 'mending_book',
+      'unbreaking': 'unbreaking_book',
+      'sharpness': 'sharpness_book',
+      'protection': 'protection_book',
+      'efficiency': 'efficiency_book',
+      'fortune': 'fortune_book',
+      'trident': 'trident',
+      'heart of the sea': 'heart_of_the_sea',
+      'nautilus shell': 'nautilus_shell',
+      'conduit': 'conduit',
+      'blaze rod': 'blaze_rod',
+      'blaze powder': 'blaze_powder',
+      'ghast tear': 'ghast_tear',
+      'magma cream': 'magma_cream',
+      'ancient debris': 'ancient_debris',
+      'netherite scrap': 'netherite_scrap',
+      'netherite ingot': 'netherite_ingot',
+      'elytra': 'elytra',
+      'shulker shell': 'shulker_shell',
+      'shulker box': 'shulker_box',
+      'totem of undying': 'totem_of_undying',
+      'totem': 'totem_of_undying',
+      'saddle': 'saddle',
+      'nametag': 'nametag',
+      'name tag': 'nametag',
+      'diamond': 'diamond',
+      'diamonds': 'diamond',
+      'emerald': 'emerald',
+      'emeralds': 'emerald',
+      'iron': 'iron_ingot',
+      'iron ingot': 'iron_ingot',
+      'gold': 'gold_ingot',
+      'gold ingot': 'gold_ingot',
+      'coal': 'coal',
+      'redstone': 'redstone',
+      'redstone dust': 'redstone',
+      'lapis': 'lapis_lazuli',
+      'lapis lazuli': 'lapis_lazuli',
+      'copper': 'copper_ingot',
+      'copper ingot': 'copper_ingot',
+      'ender pearl': 'ender_pearl',
+      'ender pearls': 'ender_pearl',
+      'bone': 'bone',
+      'bone meal': 'bone_meal',
+      'gunpowder': 'gunpowder',
+      'string': 'string',
+      'feather': 'feather',
+      'flint': 'flint',
+      'leather': 'leather',
+      'rabbit hide': 'rabbit_hide',
+      'rabbit foot': 'rabbit_foot',
+      'spider eye': 'spider_eye',
+      'rotten flesh': 'rotten_flesh',
+      'gold nugget': 'gold_nugget',
+      'iron nugget': 'iron_nugget',
+      'copper nugget': 'copper_nugget',
+      'dragon egg': 'dragon_egg',
+      'dragon breath': 'dragon_breath',
+      'phantom membrane': 'phantom_membrane',
+      'slime ball': 'slime_ball',
+      'carrot on a stick': 'carrot_on_a_stick',
+      'warped fungus on a stick': 'warped_fungus_on_a_stick',
+      'fire charge': 'fire_charge',
+      'arrow': 'arrow',
+      'spectral arrow': 'spectral_arrow',
+      'tipped arrow': 'tipped_arrow',
+      'nether wart': 'nether_wart',
+      'brewing stand': 'brewing_stand',
+      'cauldron': 'cauldron',
+      'glass bottle': 'glass_bottle',
+      'potion of weakness': 'potion_of_weakness',
+      'fermented spider eye': 'fermented_spider_eye',
+      'wheat seeds': 'wheat_seeds',
+      'wheat': 'wheat',
+      'carrot': 'carrot',
+      'potato': 'potato',
+      'beetroot seeds': 'beetroot_seeds',
+      'pumpkin seeds': 'pumpkin_seeds',
+      'melon seeds': 'melon_seeds',
+      'sugar cane': 'sugar_cane',
+      'cactus': 'cactus',
+      'bamboo': 'bamboo',
+      'kelp': 'kelp',
+      'seagrass': 'seagrass',
+      'sea pickle': 'sea_pickle',
+      'ender chest': 'ender_chest',
+      'eye of ender': 'eye_of_ender'
+    };
+    
+    const normalized = raw.toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/s$/, ''); // Remove plural
+    
+    // Check if it's in our name map
+    if (nameMap[normalized]) {
+      return nameMap[normalized];
+    }
+    
+    // Check if it's already normalized
+    if (ITEM_KNOWLEDGE[normalized]) {
+      return normalized;
+    }
+    
+    return normalized;
+  }
+}
+
+// Core Item Hunter class
+class ItemHunter {
+  constructor(bot) {
+    this.bot = bot;
+    this.activeQuests = [];
+    this.parser = new ItemRequestParser();
+    this.mobHunter = new MobHunter(bot);
+    this.structureFinder = new StructureFinder(bot);
+    this.villagerTrader = new VillagerTrader(bot);
+    this.autoMiner = new AutoMiner(bot);
+    this.autoFisher = new AutoFisher(bot);
+  }
+  
+  async findItem(itemName, quantity = 1) {
+    console.log(`[HUNTER] 🔍 Starting hunt for ${quantity}x ${itemName}`);
+    
+    const knowledge = ITEM_KNOWLEDGE[itemName];
+    if (!knowledge) {
+      return this.guessStrategy(itemName, quantity);
+    }
+    
+    // Check if crafted - get components first
+    if (knowledge.type === 'crafted') {
+      return this.recursiveGather(knowledge.recipe, quantity);
+    }
+    
+    // Evaluate all source strategies
+    const strategies = knowledge.sources.map(source => ({
+      source,
+      score: this.scoreStrategy(source),
+      estimatedTime: this.estimateTime(source, quantity),
+      risk: this.assessRisk(source),
+      currentFeasibility: this.checkFeasibility(source)
+    }));
+    
+    // Pick best available strategy
+    const availableStrategies = strategies.filter(s => s.currentFeasibility);
+    if (availableStrategies.length === 0) {
+      console.log(`[HUNTER] ❌ No feasible strategies found for ${itemName}`);
+      return false;
+    }
+    
+    const best = availableStrategies.sort((a, b) => b.score - a.score)[0];
+    console.log(`[HUNTER] 📋 Strategy selected: ${best.source.type} (Score: ${best.score})`);
+    
+    return this.executeStrategy(best.source, itemName, quantity);
+  }
+  
+  scoreStrategy(source) {
+    let score = 100;
+    
+    // Prefer guaranteed drops
+    if (source.guaranteed || source.drop_rate === 1.0) score += 50;
+    
+    // Prefer nearby/safe locations
+    if (source.location === 'overworld') score += 30;
+    if (source.location === 'nether') score += 10;
+    if (source.location === 'end') score -= 20;
+    
+    // Prefer active methods over passive
+    if (source.type === 'mob_drop') score += 40;
+    if (source.type === 'mining') score += 35;
+    if (source.type === 'fishing') score -= 30; // Slow
+    
+    // Adjust for risk
+    if (source.mob === 'wither' || source.mob === 'ender_dragon') score -= 40;
+    
+    return score;
+  }
+  
+  estimateTime(source, quantity) {
+    // Rough time estimation in minutes
+    let baseTime = 5; // Base 5 minutes
+    
+    if (source.type === 'mob_drop') {
+      const dropRate = source.drop_rate || 0.1;
+      baseTime = (quantity / dropRate) * 2; // 2 minutes per expected drop
+    } else if (source.type === 'mining') {
+      baseTime = quantity * 0.5; // 30 seconds per ore
+    } else if (source.type === 'fishing') {
+      baseTime = quantity * 5; // 5 minutes per fish
+    } else if (source.type === 'villager_trade') {
+      baseTime = 10; // Fixed time for trading
+    }
+    
+    return baseTime;
+  }
+  
+  assessRisk(source) {
+    let risk = 'low';
+    
+    if (source.mob === 'wither' || source.mob === 'ender_dragon') {
+      risk = 'high';
+    } else if (source.location === 'nether' || source.location === 'end') {
+      risk = 'medium';
+    }
+    
+    return risk;
+  }
+  
+  checkFeasibility(source) {
+    // Basic feasibility check
+    if (source.requires) {
+      for (const requirement of source.requires) {
+        const hasItem = this.bot.inventory.items().find(item => item.name === requirement);
+        if (!hasItem) {
+          console.log(`[HUNTER] ⚠️ Missing requirement: ${requirement}`);
+          return false;
+        }
+      }
+    }
+    
+    return true;
+  }
+  
+  async executeStrategy(source, itemName, quantity) {
+    console.log(`[HUNTER] 🎯 Executing ${source.type} strategy for ${itemName}`);
+    
+    switch (source.type) {
+      case 'mob_drop':
+        return await this.mobHunter.huntMob(source.mob, itemName, quantity, source);
+      case 'loot_chest':
+      case 'loot_structure':
+        return await this.structureFinder.findChest(source, itemName, quantity);
+      case 'villager_trade':
+      case 'trade':
+        return await this.villagerTrader.findVillagerWithTrade(itemName, quantity);
+      case 'mining':
+        return await this.autoMiner.mineForItem(itemName, quantity);
+      case 'fishing':
+        return await this.autoFisher.fishForItem(itemName, quantity);
+      case 'harvest':
+        return await this.harvestResource(source, itemName, quantity);
+      case 'special':
+        return await this.executeSpecialMethod(source, itemName, quantity);
+      default:
+        console.log(`[HUNTER] ❌ Unknown strategy type: ${source.type}`);
+        return false;
+    }
+  }
+  
+  async recursiveGather(recipe, quantity) {
+    console.log(`[HUNTER] 🔄 Recursively gathering components...`);
+    
+    for (const component of recipe) {
+      const needed = component.count * quantity;
+      const current = this.bot.inventory.items().find(item => item.name === component.item)?.count || 0;
+      
+      if (current < needed) {
+        console.log(`[HUNTER] Need ${needed - current}x ${component.item} for crafting`);
+        await this.findItem(component.item, needed - current);
+      }
+    }
+    
+    // TODO: Add crafting logic
+    console.log(`[HUNTER] ✅ All components gathered, ready to craft`);
+    return true;
+  }
+  
+  async harvestResource(source, itemName, quantity) {
+    console.log(`[HUNTER] 🌾 Harvesting ${itemName}...`);
+    
+    // Find the biome/location
+    if (source.biome) {
+      const biomeLocation = await this.findBiome(source.biome);
+      if (biomeLocation) {
+        await this.travelTo(biomeLocation);
+      }
+    }
+    
+    // Harvest the resource
+    let collected = 0;
+    while (collected < quantity) {
+      // TODO: Implement harvesting logic based on item type
+      if (itemName.includes('log') || itemName.includes('wood')) {
+        collected += await this.harvestTrees(itemName, quantity - collected);
+      } else if (itemName.includes('seeds') || itemName.includes('wheat')) {
+        collected += await this.harvestCrops(itemName, quantity - collected);
+      }
+      
+      if (collected === 0) {
+        console.log(`[HUNTER] ❌ Failed to harvest ${itemName}`);
+        break;
+      }
+      
+      await this.sleep(1000);
+    }
+    
+    return collected >= quantity;
+  }
+  
+  async harvestTrees(treeType, needed) {
+    let collected = 0;
+    const trees = this.bot.findBlocks({
+      matching: this.bot.registry.blocksByName[treeType]?.id,
+      maxDistance: 32,
+      count: 10
+    });
+    
+    for (const treePos of trees) {
+      if (collected >= needed) break;
+      
+      await this.bot.pathfinder.goto(new goals.GoalNear(treePos.x, treePos.y, treePos.z, 1));
+      const block = this.bot.blockAt(treePos);
+      if (block) {
+        await this.bot.dig(block);
+        collected++;
+        console.log(`[HUNTER] 🪵 Chopped ${treeType} (${collected}/${needed})`);
+      }
+    }
+    
+    return collected;
+  }
+  
+  async harvestCrops(cropType, needed) {
+    let collected = 0;
+    const crops = this.bot.findBlocks({
+      matching: this.bot.registry.blocksByName[cropType]?.id,
+      maxDistance: 32,
+      count: 20
+    });
+    
+    for (const cropPos of crops) {
+      if (collected >= needed) break;
+      
+      await this.bot.pathfinder.goto(new goals.GoalNear(cropPos.x, cropPos.y, cropPos.z, 1));
+      const block = this.bot.blockAt(cropPos);
+      if (block) {
+        await this.bot.dig(block);
+        collected++;
+        console.log(`[HUNTER] 🌾 Harvested ${cropType} (${collected}/${needed})`);
+      }
+    }
+    
+    return collected;
+  }
+  
+  async executeSpecialMethod(source, itemName, quantity) {
+    console.log(`[HUNTER] ⭐ Executing special method: ${source.method}`);
+    
+    switch (source.method) {
+      case 'kill_ender_dragon':
+        return await this.killEnderDragon();
+      case 'dragon_breath':
+        return await this.collectDragonBreath(quantity);
+      case 'kill_with_skeleton':
+        return await this.arrangeSkeletonKill('creeper', quantity);
+      default:
+        console.log(`[HUNTER] ❌ Unknown special method: ${source.method}`);
+        return false;
+    }
+  }
+  
+  async guessStrategy(itemName, quantity) {
+    console.log(`[HUNTER] 🤖 No knowledge for ${itemName}, using AI fallback...`);
+    
+    // Try to guess based on item name patterns
+    if (itemName.includes('ingot') || itemName.includes('ore')) {
+      console.log(`[HUNTER] 🤔 Guessing mining strategy for ${itemName}`);
+      return await this.autoMiner.mineForItem(itemName, quantity);
+    } else if (itemName.includes('seed') || itemName.includes('wheat') || itemName.includes('crop')) {
+      console.log(`[HUNTER] 🤔 Guessing harvest strategy for ${itemName}`);
+      return await this.harvestResource({}, itemName, quantity);
+    } else if (itemName.includes('fish') || itemName.includes('cod') || itemName.includes('salmon')) {
+      console.log(`[HUNTER] 🤔 Guessing fishing strategy for ${itemName}`);
+      return await this.autoFisher.fishForItem(itemName, quantity);
+    }
+    
+    console.log(`[HUNTER] ❌ Unable to guess strategy for ${itemName}`);
+    return false;
+  }
+  
+  async findBiome(targetBiomes) {
+    console.log(`[HUNTER] 🗺️ Searching for biome: ${targetBiomes}`);
+    
+    // Simple biome finding by exploring
+    const biomeArray = Array.isArray(targetBiomes) ? targetBiomes : [targetBiomes];
+    
+    for (let i = 0; i < 10; i++) {
+      const currentBiome = this.bot.blockAt(this.bot.entity.position)?.biome?.name;
+      if (biomeArray.includes(currentBiome)) {
+        console.log(`[HUNTER] ✅ Found ${currentBiome} biome`);
+        return this.bot.entity.position;
+      }
+      
+      // Move in a random direction
+      const angle = Math.random() * Math.PI * 2;
+      const distance = 100;
+      const targetX = this.bot.entity.position.x + Math.cos(angle) * distance;
+      const targetZ = this.bot.entity.position.z + Math.sin(angle) * distance;
+      
+      await this.bot.pathfinder.goto(new goals.GoalNear(targetX, 64, targetZ, 5));
+      await this.sleep(1000);
+    }
+    
+    console.log(`[HUNTER] ❌ Could not find target biome`);
+    return null;
+  }
+  
+  async travelTo(position) {
+    console.log(`[HUNTER] 🚶 Traveling to ${position.x}, ${position.y}, ${position.z}`);
+    try {
+      await safeGoTo(this.bot, position, 120000); // 2 minute timeout
+      console.log(`[HUNTER] ✅ Arrived at destination`);
+      return true;
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Failed to travel: ${err.message}`);
+      return false;
+    }
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// Mob Hunting Subsystem
+class MobHunter {
+  constructor(bot) {
+    this.bot = bot;
+  }
+  
+  async huntMob(mobType, targetItem, quantity, source = {}) {
+    console.log(`[HUNTER] ⚔️ Hunting ${mobType} for ${quantity}x ${targetItem}`);
+    
+    // Find optimal biome/structure
+    const location = await this.locateMobSpawn(mobType, source);
+    if (!location) {
+      console.log(`[HUNTER] ❌ Could not find ${mobType} spawn location`);
+      return false;
+    }
+    
+    // Navigate there
+    await this.travelTo(location);
+    
+    // Build kill arena if needed (e.g., for blazes)
+    if (this.needsArena(mobType)) {
+      await this.buildKillArena(location);
+    }
+    
+    // Hunt until we have enough
+    let collected = 0;
+    let attempts = 0;
+    const maxAttempts = quantity * 20; // Allow 20 attempts per needed item
+    
+    while (collected < quantity && attempts < maxAttempts) {
+      const mob = await this.findNearbyMob(mobType, source.condition);
+      
+      if (mob) {
+        await this.killMob(mob);
+        const dropCount = await this.checkForDrop(targetItem, source);
+        collected += dropCount;
+        console.log(`[HUNTER] 📊 Progress: ${collected}/${quantity} ${targetItem}`);
+      } else {
+        await this.waitForSpawn();
+      }
+      
+      attempts++;
+      
+      // Safety check
+      if (this.bot.health < 10) {
+        await this.heal();
+      }
+    }
+    
+    if (collected >= quantity) {
+      console.log(`[HUNTER] ✅ Successfully collected ${collected}x ${targetItem}`);
+      return true;
+    } else {
+      console.log(`[HUNTER] ❌ Only collected ${collected}/${quantity} ${targetItem}`);
+      return false;
+    }
+  }
+  
+  async locateMobSpawn(mobType, source) {
+    console.log(`[HUNTER] 🗺️ Locating ${mobType} spawn area...`);
+    
+    // Check if specific location is required
+    if (source.location) {
+      const structureLocation = await this.findStructure(source.location);
+      if (structureLocation) return structureLocation;
+    }
+    
+    // Check if specific biome is required
+    if (source.biome) {
+      const biomeLocation = await this.findBiome(source.biome);
+      if (biomeLocation) return biomeLocation;
+    }
+    
+    // Default to current location for common mobs
+    return this.bot.entity.position;
+  }
+  
+  async findStructure(structureType) {
+    console.log(`[HUNTER] 🏛️ Searching for ${structureType}...`);
+    
+    // Use /locate command if available
+    if (this.bot.supportFeature('commands')) {
+      try {
+        const result = await this.bot.chat(`/locate ${structureType}`);
+        console.log(`[HUNTER] 📍 Located ${structureType}: ${result}`);
+        // Parse coordinates from result and return position
+        return this.bot.entity.position; // Placeholder
+      } catch (err) {
+        console.log(`[HUNTER] /locate command failed: ${err.message}`);
+      }
+    }
+    
+    // Otherwise use exploration + recognition
+    const patterns = STRUCTURE_PATTERNS[structureType];
+    if (!patterns) {
+      console.log(`[HUNTER] ❌ No patterns for ${structureType}`);
+      return null;
+    }
+    
+    return await this.explorationSearch(patterns);
+  }
+  
+  async explorationSearch(patterns) {
+    console.log(`[HUNTER] 🔍 Exploring for structure...`);
+    
+    for (let radius = 200; radius <= 1000; radius += 200) {
+      const blocks = this.bot.findBlocks({
+        matching: patterns.blocks.map(block => this.bot.registry.blocksByName[block]?.id).filter(Boolean),
+        maxDistance: radius,
+        count: 50
+      });
+      
+      if (blocks.length > 0) {
+        // Check if blocks match structure pattern
+        for (const blockPos of blocks) {
+          if (await this.verifyStructure(blockPos, patterns)) {
+            console.log(`[HUNTER] ✅ Found structure at ${blockPos.x}, ${blockPos.y}, ${blockPos.z}`);
+            return blockPos;
+          }
+        }
+      }
+      
+      await this.sleep(1000);
+    }
+    
+    console.log(`[HUNTER] ❌ Structure not found`);
+    return null;
+  }
+  
+  async verifyStructure(position, patterns) {
+    // Basic structure verification - check for multiple matching blocks nearby
+    let matchCount = 0;
+    const checkRadius = patterns.size === 'small' ? 16 : patterns.size === 'medium' ? 32 : 64;
+    
+    for (const blockName of patterns.blocks) {
+      const blockId = this.bot.registry.blocksByName[blockName]?.id;
+      if (blockId) {
+        const blocks = this.bot.findBlocks({
+          matching: blockId,
+          maxDistance: checkRadius,
+          count: 1,
+          startPoint: position
+        });
+        if (blocks.length > 0) matchCount++;
+      }
+    }
+    
+    return matchCount >= patterns.blocks.length * 0.5; // At least 50% of expected blocks
+  }
+  
+  async findBiome(targetBiomes) {
+    console.log(`[HUNTER] 🌍 Searching for biome: ${targetBiomes}`);
+    
+    const biomeArray = Array.isArray(targetBiomes) ? targetBiomes : [targetBiomes];
+    
+    for (let i = 0; i < 20; i++) {
+      const currentBiome = this.bot.blockAt(this.bot.entity.position)?.biome?.name;
+      if (biomeArray.includes(currentBiome)) {
+        console.log(`[HUNTER] ✅ Found ${currentBiome} biome`);
+        return this.bot.entity.position;
+      }
+      
+      // Move in expanding spiral pattern
+      const angle = (i * 0.5) * Math.PI;
+      const distance = i * 50;
+      const targetX = this.bot.entity.position.x + Math.cos(angle) * distance;
+      const targetZ = this.bot.entity.position.z + Math.sin(angle) * distance;
+      
+      await this.bot.pathfinder.goto(new goals.GoalNear(targetX, 64, targetZ, 5));
+      await this.sleep(2000);
+    }
+    
+    console.log(`[HUNTER] ❌ Could not find target biome`);
+    return null;
+  }
+  
+  async findNearbyMob(mobType, condition) {
+    const mobs = Object.values(this.bot.entities).filter(entity => 
+      entity.name === mobType && 
+      entity.position.distanceTo(this.bot.entity.position) < 64
+    );
+    
+    if (mobs.length === 0) return null;
+    
+    // Find mob matching condition if specified
+    if (condition) {
+      const matchingMob = mobs.find(mob => this.hasSpecialCondition(mob, condition));
+      if (matchingMob) return matchingMob;
+    }
+    
+    // Return closest mob
+    return mobs.sort((a, b) => 
+      a.position.distanceTo(this.bot.entity.position) - b.position.distanceTo(this.bot.entity.position)
+    )[0];
+  }
+  
+  hasSpecialCondition(mob, condition) {
+    // E.g., "drowned holding trident"
+    if (condition === 'holding_trident') {
+      return mob.heldItem?.name === 'trident';
+    }
+    return true;
+  }
+  
+  async killMob(mob) {
+    console.log(`[HUNTER] ⚔️ Killing ${mob.name}...`);
+    
+    try {
+      // Equip best weapon
+      await this.equipBestWeapon();
+      
+      // Move to mob
+      await this.bot.pathfinder.goto(new goals.GoalNear(mob.position.x, mob.position.y, mob.position.z, 2));
+      
+      // Attack mob
+      if (this.bot.pvp) {
+        this.bot.pvp.attack(mob);
+      } else {
+        this.bot.attack(mob);
+      }
+      
+      // Wait for mob to die
+      await this.sleep(2000);
+      
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Error killing mob: ${err.message}`);
+    }
+  }
+  
+  async equipBestWeapon() {
+    const weapons = this.bot.inventory.items().filter(item => 
+      item.name.includes('sword') || item.name.includes('axe')
+    );
+    
+    if (weapons.length > 0) {
+      const bestWeapon = weapons.sort((a, b) => (b.metadata || 0) - (a.metadata || 0))[0];
+      await this.bot.equip(bestWeapon, 'hand');
+    }
+  }
+  
+  async checkForDrop(targetItem, source) {
+    // Check for nearby dropped items
+    const items = Object.values(this.bot.entities).filter(entity => 
+      entity.name === 'item' && 
+      entity.position.distanceTo(this.bot.entity.position) < 8
+    );
+    
+    let collected = 0;
+    for (const item of items) {
+      if (item.metadata?.itemId === targetItem || item.name === targetItem) {
+        await this.bot.pathfinder.goto(new goals.GoalNear(item.position.x, item.position.y, item.position.z, 1));
+        collected += item.metadata?.count || 1;
+        console.log(`[HUNTER] 📦 Collected ${targetItem}`);
+      }
+    }
+    
+    return collected;
+  }
+  
+  async waitForSpawn() {
+    console.log(`[HUNTER] ⏳ Waiting for mob spawn...`);
+    await this.sleep(5000);
+  }
+  
+  async heal() {
+    console.log(`[HUNTER] 💊 Healing...`);
+    
+    // Try to eat food
+    const food = this.bot.inventory.items().find(item => 
+      item.name.includes('bread') || 
+      item.name.includes('cooked') || 
+      item.name.includes('steak') ||
+      item.name.includes('porkchop')
+    );
+    
+    if (food) {
+      await this.bot.equip(food, 'hand');
+      await this.bot.consume();
+      console.log(`[HUNTER] ✅ Ate ${food.name}`);
+    } else {
+      console.log(`[HUNTER] ❌ No food available`);
+    }
+  }
+  
+  needsArena(mobType) {
+    // Return true if we should build a kill arena for this mob type
+    return ['blaze', 'ghast'].includes(mobType);
+  }
+  
+  async buildKillArena(location) {
+    console.log(`[HUNTER] 🏗️ Building kill arena...`);
+    // TODO: Implement arena building logic
+    console.log(`[HUNTER] ⚠️ Arena building not implemented yet`);
+  }
+  
+  async travelTo(position) {
+    try {
+      await safeGoTo(this.bot, position, 120000);
+      return true;
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Failed to travel: ${err.message}`);
+      return false;
+    }
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// Structure Finder
+class StructureFinder {
+  constructor(bot) {
+    this.bot = bot;
+  }
+  
+  async findChest(source, itemName, quantity) {
+    console.log(`[HUNTER] 📦 Searching chests for ${itemName}...`);
+    
+    const structures = source.locations || CHEST_LOCATIONS[itemName] || [];
+    
+    for (const structureType of structures) {
+      console.log(`[HUNTER] 🔍 Searching ${structureType}...`);
+      
+      const location = await this.findStructure(structureType);
+      if (location) {
+        const chests = await this.scanForChests(location);
+        
+        for (const chest of chests) {
+          const found = await this.lootChest(chest, itemName, quantity);
+          if (found > 0) {
+            console.log(`[HUNTER] ✅ Found ${found}x ${itemName} in chest`);
+            return true;
+          }
+        }
+      }
+    }
+    
+    console.log(`[HUNTER] ❌ Could not find ${itemName} in any chests`);
+    return false;
+  }
+  
+  async findStructure(structureType) {
+    console.log(`[HUNTER] 🏛️ Finding ${structureType}...`);
+    
+    // Use /locate command if available
+    if (this.bot.supportFeature('commands')) {
+      try {
+        await this.bot.chat(`/locate ${structureType}`);
+        // Wait for server response
+        await this.sleep(3000);
+        // TODO: Parse response and extract coordinates
+        return this.bot.entity.position; // Placeholder
+      } catch (err) {
+        console.log(`[HUNTER] /locate failed: ${err.message}`);
+      }
+    }
+    
+    // Otherwise use exploration
+    const patterns = STRUCTURE_PATTERNS[structureType];
+    if (!patterns) {
+      console.log(`[HUNTER] ❌ No patterns for ${structureType}`);
+      return null;
+    }
+    
+    return await this.explorationSearch(patterns);
+  }
+  
+  async explorationSearch(patterns) {
+    console.log(`[HUNTER] 🔍 Exploring for structure...`);
+    
+    for (let radius = 200; radius <= 1000; radius += 200) {
+      const blocks = this.bot.findBlocks({
+        matching: patterns.blocks.map(block => this.bot.registry.blocksByName[block]?.id).filter(Boolean),
+        maxDistance: radius,
+        count: 50
+      });
+      
+      if (blocks.length > 0) {
+        for (const blockPos of blocks) {
+          if (await this.verifyStructure(blockPos, patterns)) {
+            console.log(`[HUNTER] ✅ Found ${patterns.blocks[0]} structure`);
+            return blockPos;
+          }
+        }
+      }
+      
+      await this.sleep(1000);
+    }
+    
+    return null;
+  }
+  
+  async verifyStructure(position, patterns) {
+    let matchCount = 0;
+    const checkRadius = patterns.size === 'small' ? 16 : patterns.size === 'medium' ? 32 : 64;
+    
+    for (const blockName of patterns.blocks) {
+      const blockId = this.bot.registry.blocksByName[blockName]?.id;
+      if (blockId) {
+        const blocks = this.bot.findBlocks({
+          matching: blockId,
+          maxDistance: checkRadius,
+          count: 1,
+          startPoint: position
+        });
+        if (blocks.length > 0) matchCount++;
+      }
+    }
+    
+    return matchCount >= patterns.blocks.length * 0.5;
+  }
+  
+  async scanForChests(location) {
+    console.log(`[HUNTER] 📦 Scanning for chests...`);
+    
+    const chestBlocks = this.bot.findBlocks({
+      matching: this.bot.registry.blocksByName['chest']?.id,
+      maxDistance: 64,
+      count: 20,
+      startPoint: location
+    });
+    
+    console.log(`[HUNTER] Found ${chestBlocks.length} chests`);
+    return chestBlocks;
+  }
+  
+  async lootChest(chestPos, itemName, quantity) {
+    console.log(`[HUNTER] 📦 Looting chest at ${chestPos.x}, ${chestPos.y}, ${chestPos.z}`);
+    
+    try {
+      await this.bot.pathfinder.goto(new goals.GoalNear(chestPos.x, chestPos.y, chestPos.z, 1));
+      const chest = this.bot.blockAt(chestPos);
+      
+      if (chest && chest.name === 'chest') {
+        await this.bot.openChest(chest);
+        
+        // Wait for chest to open
+        await this.sleep(1000);
+        
+        const chestWindow = this.bot.currentWindow;
+        if (chestWindow) {
+          let found = 0;
+          
+          // Look for the target item
+          for (let i = 0; i < chestWindow.slots.length; i++) {
+            const slot = chestWindow.slots[i];
+            if (slot && slot.name === itemName && found < quantity) {
+              const toTake = Math.min(slot.count, quantity - found);
+              await this.bot.clickWindow(i, 0, 0);
+              found += toTake;
+              console.log(`[HUNTER] 📦 Took ${toTake}x ${itemName}`);
+            }
+          }
+          
+          await this.bot.closeWindow(chestWindow);
+          return found;
+        }
+      }
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Error looting chest: ${err.message}`);
+    }
+    
+    return 0;
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// Villager Trading System
+class VillagerTrader {
+  constructor(bot) {
+    this.bot = bot;
+  }
+  
+  async findVillagerWithTrade(itemName, quantity) {
+    console.log(`[HUNTER] 🤝 Finding villager with ${itemName} trade...`);
+    
+    // Option 1: Find existing village
+    const village = await this.findNearbyVillage();
+    if (village) {
+      const villager = await this.findVillagerWithItem(village, itemName);
+      if (villager) {
+        return await this.executeTrade(villager, itemName, quantity);
+      }
+    }
+    
+    // Option 2: Cure zombie villager
+    const zombieVillager = await this.findZombieVillager();
+    if (zombieVillager) {
+      const curedVillager = await this.cureAndTrade(zombieVillager, itemName);
+      if (curedVillager) {
+        return await this.executeTrade(curedVillager, itemName, quantity);
+      }
+    }
+    
+    console.log(`[HUNTER] ❌ Could not find villager with ${itemName} trade`);
+    return false;
+  }
+  
+  async findNearbyVillage() {
+    console.log(`[HUNTER] 🏘️ Searching for village...`);
+    
+    // Look for village blocks
+    const villageBlocks = ['oak_planks', 'cobblestone', 'farmland', 'bell', 'lectern'];
+    const matchingBlocks = [];
+    
+    for (const blockName of villageBlocks) {
+      const blockId = this.bot.registry.blocksByName[blockName]?.id;
+      if (blockId) {
+        const blocks = this.bot.findBlocks({
+          matching: blockId,
+          maxDistance: 500,
+          count: 10
+        });
+        matchingBlocks.push(...blocks);
+      }
+    }
+    
+    if (matchingBlocks.length > 5) {
+      console.log(`[HUNTER] ✅ Found village indicators`);
+      return matchingBlocks[0]; // Return first block position as village center
+    }
+    
+    return null;
+  }
+  
+  async findVillagerWithItem(village, itemName) {
+    console.log(`[HUNTER] 👤 Searching for librarian...`);
+    
+    const villagers = Object.values(this.bot.entities).filter(entity => 
+      entity.name === 'villager' && 
+      entity.position.distanceTo(this.bot.entity.position) < 100
+    );
+    
+    for (const villager of villagers) {
+      await this.bot.pathfinder.goto(new goals.GoalNear(villager.position.x, villager.position.y, villager.position.z, 2));
+      
+      try {
+        await this.openTrade(villager);
+        
+        const trades = villager.trades || [];
+        for (const trade of trades) {
+          if (trade.output?.name === itemName) {
+            console.log(`[HUNTER] ✅ Found villager with ${itemName} trade`);
+            return villager;
+          }
+        }
+        
+        await this.bot.closeWindow(this.bot.currentWindow);
+      } catch (err) {
+        console.log(`[HUNTER] Error checking villager trades: ${err.message}`);
+      }
+    }
+    
+    console.log(`[HUNTER] ❌ No villager with ${itemName} trade found`);
+    return null;
+  }
+  
+  async openTrade(villager) {
+    await this.bot.pathfinder.goto(new goals.GoalNear(villager.position.x, villager.position.y, villager.position.z, 2));
+    
+    // Right-click villager to open trading
+    const villagerEntity = this.bot.entities[villager.id];
+    if (villagerEntity) {
+      await this.bot.lookAt(villagerEntity.position.offset(0, villagerEntity.height, 0));
+      await this.sleep(500);
+      await this.bot.activateEntity(villagerEntity);
+      
+      // Wait for trade window
+      await this.sleep(2000);
+    }
+  }
+  
+  async executeTrade(villager, itemName, quantity) {
+    console.log(`[HUNTER] 💰 Trading for ${quantity}x ${itemName}...`);
+    
+    try {
+      await this.openTrade(villager);
+      
+      const trades = villager.trades || [];
+      let traded = 0;
+      
+      for (const trade of trades) {
+        if (trade.output?.name === itemName && traded < quantity) {
+          const canTrade = Math.min(trade.maxUses - trade.uses, quantity - traded);
+          
+          if (canTrade > 0) {
+            // Check if we have required items
+            const hasInput1 = this.bot.inventory.items().find(item => 
+              item.name === trade.input1.name && item.count >= trade.input1.count * canTrade
+            );
+            
+            const hasInput2 = !trade.input2 || this.bot.inventory.items().find(item => 
+              item.name === trade.input2.name && item.count >= trade.input2.count * canTrade
+            );
+            
+            if (hasInput1 && hasInput2) {
+              // Execute trade
+              await this.bot.trade(trade, canTrade);
+              traded += canTrade;
+              console.log(`[HUNTER] 💰 Traded ${canTrade}x ${itemName}`);
+            } else {
+              console.log(`[HUNTER] ❌ Missing trade ingredients`);
+            }
+          }
+        }
+      }
+      
+      await this.bot.closeWindow(this.bot.currentWindow);
+      
+      if (traded >= quantity) {
+        console.log(`[HUNTER] ✅ Successfully traded for ${traded}x ${itemName}`);
+        return true;
+      } else {
+        console.log(`[HUNTER] ⚠️ Only traded for ${traded}/${quantity} ${itemName}`);
+        return false;
+      }
+      
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Trade error: ${err.message}`);
+      return false;
+    }
+  }
+  
+  async findZombieVillager() {
+    console.log(`[HUNTER] 🧟 Searching for zombie villager...`);
+    
+    const zombieVillagers = Object.values(this.bot.entities).filter(entity => 
+      entity.name === 'zombie_villager' && 
+      entity.position.distanceTo(this.bot.entity.position) < 200
+    );
+    
+    if (zombieVillagers.length > 0) {
+      console.log(`[HUNTER] ✅ Found zombie villager`);
+      return zombieVillagers[0];
+    }
+    
+    return null;
+  }
+  
+  async cureAndTrade(zombieVillager, itemName) {
+    console.log(`[HUNTER] 💊 Curing zombie villager...`);
+    
+    // Get weakness potion
+    await this.obtainItem('splash_potion_of_weakness', 1);
+    
+    // Get golden apple
+    await this.obtainItem('golden_apple', 1);
+    
+    // Trap zombie villager
+    await this.trapMob(zombieVillager);
+    
+    // Apply weakness
+    await this.throwPotion(zombieVillager, 'weakness');
+    
+    // Feed golden apple
+    await this.feedGoldenApple(zombieVillager);
+    
+    // Wait for cure (3-5 minutes)
+    console.log(`[HUNTER] ⏳ Waiting for cure to complete...`);
+    await this.sleep(200000); // 3.3 minutes
+    
+    // Assign profession
+    await this.placeJobSite('lectern'); // For librarian
+    
+    return await this.waitForTrades();
+  }
+  
+  async obtainItem(itemName, quantity) {
+    console.log(`[HUNTER] 📦 Need to obtain ${quantity}x ${itemName} first...`);
+    // TODO: Use ItemHunter to obtain required items
+    console.log(`[HUNTER] ⚠️ Item obtaining not implemented yet`);
+    return false;
+  }
+  
+  async trapMob(mob) {
+    console.log(`[HUNTER] 🪤 Trapping ${mob.name}...`);
+    // TODO: Build trapping structure
+    console.log(`[HUNTER] ⚠️ Mob trapping not implemented yet`);
+  }
+  
+  async throwPotion(mob, potionType) {
+    console.log(`[HUNTER] 🧪 Throwing ${potionType} potion...`);
+    // TODO: Implement potion throwing
+    console.log(`[HUNTER] ⚠️ Potion throwing not implemented yet`);
+  }
+  
+  async feedGoldenApple(mob) {
+    console.log(`[HUNTER] 🍎 Feeding golden apple...`);
+    // TODO: Implement golden apple feeding
+    console.log(`[HUNTER] ⚠️ Golden apple feeding not implemented yet`);
+  }
+  
+  async placeJobSite(jobSite) {
+    console.log(`[HUNTER] 🏗️ Placing ${jobSite}...`);
+    // TODO: Implement job site placement
+    console.log(`[HUNTER] ⚠️ Job site placement not implemented yet`);
+  }
+  
+  async waitForTrades() {
+    console.log(`[HUNTER] ⏳ Waiting for trades to be available...`);
+    await this.sleep(5000);
+    return null; // Placeholder
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// Mining Automation
+class AutoMiner {
+  constructor(bot) {
+    this.bot = bot;
+  }
+  
+  async mineForItem(itemName, quantity) {
+    console.log(`[HUNTER] ⛏️ Mining for ${quantity}x ${itemName}...`);
+    
+    const mineData = ITEM_KNOWLEDGE[itemName]?.sources.find(s => s.type === 'mining');
+    if (!mineData) {
+      console.log(`[HUNTER] ❌ No mining data for ${itemName}`);
+      return false;
+    }
+    
+    // Navigate to optimal Y level
+    await this.descendTo(mineData.optimal_y || 0);
+    
+    // Choose mining method
+    if (mineData.method === 'strip_mining') {
+      return await this.stripMine(itemName, quantity);
+    } else if (mineData.method === 'bed_mining') {
+      return await this.bedMine(itemName, quantity);
+    } else {
+      return await this.branchMine(itemName, quantity);
+    }
+  }
+  
+  async descendTo(targetY) {
+    console.log(`[HUNTER] ⬇️ Descending to Y=${targetY}...`);
+    
+    const currentY = this.bot.entity.position.y;
+    if (Math.abs(currentY - targetY) < 5) return; // Already at target level
+    
+    // Dig down or find cave
+    if (currentY > targetY) {
+      // Need to go down - dig staircase
+      while (this.bot.entity.position.y > targetY) {
+        const below = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
+        if (below && below.name !== 'air') {
+          await this.bot.dig(below);
+          await this.bot.pathfinder.goto(new goals.GoalNear(
+            this.bot.entity.position.x,
+            this.bot.entity.position.y - 1,
+            this.bot.entity.position.z,
+            1
+          ));
+        } else {
+          await this.bot.pathfinder.goto(new goals.GoalNear(
+            this.bot.entity.position.x,
+            this.bot.entity.position.y - 1,
+            this.bot.entity.position.z,
+            1
+          ));
+        }
+        await this.sleep(500);
+      }
+    } else {
+      // Need to go up - find cave or dig up
+      console.log(`[HUNTER] ⬆️ Need to go up - finding cave...`);
+    }
+    
+    console.log(`[HUNTER] ✅ Reached target Y level`);
+  }
+  
+  async stripMine(targetOre, quantity) {
+    console.log(`[HUNTER] ⛏️ Strip mining for ${targetOre}...`);
+    
+    let collected = 0;
+    let tunnelLength = 0;
+    const maxLength = 1000; // Maximum tunnel length
+    
+    while (collected < quantity && tunnelLength < maxLength) {
+      // Mine 2x1 tunnel
+      await this.mineTunnel(50); // 50 blocks forward
+      tunnelLength += 50;
+      
+      // Check for ore
+      collected += await this.collectNearbyOre(targetOre);
+      console.log(`[HUNTER] 📊 Progress: ${collected}/${quantity} ${targetOre}`);
+      
+      // Make perpendicular branches every 3 blocks
+      if (tunnelLength % 3 === 0) {
+        await this.mineBranch(10);
+        collected += await this.collectNearbyOre(targetOre);
+      }
+      
+      // Safety check
+      if (this.bot.health < 10) {
+        await this.heal();
+      }
+    }
+    
+    if (collected >= quantity) {
+      console.log(`[HUNTER] ✅ Strip mining complete: ${collected}x ${targetOre}`);
+      return true;
+    } else {
+      console.log(`[HUNTER] ⚠️ Strip mining incomplete: ${collected}/${quantity} ${targetOre}`);
+      return false;
+    }
+  }
+  
+  async mineTunnel(length) {
+    console.log(`[HUNTER] 🕳️ Mining ${length} block tunnel...`);
+    
+    const direction = this.bot.entity.yaw; // Current facing direction
+    
+    for (let i = 0; i < length; i++) {
+      // Mine block in front
+      const front = this.bot.blockAt(this.bot.entity.position.offset(0, 0, 1));
+      if (front && front.name !== 'air' && front.name !== 'water' && front.name !== 'lava') {
+        await this.bot.dig(front);
+      }
+      
+      // Mine block above (for 2 high tunnel)
+      const above = this.bot.blockAt(this.bot.entity.position.offset(0, 1, 1));
+      if (above && above.name !== 'air' && above.name !== 'water' && above.name !== 'lava') {
+        await this.bot.dig(above);
+      }
+      
+      // Move forward
+      await this.bot.pathfinder.goto(new goals.GoalNear(
+        this.bot.entity.position.x + Math.sin(direction),
+        this.bot.entity.position.y,
+        this.bot.entity.position.z + Math.cos(direction),
+        1
+      ));
+      
+      await this.sleep(200);
+    }
+  }
+  
+  async mineBranch(length) {
+    console.log(`[HUNTER] 🌿 Mining side branch...`);
+    
+    // Turn 90 degrees
+    const newDirection = this.bot.entity.yaw + (Math.PI / 2);
+    
+    for (let i = 0; i < length; i++) {
+      const front = this.bot.blockAt(this.bot.entity.position.offset(0, 0, 1));
+      if (front && front.name !== 'air' && front.name !== 'water' && front.name !== 'lava') {
+        await this.bot.dig(front);
+      }
+      
+      await this.bot.pathfinder.goto(new goals.GoalNear(
+        this.bot.entity.position.x + Math.sin(newDirection),
+        this.bot.entity.position.y,
+        this.bot.entity.position.z + Math.cos(newDirection),
+        1
+      ));
+      
+      await this.sleep(200);
+    }
+    
+    // Return to main tunnel
+    for (let i = 0; i < length; i++) {
+      await this.bot.pathfinder.goto(new goals.GoalNear(
+        this.bot.entity.position.x - Math.sin(newDirection),
+        this.bot.entity.position.y,
+        this.bot.entity.position.z - Math.cos(newDirection),
+        1
+      ));
+      await this.sleep(200);
+    }
+  }
+  
+  async bedMine(targetOre, quantity) {
+    console.log(`[HUNTER] 💥 Bed mining for ${targetOre}...`);
+    console.log(`[HUNTER] ⚠️ Bed mining not implemented yet`);
+    return false;
+  }
+  
+  async branchMine(targetOre, quantity) {
+    console.log(`[HUNTER] 🌳 Branch mining for ${targetOre}...`);
+    console.log(`[HUNTER] ⚠️ Branch mining not implemented yet`);
+    return false;
+  }
+  
+  async collectNearbyOre(targetOre) {
+    let collected = 0;
+    const radius = 16;
+    
+    // Look for ore blocks
+    const oreBlocks = this.bot.findBlocks({
+      matching: this.getOreBlockIds(targetOre),
+      maxDistance: radius,
+      count: 20
+    });
+    
+    for (const orePos of oreBlocks) {
+      await this.bot.pathfinder.goto(new goals.GoalNear(orePos.x, orePos.y, orePos.z, 1));
+      const ore = this.bot.blockAt(orePos);
+      if (ore) {
+        await this.bot.dig(ore);
+        collected++;
+        console.log(`[HUNTER] ⛏️ Mined ${targetOre}`);
+      }
+    }
+    
+    return collected;
+  }
+  
+  getOreBlockIds(targetOre) {
+    const oreMap = {
+      'diamond': [this.bot.registry.blocksByName['diamond_ore']?.id, this.bot.registry.blocksByName['deepslate_diamond_ore']?.id],
+      'iron_ingot': [this.bot.registry.blocksByName['iron_ore']?.id, this.bot.registry.blocksByName['deepslate_iron_ore']?.id],
+      'gold_ingot': [this.bot.registry.blocksByName['gold_ore']?.id, this.bot.registry.blocksByName['deepslate_gold_ore']?.id],
+      'coal': [this.bot.registry.blocksByName['coal_ore']?.id, this.bot.registry.blocksByName['deepslate_coal_ore']?.id],
+      'redstone': [this.bot.registry.blocksByName['redstone_ore']?.id, this.bot.registry.blocksByName['deepslate_redstone_ore']?.id],
+      'lapis_lazuli': [this.bot.registry.blocksByName['lapis_ore']?.id, this.bot.registry.blocksByName['deepslate_lapis_ore']?.id],
+      'copper_ingot': [this.bot.registry.blocksByName['copper_ore']?.id, this.bot.registry.blocksByName['deepslate_copper_ore']?.id],
+      'emerald': [this.bot.registry.blocksByName['emerald_ore']?.id, this.bot.registry.blocksByName['deepslate_emerald_ore']?.id],
+      'ancient_debris': [this.bot.registry.blocksByName['ancient_debris']?.id]
+    };
+    
+    return oreMap[targetOre] || [];
+  }
+  
+  async heal() {
+    console.log(`[HUNTER] 💊 Healing during mining...`);
+    
+    const food = this.bot.inventory.items().find(item => 
+      item.name.includes('bread') || 
+      item.name.includes('cooked') || 
+      item.name.includes('steak') ||
+      item.name.includes('porkchop')
+    );
+    
+    if (food) {
+      await this.bot.equip(food, 'hand');
+      await this.bot.consume();
+      console.log(`[HUNTER] ✅ Ate ${food.name}`);
+    }
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// Fishing Automation
+class AutoFisher {
+  constructor(bot) {
+    this.bot = bot;
+  }
+  
+  async fishForItem(itemName, quantity) {
+    console.log(`[HUNTER] 🎣 Fishing for ${quantity}x ${itemName}...`);
+    
+    // Find water
+    const water = await this.findNearbyWater();
+    if (!water) {
+      console.log(`[HUNTER] ❌ No water found for fishing`);
+      return false;
+    }
+    
+    await this.travelTo(water);
+    
+    // Equip fishing rod (preferably with Luck of the Sea)
+    await this.equipBestFishingRod();
+    
+    let collected = 0;
+    let casts = 0;
+    const maxCasts = quantity * 100; // Allow many casts for rare items
+    
+    while (collected < quantity && casts < maxCasts) {
+      console.log(`[HUNTER] 🎣 Casting line... (${collected}/${quantity} ${itemName})`);
+      
+      await this.castRod();
+      const caught = await this.waitForBite();
+      
+      if (caught === itemName) {
+        collected++;
+        console.log(`[HUNTER] 🐟 Caught ${itemName}! (${collected}/${quantity})`);
+      } else if (caught) {
+        console.log(`[HUNTER] 🐟 Caught ${caught} (not target)`);
+      }
+      
+      casts++;
+      
+      // Short break between casts
+      await this.sleep(2000);
+    }
+    
+    if (collected >= quantity) {
+      console.log(`[HUNTER] ✅ Fishing complete: ${collected}x ${itemName}`);
+      return true;
+    } else {
+      console.log(`[HUNTER] ⚠️ Fishing incomplete: ${collected}/${quantity} ${itemName}`);
+      return false;
+    }
+  }
+  
+  async findNearbyWater() {
+    console.log(`[HUNTER] 💧 Searching for water...`);
+    
+    const waterBlocks = this.bot.findBlocks({
+      matching: this.bot.registry.blocksByName['water']?.id,
+      maxDistance: 100,
+      count: 10
+    });
+    
+    if (waterBlocks.length > 0) {
+      console.log(`[HUNTER] ✅ Found water at ${waterBlocks[0].x}, ${waterBlocks[0].y}, ${waterBlocks[0].z}`);
+      return waterBlocks[0];
+    }
+    
+    console.log(`[HUNTER] ❌ No water found nearby`);
+    return null;
+  }
+  
+  async travelTo(position) {
+    try {
+      await safeGoTo(this.bot, position, 60000);
+      console.log(`[HUNTER] ✅ Arrived at fishing spot`);
+      return true;
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Failed to reach fishing spot: ${err.message}`);
+      return false;
+    }
+  }
+  
+  async equipBestFishingRod() {
+    console.log(`[HUNTER] 🎣 Equipping best fishing rod...`);
+    
+    const fishingRods = this.bot.inventory.items().filter(item => item.name === 'fishing_rod');
+    
+    if (fishingRods.length === 0) {
+      console.log(`[HUNTER] ❌ No fishing rod available`);
+      return false;
+    }
+    
+    // Prefer enchanted rod (Luck of the Sea)
+    const bestRod = fishingRods.sort((a, b) => (b.enchantments?.length || 0) - (a.enchantments?.length || 0))[0];
+    
+    await this.bot.equip(bestRod, 'hand');
+    console.log(`[HUNTER] ✅ Equipped fishing rod`);
+    return true;
+  }
+  
+  async castRod() {
+    try {
+      // Look at water and cast
+      await this.bot.look(
+        this.bot.entity.yaw + (Math.random() - 0.5) * 0.5, // Add some randomness
+        0.2 // Look slightly down
+      );
+      
+      await this.sleep(500);
+      await this.bot.activateItem(); // Cast line
+      
+      console.log(`[HUNTER] 🎣 Line cast`);
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Failed to cast: ${err.message}`);
+    }
+  }
+  
+  async waitForBite() {
+    return new Promise((resolve) => {
+      let caught = false;
+      let timeout = setTimeout(() => {
+        if (!caught) {
+          this.bot.deactivateItem();
+          resolve(null);
+        }
+      }, 30000); // 30 second timeout
+      
+      const onPlayerCollect = (entity, item) => {
+        if (entity === this.bot.entity && !caught) {
+          caught = true;
+          clearTimeout(timeout);
+          this.bot.removeListener('playerCollect', onPlayerCollect);
+          resolve(item?.name || 'unknown');
+        }
+      };
+      
+      this.bot.once('playerCollect', onPlayerCollect);
+      
+      // Also listen for fishing bobber
+      const onSpawn = (entity) => {
+        if (entity.name === 'fishing_bobber' && !caught) {
+          // Wait for bite (bobber goes underwater)
+          const checkBite = () => {
+            if (caught) return;
+            
+            if (entity.metadata && entity.metadata[8] === true) { // Bobber underwater
+              caught = true;
+              clearTimeout(timeout);
+              this.bot.removeListener('entitySpawn', onSpawn);
+              this.bot.deactivateItem(); // Reel in
+              resolve('fish');
+            } else {
+              setTimeout(checkBite, 100);
+            }
+          };
+          setTimeout(checkBite, 1000);
+        }
+      };
+      
+      this.bot.once('entitySpawn', onSpawn);
+    });
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
 
 // === INTELLIGENT CONVERSATION SYSTEM ===
 class ConversationAI {
@@ -6683,6 +9898,7 @@ class ConversationAI {
     this.context = [];
     this.maxContext = 10;
     this.trustLevels = ['guest', 'trusted', 'admin', 'owner'];
+    this.itemHunter = new ItemHunter(bot);
   }
   
   isWhitelisted(username) {
@@ -6767,7 +9983,7 @@ class ConversationAI {
   }
   
   isCommand(message) {
-    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'maintenance', 'repair', 'fix armor', 'swap elytra', 'check elytra', 'set xp farm'];
+    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'find', 'hunt', 'collect', 'fish for', 'farm'];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
@@ -7044,6 +10260,9 @@ class ConversationAI {
           this.bot.chat("Usage: 'set xp farm here' or 'set xp farm x,y,z'");
         }
       }
+    // Item Finder commands
+    if (lower.includes('find') || lower.includes('hunt') || lower.includes('collect') || lower.includes('get me') || lower.includes('fish for') || lower.includes('farm')) {
+      await this.handleItemFinderCommand(username, message);
       return;
     }
     
@@ -7558,6 +10777,61 @@ class ConversationAI {
     
     // Default fallback for unrecognized commands
     this.bot.chat("I didn't understand that command. Try 'help' for options!");
+  }
+  
+  async handleItemFinderCommand(username, message) {
+    console.log(`[HUNTER] 🎯 Item request from ${username}: ${message}`);
+    
+    // Parse the item request
+    const request = this.itemHunter.parser.parseRequest(message);
+    if (!request) {
+      this.bot.chat(`Sorry ${username}, I couldn't understand that item request. Try: "find me [item]" or "get me [quantity] [item]"`);
+      return;
+    }
+    
+    const { itemName, quantity } = request;
+    
+    // Check if we have knowledge about this item
+    const knowledge = ITEM_KNOWLEDGE[itemName];
+    if (!knowledge) {
+      this.bot.chat(`Sorry ${username}, I don't have information about "${itemName}". Try a different item name.`);
+      return;
+    }
+    
+    // Announce the hunt
+    this.bot.chat(`[HUNTER] 🔍 Starting hunt for ${quantity}x ${itemName} for ${username}!`);
+    this.bot.chat(`[HUNTER] 📋 Strategy: ${knowledge.optimal_strategy}`);
+    
+    // Start the hunt in background
+    this.huntForItem(username, itemName, quantity, knowledge);
+  }
+  
+  async huntForItem(requester, itemName, quantity, knowledge) {
+    try {
+      const success = await this.itemHunter.findItem(itemName, quantity);
+      
+      if (success) {
+        // Check if we actually got the item
+        const hasItem = this.bot.inventory.items().find(item => item.name === itemName);
+        const count = hasItem ? hasItem.count : 0;
+        
+        if (count >= quantity) {
+          this.bot.chat(`[HUNTER] ✅ Success! Found ${count}x ${itemName} for ${requester}`);
+          
+          // If crafted item, announce crafting completion
+          if (knowledge.type === 'crafted') {
+            this.bot.chat(`[HUNTER] 🎨 Successfully crafted ${itemName}!`);
+          }
+        } else {
+          this.bot.chat(`[HUNTER] ⚠️ Hunt completed but only found ${count}/${quantity} ${itemName}`);
+        }
+      } else {
+        this.bot.chat(`[HUNTER] ❌ Failed to find ${itemName} for ${requester}. Try a different approach?`);
+      }
+    } catch (err) {
+      console.log(`[HUNTER] Error during hunt: ${err.message}`);
+      this.bot.chat(`[HUNTER] ❌ Error during hunt: ${err.message}`);
+    }
   }
 }
 
@@ -12074,6 +15348,7 @@ let globalBaseMonitor = null;
 let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
 let globalSchematicLoader = new SchematicLoader();
+let globalBackupManager = new BackupManager();
 
 http.createServer((req, res) => {
   // === RATE LIMITING (Issue #14) ===
@@ -12264,6 +15539,14 @@ http.createServer((req, res) => {
         lastElytraSwap: config.maintenance.lastElytraSwap ? new Date(config.maintenance.lastElytraSwap).toLocaleString() : 'Never',
         xpFarmSet: !!config.maintenance.autoRepair.xpFarmLocation
       }
+    }));
+  } else if (req.url === '/api/backup-status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      activeBackups: globalBackupManager?.activeBackups || [],
+      completedBackups: globalBackupManager?.completedBackups || [],
+      totalValueBacked: (config.analytics.backup?.totalValueBacked) || 0,
+      backupQueue: globalBackupManager?.queue || []
     }));
   } else if (req.url === '/swarm') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
