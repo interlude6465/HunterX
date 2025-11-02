@@ -77,7 +77,7 @@ process.on('uncaughtException', (err) => {
 });
 
 // === SAFE DIRECTORIES ===
-['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics'].forEach(d => 
+['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics', './data/inventory', './data/production'].forEach(d => 
   fs.mkdirSync(d, { recursive: true })
 );
 
@@ -19494,6 +19494,17 @@ async function launchBot(username, role = 'fighter') {
           await dupeFramework.startTesting();
         }, 3000);
       }, 2000); // Wait 2 seconds for bot to fully initialize
+    } else if (config.mode === 'supply_chain') {
+      console.log('[SUPPLY] Supply chain worker bot initialized');
+      
+      // Register with global supply chain manager if not already done
+      if (globalSupplyChainManager && !globalSupplyChainManager.activeBots.has(bot.username)) {
+        globalSupplyChainManager.registerBot(bot);
+      }
+      
+      // Initialize basic inventory and pathfinding for supply chain tasks
+      bot.loadInventory();
+      console.log(`[SUPPLY] Worker ${bot.username} ready for tasks`);
     }
     
     // Chat handler with intelligence gathering
@@ -19743,6 +19754,11 @@ async function launchBot(username, role = 'fighter') {
         bot.dangerMonitor.stopMonitoring();
         bot.dangerMonitor = null;
       }
+      
+      // Unregister from supply chain manager
+      if (globalSupplyChainManager && globalSupplyChainManager.activeBots.has(bot.username)) {
+        globalSupplyChainManager.unregisterBot(bot.username);
+      }
 
       // Close WebSocket connection
       if (wsClient) {
@@ -19811,21 +19827,24 @@ function showMenu() {
 ║  [3] Stash Hunting (2b2t Treasure Hunter)             ║
 ║  [4] Friendly Mode (Companion & Helper)               ║
 ║  [5] Swarm Multi-Bot (Coordinated Operations)         ║
-║  [6] Configure Whitelist                              ║
+║  [6] Supply Chain Manager (Task Queue System)         ║
+║  [7] Configure Whitelist                              ║
 ╠═══════════════════════════════════════════════════════╣
 ║  🏠 Home Base: ${config.homeBase.coords ? '✅' : '❌'}                                 ║
 ║  🐝 Swarm Coordinator: ${globalSwarmCoordinator ? '✅' : '❌'}                       ║
+║  🔗 Supply Chain: ${globalSupplyChainManager ? '✅' : '❌'}                    ║
 ╚═══════════════════════════════════════════════════════╝
   `);
   
-  rl.question('Select option (1-6): ', (answer) => {
+  rl.question('Select option (1-7): ', (answer) => {
     switch (answer.trim()) {
       case '1': config.mode = 'pvp'; askServer(); break;
       case '2': config.mode = 'dupe'; askServer(); break;
       case '3': config.mode = 'stash'; askStashConfig(); break;
       case '4': config.mode = 'friendly'; askServer(); break;
       case '5': config.mode = 'swarm'; launchSwarm(); break;
-      case '6': configureWhitelist(); break;
+      case '6': launchSupplyChainManager(); break;
+      case '7': configureWhitelist(); break;
       default: console.log('Invalid choice'); showMenu(); break;
     }
   });
@@ -19939,6 +19958,78 @@ function launchSwarm() {
   });
 }
 
+function launchSupplyChainManager() {
+  console.log('\n🔗 SUPPLY CHAIN MANAGER - Task Queue System\n');
+  
+  // Initialize supply chain manager
+  if (!globalSupplyChainManager) {
+    globalSupplyChainManager = new SupplyChainManager();
+    console.log('[SUPPLY] Supply Chain Manager initialized');
+  }
+  
+  // Start HTTP server
+  initializeSupplyChainServer();
+  
+  rl.question('Server IP:PORT: ', (server) => {
+    config.server = server.trim();
+    
+    rl.question('Number of worker bots to launch (1-5): ', (count) => {
+      const botCount = Math.min(5, Math.max(1, parseInt(count) || 2));
+      
+      console.log(`\n🚀 Launching ${botCount} supply chain workers...\n`);
+      
+      // Launch worker bots
+      for (let i = 0; i < botCount; i++) {
+        const botName = `SupplyWorker_${i + 1}_${Date.now().toString(36)}`;
+        setTimeout(() => {
+          console.log(`[SUPPLY] Launching worker ${i + 1}/${botCount}: ${botName}`);
+          const bot = launchBot(botName, 'supply_chain');
+          
+          // Register with supply chain manager after bot is ready
+          if (bot) {
+            bot.once('spawn', () => {
+              globalSupplyChainManager.registerBot(bot);
+            });
+          }
+        }, i * 2000);
+      }
+      
+      // Start queue processor
+      setTimeout(() => {
+        globalSupplyChainManager.processQueue();
+        console.log('[SUPPLY] Queue processor started');
+      }, botCount * 2000 + 3000);
+      
+      // Add some sample tasks
+      setTimeout(() => {
+        console.log('[SUPPLY] Adding sample tasks...');
+        globalSupplyChainManager.taskQueue.addTask({
+          type: 'collect',
+          item: 'oak_log',
+          quantity: 64,
+          priority: 'normal'
+        });
+        
+        globalSupplyChainManager.taskQueue.addTask({
+          type: 'collect',
+          item: 'cobblestone',
+          quantity: 128,
+          priority: 'high'
+        });
+        
+        globalSupplyChainManager.taskQueue.addTask({
+          type: 'find',
+          item: 'diamond',
+          quantity: 5,
+          priority: 'urgent'
+        });
+      }, 10000);
+      
+      rl.close();
+    });
+  });
+}
+
 function launch() {
   rl.question('Bot username (or press Enter for auto): ', (username) => {
     const name = username.trim() || `Hunter_${Date.now().toString(36)}`;
@@ -19959,6 +20050,7 @@ console.log(`
 ║  ✅ Combat AI ready                                   ║
 ║  ✅ Conversation system active                        ║
 ║  ✅ Dashboard running on :8080                        ║
+║  🔗 Supply Chain Dashboard on :8081                   ║
 ║  ✅ Dupe knowledge base (${knowledgeBaseCount} methods)               ║
 ║  ✅ Plugin analyzer ready                             ║
 ║  ✅ Automated testing framework                       ║
@@ -19966,6 +20058,7 @@ console.log(`
 ║  ✅ Swarm coordinator ready (port 9090)               ║
 ║  ✅ Home base system initialized                      ║
 ║  ✅ Ender chest logistics enabled                     ║
+║  🔗 Supply Chain Manager ready                       ║
 ╠═══════════════════════════════════════════════════════╣
 ║  NEW: Ultimate Dupe Engine (500+ tests/hour)         ║
 ║  NEW: Server lag detection & exploitation            ║
@@ -19978,6 +20071,7 @@ console.log(`
 ║  NEW: Packet timing manipulation                     ║
 ║  NEW: Parallel hypothesis testing                    ║
 ║  NEW: Smart AI prioritization queue                  ║
+║  🔗 NEW: Task Queue & Production System            ║
 ╚═══════════════════════════════════════════════════════╝
 `);
 
@@ -20459,11 +20553,932 @@ class DeathRecovery {
   }
 }
 
+// === SUPPLY CHAIN TASK QUEUE SYSTEM ===
+
+class TaskQueue {
+  constructor() {
+    this.queue = [];
+    this.completed = [];
+    this.inProgress = [];
+    this.taskIdCounter = 1;
+  }
+  
+  generateTaskId() {
+    return `task_${this.taskIdCounter++}_${Date.now()}`;
+  }
+  
+  addTask(task) {
+    const queuedTask = {
+      id: this.generateTaskId(),
+      type: task.type, // 'collect', 'find', 'craft', 'build'
+      item: task.item,
+      quantity: task.quantity,
+      priority: task.priority || 'normal', // low, normal, high, urgent
+      deadline: task.deadline || null,
+      assignedTo: null,
+      status: 'queued', // queued, assigned, in_progress, completed, failed
+      createdAt: Date.now(),
+      startedAt: null,
+      completedAt: null,
+      progress: 0
+    };
+    
+    this.queue.push(queuedTask);
+    this.sortQueue(); // Sort by priority
+    
+    console.log(`[QUEUE] Added task: ${task.item} x${task.quantity} (${task.priority} priority)`);
+    return queuedTask.id;
+  }
+  
+  sortQueue() {
+    const priorityOrder = { urgent: 4, high: 3, normal: 2, low: 1 };
+    this.queue.sort((a, b) => priorityOrder[b.priority] - priorityOrder[a.priority]);
+  }
+  
+  getNextTask(botId) {
+    const availableTask = this.queue.find(t => t.status === 'queued');
+    
+    if (availableTask) {
+      availableTask.status = 'assigned';
+      availableTask.assignedTo = botId;
+      availableTask.startedAt = Date.now();
+      
+      this.inProgress.push(availableTask);
+      this.queue = this.queue.filter(t => t.id !== availableTask.id);
+      
+      console.log(`[QUEUE] Assigned task ${availableTask.id} to ${botId}`);
+      return availableTask;
+    }
+    
+    return null;
+  }
+  
+  updateProgress(taskId, progress) {
+    const task = this.inProgress.find(t => t.id === taskId);
+    if (task) {
+      task.progress = Math.max(0, Math.min(100, progress));
+    }
+  }
+  
+  completeTask(taskId, success = true, result = null) {
+    const task = this.inProgress.find(t => t.id === taskId);
+    
+    if (task) {
+      task.status = success ? 'completed' : 'failed';
+      task.completedAt = Date.now();
+      task.result = result;
+      
+      this.completed.push(task);
+      this.inProgress = this.inProgress.filter(t => t.id !== taskId);
+      
+      console.log(`[QUEUE] Task ${success ? 'completed' : 'failed'}: ${task.item} x${task.quantity} by ${task.assignedTo}`);
+      
+      // Re-queue failed tasks with lower priority
+      if (!success && task.type !== 'build') {
+        setTimeout(() => {
+          this.addTask({
+            type: task.type,
+            item: task.item,
+            quantity: task.quantity,
+            priority: 'low'
+          });
+        }, 30000); // Wait 30 seconds before retrying
+      }
+      
+      return true;
+    }
+    
+    return false;
+  }
+  
+  getQueueStatus() {
+    return {
+      queued: this.queue,
+      inProgress: this.inProgress,
+      completed: this.completed.slice(-20), // Last 20 completed tasks
+      stats: {
+        totalQueued: this.queue.length,
+        totalInProgress: this.inProgress.length,
+        totalCompleted: this.completed.length,
+        successRate: this.completed.length > 0 ? 
+          (this.completed.filter(t => t.status === 'completed').length / this.completed.length * 100).toFixed(1) : 0
+      }
+    };
+  }
+}
+
+class GlobalInventory {
+  constructor() {
+    this.storage = {
+      home_base: {},
+      ender_chest: {},
+      bot_inventories: {}
+    };
+    
+    this.load();
+  }
+  
+  load() {
+    const data = safeReadJson('./data/inventory/global_inventory.json', {});
+    if (data.storage) {
+      this.storage = data.storage;
+    }
+  }
+  
+  save() {
+    safeWriteJson('./data/inventory/global_inventory.json', { storage: this.storage });
+  }
+  
+  add(item, quantity, location = 'home_base') {
+    if (!this.storage[location][item]) {
+      this.storage[location][item] = 0;
+    }
+    
+    this.storage[location][item] += quantity;
+    this.save();
+    
+    console.log(`[INVENTORY] Added ${quantity}x ${item} to ${location}`);
+  }
+  
+  remove(item, quantity, location = 'home_base') {
+    if (this.storage[location][item] >= quantity) {
+      this.storage[location][item] -= quantity;
+      if (this.storage[location][item] === 0) {
+        delete this.storage[location][item];
+      }
+      this.save();
+      return true;
+    }
+    
+    return false;
+  }
+  
+  getTotal(item) {
+    let total = 0;
+    
+    for (const location in this.storage) {
+      if (this.storage[location][item]) {
+        total += this.storage[location][item];
+      }
+    }
+    
+    return total;
+  }
+  
+  checkAvailability(item, quantity) {
+    return this.getTotal(item) >= quantity;
+  }
+  
+  getInventoryReport() {
+    return {
+      home_base: this.storage.home_base,
+      ender_chest: this.storage.ender_chest,
+      total_items: this.getTotalItemCount(),
+      valuable_items: this.getValuableItems()
+    };
+  }
+  
+  getTotalItemCount() {
+    let total = 0;
+    
+    for (const location in this.storage) {
+      for (const item in this.storage[location]) {
+        total += this.storage[location][item];
+      }
+    }
+    
+    return total;
+  }
+  
+  getValuableItems() {
+    const valuables = ['diamond', 'netherite_ingot', 'emerald', 'totem_of_undying', 'elytra', 'shulker_box'];
+    const report = {};
+    
+    for (const item of valuables) {
+      const count = this.getTotal(item);
+      if (count > 0) {
+        report[item] = count;
+      }
+    }
+    
+    return report;
+  }
+}
+
+class ProductionTracker {
+  constructor() {
+    this.stats = {
+      total_tasks_completed: 0,
+      items_produced: {},
+      production_rates: {}, // items per hour
+      bot_performance: {}
+    };
+    
+    this.load();
+  }
+  
+  load() {
+    const data = safeReadJson('./data/production/production_stats.json', {});
+    if (data.stats) {
+      this.stats = data.stats;
+    }
+  }
+  
+  save() {
+    safeWriteJson('./data/production/production_stats.json', { stats: this.stats });
+  }
+  
+  trackProduction(item, quantity, botId, timeSpent) {
+    // Update totals
+    if (!this.stats.items_produced[item]) {
+      this.stats.items_produced[item] = 0;
+    }
+    this.stats.items_produced[item] += quantity;
+    
+    // Calculate rate (items per hour)
+    const ratePerHour = (quantity / timeSpent) * 3600000; // ms to hours
+    this.stats.production_rates[item] = Math.round(ratePerHour * 100) / 100;
+    
+    // Track bot performance
+    if (!this.stats.bot_performance[botId]) {
+      this.stats.bot_performance[botId] = { tasks: 0, items: 0, efficiency: 0 };
+    }
+    this.stats.bot_performance[botId].tasks++;
+    this.stats.bot_performance[botId].items += quantity;
+    this.stats.bot_performance[botId].efficiency = 
+      Math.round((this.stats.bot_performance[botId].items / this.stats.bot_performance[botId].tasks) * 100) / 100;
+    
+    this.stats.total_tasks_completed++;
+    this.save();
+    
+    console.log(`[PRODUCTION] ${botId} produced ${quantity}x ${item} (${ratePerHour.toFixed(1)}/hr)`);
+  }
+  
+  getReport() {
+    return {
+      total_tasks: this.stats.total_tasks_completed,
+      top_produced: this.getTopProduced(10),
+      production_rates: this.stats.production_rates,
+      bot_leaderboard: this.getBotLeaderboard()
+    };
+  }
+  
+  getTopProduced(limit = 10) {
+    const items = Object.entries(this.stats.items_produced)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit);
+    
+    return items.map(([item, count]) => ({ item, count }));
+  }
+  
+  getBotLeaderboard() {
+    return Object.entries(this.stats.bot_performance)
+      .sort((a, b) => b[1].items - a[1].items)
+      .map(([botId, stats]) => ({ botId, ...stats }));
+  }
+}
+
+class ItemHunter {
+  constructor(bot) {
+    this.bot = bot;
+  }
+  
+  async findItem(itemName, quantity) {
+    console.log(`[HUNTER] Starting search for ${quantity}x ${itemName}`);
+    
+    let collected = 0;
+    const startTime = Date.now();
+    
+    // First check bot's inventory
+    const invItem = this.bot.inventory.items().find(i => i.name === itemName);
+    if (invItem) {
+      collected = Math.min(invItem.count, quantity);
+      console.log(`[HUNTER] Found ${collected}x ${itemName} in inventory`);
+    }
+    
+    // If need more, go mining/hunting
+    if (collected < quantity) {
+      const needed = quantity - collected;
+      const additional = await this.collectItem(itemName, needed);
+      collected += additional;
+    }
+    
+    const timeSpent = Date.now() - startTime;
+    console.log(`[HUNTER] Collected ${collected}/${quantity}x ${itemName} in ${timeSpent}ms`);
+    
+    return collected;
+  }
+  
+  async collectItem(itemName, quantity) {
+    // Simple implementation - mine nearby blocks
+    const blocks = this.bot.findBlocks({
+      matching: this.bot.registry.blocksByName[itemName]?.id,
+      maxDistance: 100,
+      count: quantity
+    });
+    
+    let collected = 0;
+    
+    for (const blockPos of blocks) {
+      if (collected >= quantity) break;
+      
+      try {
+        await this.bot.pathfinder.goto(new goals.GoalNear(blockPos.x, blockPos.y, blockPos.z, 1));
+        await this.bot.dig(this.bot.blockAt(blockPos));
+        collected++;
+      } catch (err) {
+        console.log(`[HUNTER] Failed to collect ${itemName}: ${err.message}`);
+      }
+    }
+    
+    return collected;
+  }
+}
+
+class SupplyChainManager {
+  constructor() {
+    this.taskQueue = new TaskQueue();
+    this.inventory = new GlobalInventory();
+    this.productionTracker = new ProductionTracker();
+    this.activeBots = new Map();
+    this.processing = false;
+  }
+  
+  registerBot(bot) {
+    this.activeBots.set(bot.username, bot);
+    console.log(`[SUPPLY] Registered bot: ${bot.username}`);
+  }
+  
+  unregisterBot(botUsername) {
+    this.activeBots.delete(botUsername);
+    console.log(`[SUPPLY] Unregistered bot: ${botUsername}`);
+  }
+  
+  getIdleBots() {
+    const idleBots = [];
+    
+    for (const [botId, bot] of this.activeBots) {
+      // Check if bot is working on a task
+      const isWorking = this.taskQueue.inProgress.some(t => t.assignedTo === botId);
+      
+      if (!isWorking && bot.health > 0) {
+        idleBots.push(bot);
+      }
+    }
+    
+    return idleBots;
+  }
+  
+  async processQueue() {
+    if (this.processing) {
+      console.log('[SUPPLY] Queue processor already running');
+      return;
+    }
+    
+    this.processing = true;
+    console.log('[SUPPLY] Starting queue processor...');
+    
+    while (this.processing) {
+      try {
+        // Get available bots
+        const availableBots = this.getIdleBots();
+        
+        // Assign tasks to bots
+        for (const bot of availableBots) {
+          const task = this.taskQueue.getNextTask(bot.username);
+          
+          if (task) {
+            this.assignTaskToBot(bot, task);
+          }
+        }
+        
+        // Wait before next check
+        await this.sleep(5000);
+      } catch (err) {
+        console.log(`[SUPPLY] Queue processor error: ${err.message}`);
+        await this.sleep(10000);
+      }
+    }
+  }
+  
+  async assignTaskToBot(bot, task) {
+    console.log(`[SUPPLY] Assigning to ${bot.username}: ${task.item} x${task.quantity}`);
+    
+    task.status = 'in_progress';
+    
+    const startTime = Date.now();
+    let success = false;
+    let result = null;
+    
+    try {
+      // Execute based on task type
+      switch (task.type) {
+        case 'collect':
+          result = await this.executeCollectTask(bot, task);
+          success = true;
+          break;
+        case 'find':
+          result = await this.executeFindTask(bot, task);
+          success = true;
+          break;
+        case 'craft':
+          result = await this.executeCraftTask(bot, task);
+          success = true;
+          break;
+        case 'build':
+          result = await this.executeBuildTask(bot, task);
+          success = true;
+          break;
+        default:
+          console.log(`[SUPPLY] Unknown task type: ${task.type}`);
+          success = false;
+      }
+    } catch (err) {
+      console.log(`[SUPPLY] Task failed: ${err.message}`);
+      success = false;
+      result = { error: err.message };
+    }
+    
+    const timeSpent = Date.now() - startTime;
+    
+    // Complete task
+    this.taskQueue.completeTask(task.id, success, result);
+    
+    // Track production
+    if (success && result && result.collected) {
+      this.productionTracker.trackProduction(task.item, result.collected, bot.username, timeSpent);
+      
+      // Store in home base
+      await this.depositToHomeBase(bot, task.item, result.collected);
+      
+      // Update inventory
+      this.inventory.add(task.item, result.collected);
+    }
+  }
+  
+  async executeCollectTask(bot, task) {
+    const hunter = new ItemHunter(bot);
+    const collected = await hunter.findItem(task.item, task.quantity);
+    
+    // Update progress during collection
+    const progress = Math.min(100, (collected / task.quantity) * 100);
+    this.taskQueue.updateProgress(task.id, progress);
+    
+    return { collected, target: task.quantity };
+  }
+  
+  async executeFindTask(bot, task) {
+    // Similar to collect but for rare items
+    return this.executeCollectTask(bot, task);
+  }
+  
+  async executeCraftTask(bot, task) {
+    console.log(`[SUPPLY] Crafting ${task.quantity}x ${task.item}`);
+    
+    // Simple crafting implementation
+    const recipe = bot.recipesFor(bot.registry.itemsByName[task.item]?.id, null, 1, null)[0];
+    if (!recipe) {
+      throw new Error(`No recipe found for ${task.item}`);
+    }
+    
+    let crafted = 0;
+    
+    while (crafted < task.quantity) {
+      try {
+        await bot.craft(recipe, 1);
+        crafted++;
+        
+        // Update progress
+        const progress = (crafted / task.quantity) * 100;
+        this.taskQueue.updateProgress(task.id, progress);
+        
+      } catch (err) {
+        console.log(`[SUPPLY] Crafting failed: ${err.message}`);
+        break;
+      }
+    }
+    
+    return { crafted, target: task.quantity };
+  }
+  
+  async executeBuildTask(bot, task) {
+    console.log(`[SUPPLY] Building ${task.item}`);
+    
+    // For build tasks, we'll just mark as completed
+    // In a real implementation, this would load and build schematics
+    return { built: true, structure: task.item };
+  }
+  
+  async depositToHomeBase(bot, item, quantity) {
+    if (!config.homeBase.coords) {
+      console.log('[SUPPLY] No home base set, skipping deposit');
+      return;
+    }
+    
+    try {
+      // Go to home base
+      await safeGoTo(bot, config.homeBase.coords);
+      
+      // Drop items at home base
+      const itemStack = bot.inventory.items().find(i => i.name === item);
+      if (itemStack) {
+        const toDrop = Math.min(quantity, itemStack.count);
+        await bot.toss(itemStack.type, null, toDrop);
+        console.log(`[SUPPLY] Deposited ${toDrop}x ${item} at home base`);
+      }
+    } catch (err) {
+      console.log(`[SUPPLY] Failed to deposit ${item}: ${err.message}`);
+    }
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+  
+  getSupplyChainStatus() {
+    return {
+      queue: this.taskQueue.getQueueStatus(),
+      inventory: this.inventory.getInventoryReport(),
+      production: this.productionTracker.getReport(),
+      bots: {
+        total: this.activeBots.size,
+        idle: this.getIdleBots().length,
+        working: this.taskQueue.inProgress.length
+      }
+    };
+  }
+}
+
+// Global instances
+let globalSupplyChainManager = null;
+let httpServer = null;
+
+// Initialize HTTP server for supply chain dashboard
+function initializeSupplyChainServer() {
+  if (httpServer) {
+    console.log('[SUPPLY] HTTP server already running');
+    return;
+  }
+  
+  httpServer = http.createServer((req, res) => {
+    // Rate limiting
+    const clientIp = req.socket.remoteAddress;
+    if (!checkHttpRateLimit(clientIp, 100, 60000)) {
+      res.writeHead(429, { 'Content-Type': 'text/plain' });
+      res.end('Rate limited');
+      return;
+    }
+    
+    // CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    
+    if (req.method === 'OPTIONS') {
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    
+    // Route handling
+    if (url.pathname === '/task-queue' && req.method === 'GET') {
+      serveTaskQueueDashboard(req, res);
+    } else if (url.pathname === '/api/task-queue' && req.method === 'GET') {
+      serveTaskQueueAPI(req, res);
+    } else if (url.pathname === '/api/task-queue/add' && req.method === 'POST') {
+      addTaskAPI(req, res);
+    } else if (url.pathname === '/api/supply-chain/status' && req.method === 'GET') {
+      serveSupplyChainStatusAPI(req, res);
+    } else {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+    }
+  });
+  
+  httpServer.listen(8081, () => {
+    console.log('[SUPPLY] 🌐 Supply Chain Dashboard running on http://localhost:8081');
+    console.log('[SUPPLY] 📊 Task Queue UI: http://localhost:8081/task-queue');
+  });
+}
+
+function serveTaskQueueDashboard(req, res) {
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <title>Supply Chain - Task Queue</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #1a1a1a; color: #00ff00; padding: 20px; margin: 0; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { text-align: center; margin-bottom: 30px; }
+    .section { background: #2a2a2a; padding: 20px; margin: 20px 0; border-radius: 8px; border: 1px solid #00ff00; }
+    .task-form { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 10px; margin-bottom: 20px; }
+    .task-form input, .task-form select { padding: 10px; background: #333; border: 1px solid #00ff00; color: #00ff00; border-radius: 4px; }
+    .task-form button { padding: 10px 20px; background: #00ff00; color: #000; border: none; cursor: pointer; font-weight: bold; border-radius: 4px; }
+    .task-form button:hover { background: #00cc00; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+    .stat-card { background: #333; padding: 15px; border-radius: 4px; text-align: center; border-left: 4px solid #00ff00; }
+    .stat-number { font-size: 2em; font-weight: bold; color: #00ff00; }
+    .stat-label { font-size: 0.9em; color: #888; margin-top: 5px; }
+    .task-list { max-height: 400px; overflow-y: auto; }
+    .task-item { background: #333; padding: 15px; margin: 10px 0; border-radius: 4px; border-left: 4px solid #00ff00; }
+    .task-item.in-progress { border-left-color: #ffaa00; }
+    .task-item.completed { border-left-color: #00aa00; opacity: 0.7; }
+    .task-item.failed { border-left-color: #ff0000; }
+    .priority-urgent { color: #ff0000; font-weight: bold; }
+    .priority-high { color: #ffaa00; }
+    .priority-normal { color: #00ff00; }
+    .priority-low { color: #888; }
+    .progress-bar { width: 100%; height: 8px; background: #222; border-radius: 4px; margin-top: 10px; overflow: hidden; }
+    .progress-fill { height: 100%; background: #00ff00; border-radius: 4px; transition: width 0.3s; }
+    .inventory-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+    .inventory-item { background: #333; padding: 15px; border-radius: 4px; text-align: center; }
+    .inventory-item .count { font-size: 1.5em; font-weight: bold; color: #00ff00; }
+    .inventory-item .name { font-size: 0.9em; color: #ccc; margin-top: 5px; }
+    .refresh-btn { position: fixed; top: 20px; right: 20px; padding: 10px; background: #00ff00; color: #000; border: none; cursor: pointer; border-radius: 4px; font-weight: bold; }
+    .section h2 { margin-top: 0; color: #00ff00; }
+  </style>
+</head>
+<body>
+  <button class="refresh-btn" onclick="loadData()">🔄 Refresh</button>
+  
+  <div class="container">
+    <div class="header">
+      <h1>🔗 Supply Chain Manager</h1>
+      <p>Autonomous Bot Task Queue & Production System</p>
+    </div>
+    
+    <!-- Stats Overview -->
+    <div class="section">
+      <h2>📊 System Overview</h2>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-number" id="queuedCount">0</div>
+          <div class="stat-label">Queued Tasks</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number" id="progressCount">0</div>
+          <div class="stat-label">In Progress</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number" id="completedCount">0</div>
+          <div class="stat-label">Completed</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number" id="successRate">0%</div>
+          <div class="stat-label">Success Rate</div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Add Task Form -->
+    <div class="section">
+      <h2>➕ Add Task to Queue</h2>
+      <form class="task-form" id="addTaskForm">
+        <select name="type" required>
+          <option value="collect">Collect</option>
+          <option value="find">Find</option>
+          <option value="craft">Craft</option>
+          <option value="build">Build</option>
+        </select>
+        
+        <input type="text" name="item" placeholder="Item name" required />
+        <input type="number" name="quantity" placeholder="Quantity" value="64" min="1" required />
+        
+        <select name="priority">
+          <option value="normal">Normal</option>
+          <option value="low">Low</option>
+          <option value="high">High</option>
+          <option value="urgent">Urgent</option>
+        </select>
+        
+        <button type="submit">Add to Queue</button>
+      </form>
+    </div>
+    
+    <!-- Queued Tasks -->
+    <div class="section">
+      <h2>📋 Task Queue (<span id="queueCount">0</span>)</h2>
+      <div class="task-list" id="queuedTasks"></div>
+    </div>
+    
+    <!-- In Progress -->
+    <div class="section">
+      <h2>⚙️ In Progress (<span id="progressCount">0</span>)</h2>
+      <div class="task-list" id="progressTasks"></div>
+    </div>
+    
+    <!-- Completed Tasks -->
+    <div class="section">
+      <h2>✅ Recently Completed</h2>
+      <div class="task-list" id="completedTasks"></div>
+    </div>
+    
+    <!-- Global Inventory -->
+    <div class="section">
+      <h2>📦 Global Inventory</h2>
+      <div class="inventory-grid" id="inventory"></div>
+    </div>
+  </div>
+  
+  <script>
+    // Add task
+    document.getElementById('addTaskForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const task = {
+        type: formData.get('type'),
+        item: formData.get('item'),
+        quantity: parseInt(formData.get('quantity')),
+        priority: formData.get('priority')
+      };
+      
+      try {
+        const response = await fetch('/api/task-queue/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(task)
+        });
+        
+        if (response.ok) {
+          e.target.reset();
+          loadData();
+        } else {
+          alert('Failed to add task');
+        }
+      } catch (err) {
+        alert('Error adding task: ' + err.message);
+      }
+    });
+    
+    // Load data
+    async function loadData() {
+      try {
+        const res = await fetch('/api/supply-chain/status');
+        const data = await res.json();
+        
+        // Update stats
+        document.getElementById('queuedCount').textContent = data.queue.stats.totalQueued;
+        document.getElementById('progressCount').textContent = data.queue.stats.totalInProgress;
+        document.getElementById('completedCount').textContent = data.queue.stats.totalCompleted;
+        document.getElementById('successRate').textContent = data.queue.stats.successRate + '%';
+        
+        // Update queue counts
+        document.getElementById('queueCount').textContent = data.queue.queued.length;
+        document.getElementById('progressCount').textContent = data.queue.inProgress.length;
+        
+        // Render tasks
+        document.getElementById('queuedTasks').innerHTML = data.queue.queued.map(renderTask).join('');
+        document.getElementById('progressTasks').innerHTML = data.queue.inProgress.map(renderTask).join('');
+        document.getElementById('completedTasks').innerHTML = data.queue.completed.slice(-10).reverse().map(renderTask).join('');
+        
+        // Render inventory
+        document.getElementById('inventory').innerHTML = renderInventory(data.inventory.home_base);
+        
+      } catch (err) {
+        console.error('Failed to load data:', err);
+      }
+    }
+    
+    function renderTask(task) {
+      const elapsed = task.startedAt ? Math.floor((Date.now() - task.startedAt) / 1000) : 0;
+      const timeStr = elapsed > 0 ? \`<br/>⏱️ Time: \${formatTime(elapsed)}\` : '';
+      const assignedStr = task.assignedTo ? \`<br/>🤖 Assigned to: \${task.assignedTo}\` : '';
+      const progressStr = task.progress > 0 ? \`
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: \${task.progress}%"></div>
+        </div>
+      \` : '';
+      
+      return \`
+        <div class="task-item \${task.status}">
+          <div>
+            <span class="priority-\${task.priority}">[\${task.priority.toUpperCase()}]</span>
+            <strong>\${task.type}</strong>: \${task.quantity}x \${task.item}
+            \${assignedStr}
+            \${timeStr}
+          </div>
+          \${progressStr}
+        </div>
+      \`;
+    }
+    
+    function renderInventory(inv) {
+      const items = [];
+      for (const [item, count] of Object.entries(inv || {})) {
+        if (count > 0) {
+          items.push(\`
+            <div class="inventory-item">
+              <div class="count">\${count}</div>
+              <div class="name">\${item.replace(/_/g, ' ')}</div>
+            </div>
+          \`);
+        }
+      }
+      
+      if (items.length === 0) {
+        return '<p style="text-align: center; color: #888;">No items in inventory</p>';
+      }
+      
+      return items.join('');
+    }
+    
+    function formatTime(seconds) {
+      if (seconds < 60) return seconds + 's';
+      if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
+      return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm';
+    }
+    
+    // Auto-refresh every 3 seconds
+    setInterval(loadData, 3000);
+    loadData();
+  </script>
+</body>
+</html>`;
+  
+  res.writeHead(200, { 'Content-Type': 'text/html' });
+  res.end(html);
+}
+
+function serveTaskQueueAPI(req, res) {
+  if (!globalSupplyChainManager) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Supply chain manager not initialized' }));
+    return;
+  }
+  
+  const status = globalSupplyChainManager.taskQueue.getQueueStatus();
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(status));
+}
+
+function addTaskAPI(req, res) {
+  if (!globalSupplyChainManager) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Supply chain manager not initialized' }));
+    return;
+  }
+  
+  let body = '';
+  req.on('data', chunk => {
+    body += chunk.toString();
+  });
+  
+  req.on('end', () => {
+    try {
+      const task = JSON.parse(body);
+      const taskId = globalSupplyChainManager.taskQueue.addTask(task);
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, taskId }));
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  });
+}
+
+function serveSupplyChainStatusAPI(req, res) {
+  if (!globalSupplyChainManager) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Supply chain manager not initialized' }));
+    return;
+  }
+  
+  const status = globalSupplyChainManager.getSupplyChainStatus();
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(status));
+}
+
+// Start HTTP rate limit cleanup
+safeSetInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of httpRateLimits.entries()) {
+    if (now > record.resetTime) {
+      httpRateLimits.delete(ip);
+    }
+  }
+}, 60000, 'http-rate-limit-cleanup');
+
 setTimeout(showMenu, 1000);
 
 // === GRACEFUL SHUTDOWN ===
 process.on('SIGINT', () => {
   console.log('\n\n[SHUTDOWN] Saving data...');
+  
+  // Save supply chain data
+  if (globalSupplyChainManager) {
+    globalSupplyChainManager.inventory.save();
+    globalSupplyChainManager.productionTracker.save();
+    console.log('[SUPPLY] Saved inventory and production data');
+  }
+  
+  // Stop supply chain processing
+  if (globalSupplyChainManager) {
+    globalSupplyChainManager.processing = false;
+  }
+  
   if (globalBot) globalBot.quit();
   process.exit(0);
 });
