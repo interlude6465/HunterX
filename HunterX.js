@@ -11442,14 +11442,6 @@ class ConversationAI {
       return;
     }
     
-    // Player tracking commands (admin+ only for privacy/security)
-    if (lower.includes('track') && (lower.includes('player') || lower.includes('start tracking'))) {
-      if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can initiate player tracking!");
-        return;
-      }
-      
-      const targetName = this.extractPlayerName(message);
     // Show trust level of a player
     if (lower.includes('trust level') || lower.includes('check trust')) {
       const targetName = message.match(/(?:trust level|check trust)\s+(\w+)/i);
