@@ -542,6 +542,19 @@ const config = {
     commandsExecuted: 0,
     avgResponseTime: 0,
     lastInteraction: null
+  },
+  
+  // Anti-cheat bypass system
+  anticheat: {
+    enabled: false, // Starts disabled (overpowered mode)
+    tier: 0, // 0 = overpowered, 1-3 = humanization tiers
+    reactiveMode: true, // Only activate when flagged
+    autoDeescalate: true,
+    deescalateInterval: 600000, // 10 minutes
+    emergency: false,
+    maxCPS: 20, // No limit in tier 0
+    maxReach: 6.0, // No limit in tier 0
+    movementSpeed: 1.0
   }
 };
 
@@ -851,6 +864,770 @@ const ENDER_CHEST_PRIORITY_ITEMS = [
   'diamond', 'diamond_block', 'emerald', 'emerald_block',
   'shulker_box', 'black_shulker_box', 'white_shulker_box'
 ];
+
+// === ANTI-CHEAT BYPASS SYSTEM ===
+
+// Server Profile Manager - Manages server-specific anti-cheat profiles
+class ServerProfileManager {
+  constructor() {
+    this.profilePath = './data/server-profiles.json';
+    this.defaultProfiles = {
+      '2b2t.org': {
+        anticheat: 'none',
+        recommendedTier: 0,
+        flags: []
+      },
+      'hypixel.net': {
+        anticheat: 'watchdog',
+        recommendedTier: 2,
+        sensitiveActions: ['killaura', 'reach', 'speed'],
+        maxReach: 3.0,
+        maxCPS: 6,
+        flags: []
+      },
+      'generic': {
+        anticheat: 'grim/aac',
+        recommendedTier: 1,
+        adaptiveMode: true,
+        flags: []
+      }
+    };
+    this.profiles = this.loadProfiles();
+  }
+  
+  loadProfiles() {
+    let storedProfiles = {};
+    if (fs.existsSync(this.profilePath)) {
+      storedProfiles = safeReadJson(this.profilePath, {}) || {};
+    }
+    
+    const profiles = {};
+    for (const [key, value] of Object.entries(this.defaultProfiles)) {
+      profiles[key] = {
+        ...value,
+        flags: Array.isArray(value.flags) ? [...value.flags] : []
+      };
+    }
+    
+    if (storedProfiles && typeof storedProfiles === 'object') {
+      for (const [key, value] of Object.entries(storedProfiles)) {
+        profiles[key] = {
+          ...profiles.generic,
+          ...value,
+          flags: Array.isArray(value?.flags) ? value.flags.slice(-50) : []
+        };
+      }
+    }
+    
+    return profiles;
+  }
+  
+  normalizeKey(serverAddress) {
+    if (!serverAddress || typeof serverAddress !== 'string') {
+      return 'generic';
+    }
+    return serverAddress.trim().toLowerCase();
+  }
+  
+  getServerProfile(serverAddress) {
+    const key = this.normalizeKey(serverAddress);
+    const profile = this.profiles[key] || this.profiles['generic'];
+    console.log(`[ANTICHEAT] Server profile: ${profile.anticheat}`);
+    return profile;
+  }
+  
+  updateProfile(serverAddress, flagType) {
+    const key = this.normalizeKey(serverAddress);
+    if (!this.profiles[key]) {
+      this.profiles[key] = {
+        ...this.defaultProfiles.generic,
+        flags: []
+      };
+    }
+    
+    const profile = this.profiles[key];
+    profile.flags = profile.flags || [];
+    profile.flags.push({
+      type: flagType,
+      timestamp: Date.now()
+    });
+    if (profile.flags.length > 50) {
+      profile.flags = profile.flags.slice(-50);
+    }
+    
+    if (profile.adaptiveMode) {
+      const severityBoost = ['COMBAT', 'MOVEMENT', 'PACKET', 'TIMER'].includes(flagType) ? 2 : 1;
+      profile.recommendedTier = Math.min(3, (profile.recommendedTier || 0) + severityBoost);
+    }
+    
+    this.saveProfiles();
+  }
+  
+  saveProfiles() {
+    safeWriteJson(this.profilePath, this.profiles);
+  }
+}
+
+// Anti-Cheat Detector - Monitors kicks and manages tier escalation
+class AntiCheatDetector {
+  constructor(bot, profileManager) {
+    this.bot = bot;
+    this.profileManager = profileManager;
+    this.kickHistory = [];
+    this.flagHistory = [];
+    this.currentTier = 0;
+    this.serverProfile = null;
+    this.deescalationHandle = null;
+    this.lastFlagTimestamp = null;
+  }
+  
+  initialize() {
+    this.serverProfile = this.profileManager?.getServerProfile(config.server);
+    globalAntiCheatDetector = this;
+    
+    if (this.serverProfile && this.serverProfile.recommendedTier > 0 && config.anticheat.reactiveMode) {
+      console.log(`[ANTICHEAT] Server has known anti-cheat: ${this.serverProfile.anticheat}`);
+      console.log(`[ANTICHEAT] Recommended tier: ${this.serverProfile.recommendedTier}`);
+      console.log('[ANTICHEAT] Reactive mode enabled, running overpowered until flagged');
+    }
+  }
+  
+  monitorKicks() {
+    if (!this.bot) return;
+    
+    addTrackedListener(this.bot, 'kicked', (reason) => {
+      const reasonText = this.normalizeReason(reason);
+      if (!reasonText) return;
+      
+      console.log(`[ANTICHEAT] 🚨 Kicked: ${reasonText}`);
+      const flagType = this.classifyKickReason(reasonText);
+      if (flagType) {
+        this.handleAntiCheatFlag(flagType, reasonText);
+      }
+    });
+    
+    addTrackedListener(this.bot, 'end', (reason) => {
+      const reasonText = this.normalizeReason(reason);
+      if (!reasonText || reasonText === 'disconnect.quitting') return;
+      
+      console.log(`[ANTICHEAT] Disconnected: ${reasonText}`);
+      const flagType = this.classifyKickReason(reasonText);
+      if (flagType) {
+        this.handleAntiCheatFlag(flagType, reasonText);
+      }
+    });
+  }
+  
+  normalizeReason(reason) {
+    if (!reason) return '';
+    if (typeof reason === 'string') return reason;
+    if (typeof reason === 'object') {
+      if (reason.text) return reason.text;
+      if (reason.reason) return reason.reason;
+      try {
+        return JSON.stringify(reason);
+      } catch (err) {
+        return String(reason);
+      }
+    }
+    return String(reason);
+  }
+  
+  classifyKickReason(reason) {
+    if (!reason) return null;
+    const reasonLower = reason.toLowerCase();
+    
+    if (reasonLower.includes('fly') ||
+        reasonLower.includes('flying') ||
+        (reasonLower.includes('illegal') && reasonLower.includes('move'))) {
+      return 'MOVEMENT';
+    }
+    
+    if (reasonLower.includes('reach') ||
+        reasonLower.includes('killaura') ||
+        reasonLower.includes('aimbot')) {
+      return 'COMBAT';
+    }
+    
+    if (reasonLower.includes('speed') ||
+        reasonLower.includes('too fast')) {
+      return 'SPEED';
+    }
+    
+    if (reasonLower.includes('packet') ||
+        reasonLower.includes('spam')) {
+      return 'PACKET';
+    }
+    
+    if (reasonLower.includes('timer')) {
+      return 'TIMER';
+    }
+    
+    if (reasonLower.includes('cheat') ||
+        reasonLower.includes('hack') ||
+        reasonLower.includes('grim') ||
+        reasonLower.includes('aac') ||
+        reasonLower.includes('suspicious')) {
+      return 'GENERIC';
+    }
+    
+    return null;
+  }
+  
+  handleAntiCheatFlag(flagType, reason) {
+    const timestamp = Date.now();
+    const flag = {
+      type: flagType,
+      reason,
+      timestamp,
+      tier: this.currentTier
+    };
+    
+    this.flagHistory.push(flag);
+    this.kickHistory.push(flag);
+    this.flagHistory = this.flagHistory.slice(-100);
+    this.kickHistory = this.kickHistory.slice(-50);
+    this.lastFlagTimestamp = timestamp;
+    config.anticheat.lastFlagTimestamp = timestamp;
+    
+    if (this.profileManager) {
+      this.profileManager.updateProfile(config.server, flagType);
+    }
+    
+    console.log(`[ANTICHEAT] Detected flag ${flagType}`);
+    this.escalateTier();
+  }
+  
+  escalateTier() {
+    const now = Date.now();
+    const recentFlags = this.flagHistory.filter(flag => now - flag.timestamp < 300000);
+    
+    let targetTier = this.currentTier;
+    if (recentFlags.length >= 3) {
+      targetTier = 3;
+    } else if (recentFlags.length >= 2) {
+      targetTier = Math.min(3, this.currentTier + 2);
+    } else {
+      targetTier = Math.min(3, this.currentTier + 1);
+    }
+    
+    if (targetTier !== this.currentTier) {
+      console.log(`[ANTICHEAT] ⚠️ Escalating to Tier ${targetTier}`);
+      this.currentTier = targetTier;
+      config.anticheat.lastTierChange = now;
+      
+      if (globalAntiCheatBypass) {
+        globalAntiCheatBypass.setTier(targetTier);
+      } else {
+        config.anticheat.tier = targetTier;
+        config.anticheat.enabled = targetTier > 0;
+      }
+    } else if (globalAntiCheatBypass) {
+      globalAntiCheatBypass.refreshTierSettings();
+    }
+  }
+  
+  attemptTierDeescalation() {
+    if (!config.anticheat.autoDeescalate) return;
+    
+    if (this.deescalationHandle) {
+      clearTrackedInterval(this.deescalationHandle);
+    }
+    
+    this.deescalationHandle = safeSetInterval(() => {
+      if (this.currentTier === 0) return;
+      
+      const lastFlag = this.flagHistory[this.flagHistory.length - 1];
+      const lastTimestamp = lastFlag ? lastFlag.timestamp : 0;
+      const interval = config.anticheat.deescalateInterval || 600000;
+      
+      if (Date.now() - lastTimestamp > interval) {
+        this.currentTier = Math.max(0, this.currentTier - 1);
+        config.anticheat.lastTierChange = Date.now();
+        
+        console.log(`[ANTICHEAT] 📉 Deescalated to Tier ${this.currentTier}`);
+        
+        if (globalAntiCheatBypass) {
+          globalAntiCheatBypass.setTier(this.currentTier);
+        } else {
+          config.anticheat.tier = this.currentTier;
+          config.anticheat.enabled = this.currentTier > 0;
+        }
+        
+        if (this.currentTier === 0) {
+          console.log('[ANTICHEAT] 🚀 FULL OVERPOWERED MODE RESTORED');
+        }
+      }
+    }, config.anticheat.deescalateInterval || 600000, 'AntiCheatDeescalation');
+  }
+  
+  getNextDeescalationTime() {
+    const lastFlag = this.flagHistory[this.flagHistory.length - 1];
+    if (!lastFlag) return null;
+    
+    const interval = config.anticheat.deescalateInterval || 600000;
+    return new Date(lastFlag.timestamp + interval).toISOString();
+  }
+  
+  shutdown() {
+    if (this.deescalationHandle) {
+      clearTrackedInterval(this.deescalationHandle);
+      this.deescalationHandle = null;
+    }
+  }
+}
+
+// Tier 1: Basic Humanization
+class Tier1Humanization {
+  constructor(bot) {
+    this.bot = bot;
+    this.originalFunctions = {};
+    this.active = false;
+  }
+  
+  activate() {
+    if (this.active) return;
+    this.active = true;
+    console.log('[ANTICHEAT] Tier 1: Basic Humanization activated');
+    
+    // Apply CPS limiter
+    this.applyCPSLimiter();
+  }
+  
+  deactivate() {
+    this.active = false;
+    // Restore original functions if needed
+  }
+  
+  applyCPSLimiter() {
+    config.anticheat.maxCPS = 7; // 4-7 CPS
+  }
+  
+  async addRandomDelay() {
+    const delay = Math.floor(Math.random() * 150) + 50; // 50-200ms
+    return new Promise(resolve => setTimeout(resolve, delay));
+  }
+  
+  getRandomChar() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz';
+    return chars[Math.floor(Math.random() * chars.length)];
+  }
+  
+  addTypo(message) {
+    if (!message || message.length === 0) return message;
+    const pos = Math.floor(Math.random() * message.length);
+    return message.slice(0, pos) + this.getRandomChar() + message.slice(pos + 1);
+  }
+  
+  async simulateTypoInChat(message) {
+    // 5% chance of "typo" followed by correction
+    if (Math.random() < 0.05) {
+      const typoMessage = this.addTypo(message);
+      this.bot.chat(typoMessage);
+      await this.addRandomDelay();
+      this.bot.chat(`*${message}`); // correction
+    } else {
+      this.bot.chat(message);
+    }
+  }
+  
+  addMovementNoise(goal) {
+    if (!goal) return goal;
+    // Add slight random offsets to pathfinding
+    const noise = {
+      x: (Math.random() - 0.5) * 0.3,
+      y: 0,
+      z: (Math.random() - 0.5) * 0.3
+    };
+    
+    return {
+      x: goal.x + noise.x,
+      y: goal.y,
+      z: goal.z + noise.z
+    };
+  }
+  
+  addAimWobble(yaw, pitch) {
+    const wobble = {
+      yaw: (Math.random() - 0.5) * 0.1, // ±0.05 radians
+      pitch: (Math.random() - 0.5) * 0.08
+    };
+    
+    return {
+      yaw: yaw + wobble.yaw,
+      pitch: pitch + wobble.pitch
+    };
+  }
+}
+
+// Tier 2: Advanced Evasion
+class Tier2AdvancedEvasion extends Tier1Humanization {
+  constructor(bot) {
+    super(bot);
+    this.packetQueue = [];
+  }
+  
+  activate() {
+    super.activate();
+    console.log('[ANTICHEAT] Tier 2: Advanced Evasion activated');
+    
+    // Set stricter limits
+    config.anticheat.maxCPS = 6;
+    config.anticheat.maxReach = 3.2;
+    config.anticheat.movementSpeed = 0.9;
+  }
+  
+  limitReach(target) {
+    if (!target || !target.position || !this.bot.entity) return false;
+    
+    const distance = this.bot.entity.position.distanceTo(target.position);
+    const maxReach = 3.0 + (Math.random() * 0.2); // 3.0-3.2 blocks
+    
+    if (distance > maxReach) {
+      console.log(`[ANTICHEAT] Reach limit: ${distance.toFixed(2)} > ${maxReach.toFixed(2)}`);
+      return false; // Don't attack
+    }
+    
+    return true;
+  }
+  
+  addAngleImperfection(targetYaw, currentYaw) {
+    const diff = targetYaw - currentYaw;
+    
+    // Avoid perfect 180° turns
+    if (Math.abs(diff) > 3.1 && Math.abs(diff) < 3.2) {
+      const error = (Math.random() - 0.5) * 0.1;
+      return targetYaw + error;
+    }
+    
+    // Add slight imperfection to all turns
+    const smallError = (Math.random() - 0.5) * 0.02;
+    return targetYaw + smallError;
+  }
+  
+  smartSprint() {
+    let sprintTime = 0;
+    
+    const interval = safeSetInterval(() => {
+      if (!this.bot || !this.bot.getControlState) return;
+      
+      try {
+        if (this.bot.getControlState('sprint')) {
+          sprintTime += 100;
+          
+          // Occasionally stop sprinting (human fatigue simulation)
+          if (sprintTime > 30000 && Math.random() < 0.1) {
+            this.bot.setControlState('sprint', false);
+            setTimeout(() => {
+              if (this.bot && this.bot.setControlState) {
+                this.bot.setControlState('sprint', true);
+              }
+              sprintTime = 0;
+            }, Math.random() * 2000 + 1000);
+          }
+        }
+      } catch (err) {
+        // Ignore errors from disconnected bot
+      }
+    }, 100, 'SmartSprint');
+    
+    return interval;
+  }
+}
+
+// Tier 3: ML Counter (Elite)
+class Tier3MLCounter extends Tier2AdvancedEvasion {
+  constructor(bot) {
+    super(bot);
+    this.behaviorRotationInterval = 300000; // 5 minutes
+    this.currentPattern = 0;
+    this.patterns = this.loadPatterns();
+    this.rotationInterval = null;
+  }
+  
+  activate() {
+    super.activate();
+    console.log('[ANTICHEAT] Tier 3: ML Counter (Elite) activated');
+    
+    // Set most conservative limits
+    config.anticheat.maxCPS = 5;
+    config.anticheat.maxReach = 3.0;
+    config.anticheat.movementSpeed = 0.8;
+    
+    // Start pattern rotation
+    this.rotateBehaviorPatterns();
+    
+    // Monitor for rubberbanding
+    this.monitorServerFlags();
+  }
+  
+  deactivate() {
+    super.deactivate();
+    if (this.rotationInterval) {
+      clearTrackedInterval(this.rotationInterval);
+    }
+  }
+  
+  loadPatterns() {
+    return [
+      {
+        name: 'Aggressive',
+        cpsCurve: [6, 7, 6.5, 7, 6, 6.5],
+        movementStyle: 'direct',
+        attackPattern: 'burst'
+      },
+      {
+        name: 'Defensive',
+        cpsCurve: [4, 5, 4.5, 5, 4, 4.5],
+        movementStyle: 'cautious',
+        attackPattern: 'measured'
+      },
+      {
+        name: 'Balanced',
+        cpsCurve: [5, 6, 5.5, 6, 5, 5.5],
+        movementStyle: 'normal',
+        attackPattern: 'standard'
+      }
+    ];
+  }
+  
+  rotateBehaviorPatterns() {
+    this.rotationInterval = safeSetInterval(() => {
+      this.currentPattern = (this.currentPattern + 1) % this.patterns.length;
+      
+      const pattern = this.patterns[this.currentPattern];
+      
+      console.log(`[ANTICHEAT] 🔄 Rotating to pattern: ${pattern.name}`);
+      
+      // Apply pattern settings
+      this.applyCPSCurve(pattern.cpsCurve);
+    }, this.behaviorRotationInterval, 'BehaviorPatternRotation');
+  }
+  
+  applyCPSCurve(curve) {
+    // Dynamically adjust CPS over time
+    this.cpsCurve = curve;
+    this.cpsIndex = 0;
+    
+    // Update config with first value
+    if (curve && curve.length > 0) {
+      config.anticheat.maxCPS = curve[0];
+    }
+  }
+  
+  monitorServerFlags() {
+    let recentActions = [];
+    
+    this.bot.on('packet', (data, meta) => {
+      try {
+        // Monitor for potential flag packets
+        if (meta.name === 'position' || meta.name === 'entity_velocity') {
+          recentActions.push({
+            type: meta.name,
+            timestamp: Date.now()
+          });
+          
+          // Keep only last 10 seconds
+          recentActions = recentActions.filter(a => 
+            Date.now() - a.timestamp < 10000
+          );
+          
+          // Detect rubberbanding (sign of flags)
+          if (this.detectRubberbanding(recentActions)) {
+            console.log('[ANTICHEAT] ⚠️ Rubberbanding detected - going full human mode');
+            this.activateFullHumanMode();
+          }
+        }
+      } catch (err) {
+        // Ignore packet errors
+      }
+    });
+  }
+  
+  detectRubberbanding(actions) {
+    const positionActions = actions.filter(a => a.type === 'position');
+    
+    if (positionActions.length >= 3) {
+      // Check for position corrections in short time
+      const timeDiff = positionActions[positionActions.length - 1].timestamp - 
+                       positionActions[0].timestamp;
+      
+      if (timeDiff < 1000) {
+        return true; // Likely rubberbanding
+      }
+    }
+    
+    return false;
+  }
+  
+  activateFullHumanMode() {
+    // Emergency mode - extremely conservative
+    config.anticheat.emergency = true;
+    
+    // Drastically reduce all actions
+    config.anticheat.maxCPS = 3;
+    config.anticheat.maxReach = 2.8;
+    config.anticheat.movementSpeed = 0.8;
+    
+    // Disable risky features
+    const originalCrystalPvP = config.combat.crystalPvP;
+    config.combat.crystalPvP = false;
+    
+    console.log('[ANTICHEAT] 🚨 FULL HUMAN MODE ACTIVATED');
+    
+    // Return to normal after 5 minutes if no flags
+    setTimeout(() => {
+      if (!this.recentFlags()) {
+        config.anticheat.emergency = false;
+        config.combat.crystalPvP = originalCrystalPvP;
+        console.log('[ANTICHEAT] ✅ Exiting emergency mode');
+      }
+    }, 300000);
+  }
+  
+  recentFlags() {
+    if (!globalAntiCheatDetector) return false;
+    
+    const recentFlags = globalAntiCheatDetector.flagHistory.filter(f => 
+      Date.now() - f.timestamp < 300000 // Last 5 minutes
+    );
+    
+    return recentFlags.length > 0;
+  }
+  
+  addBehavioralEntropy(action) {
+    // Add random "mistakes" that humans make
+    if (Math.random() < 0.02) {
+      // 2% chance of human-like mistake
+      return this.simulateMistake(action);
+    }
+    
+    return action;
+  }
+  
+  simulateMistake(action) {
+    const mistakes = [
+      'miss_click',
+      'overshoot',
+      'pause',
+      'double_tap'
+    ];
+    
+    const mistake = mistakes[Math.floor(Math.random() * mistakes.length)];
+    
+    console.log(`[ANTICHEAT] Simulating mistake: ${mistake}`);
+    
+    return { ...action, mistake };
+  }
+}
+
+// Main Anti-Cheat Bypass Controller
+class AntiCheatBypassController {
+  constructor(bot, profileManager) {
+    this.bot = bot;
+    this.profileManager = profileManager;
+    this.detector = new AntiCheatDetector(bot, profileManager);
+    this.tier1 = new Tier1Humanization(bot);
+    this.tier2 = new Tier2AdvancedEvasion(bot);
+    this.tier3 = new Tier3MLCounter(bot);
+    this.currentTier = 0;
+  }
+  
+  initialize() {
+    console.log('[ANTICHEAT] 🚀 Starting in FULL OVERPOWERED MODE');
+    
+    this.detector.initialize();
+    this.detector.monitorKicks();
+    this.detector.attemptTierDeescalation();
+    
+    const profile = this.profileManager?.getServerProfile(config.server);
+    
+    if (profile && profile.recommendedTier > 0 && !config.anticheat.reactiveMode) {
+      console.log(`[ANTICHEAT] Starting at recommended Tier ${profile.recommendedTier}`);
+      this.setTier(profile.recommendedTier);
+    }
+  }
+  
+  setTier(tier) {
+    if (tier === this.currentTier) return;
+    
+    this.currentTier = tier;
+    config.anticheat.tier = tier;
+    
+    this.disableAllTiers();
+    
+    switch (tier) {
+      case 0:
+        console.log('[ANTICHEAT] 🔥 OVERPOWERED MODE - NO LIMITS');
+        config.anticheat.enabled = false;
+        config.anticheat.maxCPS = 20;
+        config.anticheat.maxReach = 6.0;
+        config.anticheat.movementSpeed = 1.0;
+        break;
+      
+      case 1:
+        console.log('[ANTICHEAT] Tier 1: Basic Humanization');
+        config.anticheat.enabled = true;
+        this.tier1.activate();
+        break;
+      
+      case 2:
+        console.log('[ANTICHEAT] Tier 2: Advanced Evasion');
+        config.anticheat.enabled = true;
+        this.tier1.activate();
+        this.tier2.activate();
+        break;
+      
+      case 3:
+        console.log('[ANTICHEAT] Tier 3: ML Counter (Elite)');
+        config.anticheat.enabled = true;
+        this.tier1.activate();
+        this.tier2.activate();
+        this.tier3.activate();
+        break;
+    }
+    
+    this.detector.currentTier = tier;
+  }
+  
+  refreshTierSettings() {
+    if (this.currentTier > 0) {
+      this.setTier(this.currentTier);
+    }
+  }
+  
+  disableAllTiers() {
+    try {
+      if (this.tier1) this.tier1.deactivate();
+      if (this.tier2) this.tier2.deactivate();
+      if (this.tier3) this.tier3.deactivate();
+    } catch (err) {
+      // Ignore deactivation errors
+    }
+  }
+  
+  getStatus() {
+    return {
+      currentTier: this.currentTier,
+      mode: this.currentTier === 0 ? 'OVERPOWERED' : `HUMANIZED_T${this.currentTier}`,
+      recentFlags: this.detector ? this.detector.flagHistory.slice(-5) : [],
+      nextDeescalation: this.detector ? this.detector.getNextDeescalationTime() : null,
+      emergency: config.anticheat.emergency || false,
+      settings: {
+        maxCPS: config.anticheat.maxCPS,
+        maxReach: config.anticheat.maxReach,
+        movementSpeed: config.anticheat.movementSpeed
+      }
+    };
+  }
+  
+  shutdown() {
+    this.disableAllTiers();
+    if (this.detector) {
+      this.detector.shutdown();
+    }
+  }
+}
 
 // === SWARM COORDINATOR ===
 class SwarmCoordinator {
@@ -14477,6 +15254,11 @@ let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
 let globalSchematicLoader = new SchematicLoader();
 
+// Anti-cheat bypass system global instances
+let serverProfileManager = null;
+let globalAntiCheatBypass = null;
+let globalAntiCheatDetector = null;
+
 http.createServer((req, res) => {
   // === RATE LIMITING (Issue #14) ===
   const clientIP = req.connection.remoteAddress || req.socket.remoteAddress || 'unknown';
@@ -14663,6 +15445,30 @@ http.createServer((req, res) => {
       res.end(JSON.stringify(globalSwarmCoordinator.getSwarmStatus()));
     } else {
       res.end(JSON.stringify({ error: 'Swarm coordinator not initialized' }));
+    }
+  } else if (req.url === '/api/anticheat-status' || req.url === '/anticheat') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    
+    if (globalAntiCheatBypass && globalAntiCheatDetector) {
+      const status = globalAntiCheatBypass.getStatus();
+      res.end(JSON.stringify({
+        ...status,
+        kickHistory: globalAntiCheatDetector.kickHistory,
+        serverProfile: serverProfileManager ? 
+          serverProfileManager.getServerProfile(config.server) : 
+          { anticheat: 'unknown' },
+        config: {
+          reactiveMode: config.anticheat.reactiveMode,
+          autoDeescalate: config.anticheat.autoDeescalate,
+          enabled: config.anticheat.enabled
+        }
+      }));
+    } else {
+      res.end(JSON.stringify({ 
+        error: 'Anti-cheat bypass system not initialized',
+        currentTier: 0,
+        mode: 'OVERPOWERED' 
+      }));
     }
   } else if (req.url === '/stats.travel') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -15412,6 +16218,17 @@ async function launchBot(username, role = 'fighter') {
   bot.schematicLoader = new SchematicLoader();
   console.log('[BUILD] Schematic builder initialized');
   
+  if (!serverProfileManager) {
+    serverProfileManager = new ServerProfileManager();
+    console.log('[ANTICHEAT] Server profile manager ready');
+  }
+  
+  const antiCheatController = new AntiCheatBypassController(bot, serverProfileManager);
+  bot.antiCheatController = antiCheatController;
+  globalAntiCheatBypass = antiCheatController;
+  globalAntiCheatDetector = antiCheatController.detector;
+  antiCheatController.initialize();
+  
   bot.once('spawn', async () => {
     console.log(`[SPAWN] ${username} joined ${config.server}`);
     
@@ -15466,6 +16283,7 @@ async function launchBot(username, role = 'fighter') {
     if (config.homeBase.coords) {
       baseMonitor.startMonitoring();
     }
+    
     // Start periodic memory cleanup
     setInterval(cleanupOldData, 300000); // Every 5 minutes
     
