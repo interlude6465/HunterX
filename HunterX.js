@@ -388,6 +388,23 @@ const config = {
     visitedChunks: new Set()
   },
   
+  // Auto-stash backup configuration
+  backup: {
+    enabled: true,
+    autoBackup: true,
+    backupPriority: [
+      'diamond', 'netherite_ingot', 'netherite_scrap', 'ancient_debris',
+      'emerald', 'diamond_block', 'emerald_block',
+      'elytra', 'totem_of_undying', 'shulker_box',
+      'enchanted_book', 'nether_star', 'beacon',
+      'golden_apple', 'enchanted_golden_apple'
+    ],
+    leavePercentage: 0.1,
+    riskAssessment: true,
+    multiBot: true,
+    maxBotsPerBackup: 3
+  },
+  
   // Combat settings
   combat: {
     maxSelfDamage: 6,
@@ -471,6 +488,7 @@ const config = {
       }
     },
     stashes: { found: 0, totalValue: 0, bestStash: null },
+    backup: { stashesBackedUp: 0, totalValueBacked: 0 },
     production: { items: {}, lastUpdate: null }
   },
   training: { episodes: [], replayBuffer: [], maxBufferSize: 10000 },
@@ -2638,6 +2656,305 @@ class BuilderWorker {
 }
 
 
+// === AUTO STASH BACKUP SYSTEM ===
+class BackupManager {
+  constructor() {
+    this.queue = [];
+    this.activeBackups = [];
+    this.completedBackups = [];
+  }
+  startBackup(stashLocation, itemsPlanned) {
+    const op = {
+      id: `backup_${Date.now()}`,
+      stashLocation,
+      itemsPlanned,
+      tripsPlanned: 0,
+      tripsCompleted: 0,
+      startedAt: Date.now(),
+      status: 'active'
+    };
+    this.activeBackups.push(op);
+    return op;
+  }
+  completeBackup(op) {
+    if (!op) return;
+    op.endedAt = Date.now();
+    op.status = 'complete';
+    this.activeBackups = this.activeBackups.filter(b => b.id !== op.id);
+    this.completedBackups.push(op);
+    return op;
+  }
+}
+
+class StashBackup {
+  constructor(bot) {
+    this.bot = bot;
+    this.backupPriority = (config.backup && Array.isArray(config.backup.backupPriority))
+      ? config.backup.backupPriority
+      : [
+        'diamond', 'netherite_ingot', 'netherite_scrap', 'ancient_debris',
+        'emerald', 'diamond_block', 'emerald_block',
+        'elytra', 'totem_of_undying', 'shulker_box',
+        'enchanted_book', 'nether_star', 'beacon',
+        'golden_apple', 'enchanted_golden_apple'
+      ];
+    this.leavePercentage = config.backup?.leavePercentage ?? 0.1;
+  }
+  async backupStash(stashLocation) {
+    try {
+      console.log(`[BACKUP] Starting backup of stash at ${stashLocation.x}, ${stashLocation.y}, ${stashLocation.z}`);
+      if (config.backup?.riskAssessment) {
+        const risk = await this.assessBackupRisk(stashLocation);
+        if (!risk.safe) {
+          console.log(`[BACKUP] Risk too high (${risk.reason}). Queuing backup.`);
+          if (globalBackupManager) {
+            globalBackupManager.queue.push({ stashLocation, reason: risk.reason, queuedAt: Date.now() });
+          }
+          return;
+        }
+      }
+      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+        stashLocation.x, stashLocation.y, stashLocation.z
+      ), 2)).catch(() => {});
+      const containers = await this.findNearbyContainers(32);
+      const valuableItems = await this.catalogStashContents(containers);
+      const trips = this.planBackupTrips(valuableItems);
+      console.log(`[BACKUP] Found ${valuableItems.length} valuable item entries, ${trips.length} trips required`);
+      let op = null;
+      if (globalBackupManager) {
+        op = globalBackupManager.startBackup(stashLocation, valuableItems.length);
+        op.tripsPlanned = trips.length;
+      }
+      if (config.backup?.multiBot) {
+        try {
+          await this.coordinatedBackup(stashLocation, config.backup.maxBotsPerBackup || 3);
+        } catch (e) {
+          console.log(`[BACKUP] Coordination error: ${e.message}`);
+        }
+      }
+      for (let i = 0; i < trips.length; i++) {
+        await this.executeBackupTrip(trips[i]);
+        if (op) op.tripsCompleted = i + 1;
+        console.log(`[BACKUP] Trip ${i + 1}/${trips.length} complete`);
+      }
+      console.log('[BACKUP] Stash backup complete!');
+      const totalValue = this.calculateValue(valuableItems);
+      config.analytics.backup.stashesBackedUp = (config.analytics.backup.stashesBackedUp || 0) + 1;
+      config.analytics.backup.totalValueBacked = (config.analytics.backup.totalValueBacked || 0) + totalValue;
+      if (op && globalBackupManager) {
+        globalBackupManager.completeBackup(op);
+      }
+    } catch (err) {
+      console.log(`[BACKUP] Error during backup: ${err.message}`);
+    }
+  }
+  async findNearbyContainers(range = 32) {
+    try {
+      const positions = this.bot.findBlocks({
+        matching: (blockId) => {
+          const name = this.bot.registry.blocks[blockId]?.name || '';
+          if (!name) return false;
+          if (name === 'ender_chest') return false; // exclude ender chest from stash containers
+          return name.includes('chest') || name.includes('barrel') || name.includes('shulker');
+        },
+        maxDistance: range,
+        count: 200
+      });
+      const blocks = positions.map(pos => this.bot.blockAt(pos)).filter(Boolean);
+      return blocks;
+    } catch (err) {
+      console.log(`[BACKUP] Failed to find containers: ${err.message}`);
+      return [];
+    }
+  }
+  async catalogStashContents(containers) {
+    const valuableItems = [];
+    for (const container of containers) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const items = chest.containerItems();
+        for (const item of items) {
+          if (this.isValuable(item)) {
+            const takeAmount = Math.max(0, Math.floor(item.count * (1 - this.leavePercentage)));
+            if (takeAmount > 0) {
+              valuableItems.push({
+                item: { ...item, count: takeAmount },
+                container,
+                priority: this.getPriority(item)
+              });
+            }
+          }
+        }
+        chest.close();
+        await sleep(200);
+      } catch (err) {
+        console.log(`[BACKUP] Failed to open catalog container: ${err.message}`);
+      }
+    }
+    valuableItems.sort((a, b) => b.priority - a.priority);
+    return valuableItems;
+  }
+  isValuable(item) {
+    if (!item) return false;
+    if (this.backupPriority.includes(item.name)) return true;
+    if (item.nbt?.value?.Enchantments) return true;
+    if (item.name?.includes('shulker_box')) return true;
+    const unitValue = this.getItemValue(item.name);
+    return unitValue * (item.count || 1) > 1000;
+  }
+  getPriority(item) {
+    const index = this.backupPriority.indexOf(item.name);
+    if (index !== -1) return 1000 - index;
+    if (item.nbt?.value?.Enchantments) return 500;
+    if (item.name?.includes('shulker_box')) return 800;
+    return this.getItemValue(item.name) * (item.count || 1);
+  }
+  planBackupTrips(valuableItems) {
+    const trips = [];
+    let currentTrip = [];
+    let currentSlots = 0;
+    for (const valuable of valuableItems) {
+      if (currentSlots + 1 <= 36) {
+        currentTrip.push(valuable);
+        currentSlots++;
+      } else {
+        trips.push(currentTrip);
+        currentTrip = [valuable];
+        currentSlots = 1;
+      }
+    }
+    if (currentTrip.length > 0) trips.push(currentTrip);
+    return trips;
+  }
+  async executeBackupTrip(tripItems) {
+    for (const { item, container } of tripItems) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const amount = Math.min(item.count, item.count);
+        await chest.withdraw(item.type, null, amount);
+        chest.close();
+        await sleep(150);
+      } catch (err) {
+        console.log(`[BACKUP] Withdraw failed: ${err.message}`);
+      }
+    }
+    console.log(`[BACKUP] Collected ${tripItems.length} items, traveling to home base...`);
+    await this.goToHomeBase();
+    const enderChest = await this.findOrPlaceEnderChest();
+    try {
+      const chest = await this.bot.openContainer(enderChest);
+      for (const { item } of tripItems) {
+        const invItem = this.bot.inventory.items().find(i => i.type === item.type);
+        if (invItem) {
+          try {
+            await chest.deposit(invItem.type, null, invItem.count);
+            console.log(`[BACKUP] Deposited ${invItem.count}x ${invItem.name}`);
+          } catch (err) {
+            console.log(`[BACKUP] Deposit failed: ${err.message}`);
+          }
+        }
+      }
+      chest.close();
+    } catch (err) {
+      console.log(`[BACKUP] Failed to open ender chest: ${err.message}`);
+    }
+    console.log('[BACKUP] Returning to stash...');
+    // Note: path back to stash can be handled by caller/scanner if needed
+  }
+  async goToHomeBase() {
+    if (!config.homeBase?.coords) {
+      console.log('[BACKUP] No home base set, using current location');
+      return;
+    }
+    const { x, y, z } = config.homeBase.coords;
+    try {
+      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2));
+    } catch (err) {
+      console.log(`[BACKUP] Path to home base failed: ${err.message}`);
+    }
+  }
+  async findOrPlaceEnderChest() {
+    let enderChest = this.bot.findBlock({
+      matching: this.bot.registry.blocksByName.ender_chest?.id,
+      maxDistance: 16
+    });
+    if (enderChest) return enderChest;
+    const enderChestItem = this.bot.inventory.items().find(item => item.name === 'ender_chest');
+    if (!enderChestItem) throw new Error('No ender chest available');
+    const placeBlock = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
+    try {
+      await this.bot.equip(enderChestItem, 'hand');
+      await this.bot.placeBlock(placeBlock, new Vec3(0, 1, 0));
+    } catch (err) {
+      console.log(`[BACKUP] Failed to place ender chest: ${err.message}`);
+    }
+    enderChest = this.bot.findBlock({
+      matching: this.bot.registry.blocksByName.ender_chest?.id,
+      maxDistance: 4
+    });
+    if (!enderChest) throw new Error('Ender chest placement failed');
+    return enderChest;
+  }
+  getItemValue(name) { return ITEM_VALUES[name] || 1; }
+  calculateValue(items) { return items.reduce((sum, v) => sum + this.getItemValue(v.item.name) * (v.item.count || 1), 0); }
+  async smartBackup(containers) {
+    const leavePercentage = this.leavePercentage;
+    for (const container of containers) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const items = chest.containerItems();
+        for (const item of items) {
+          const takeAmount = Math.floor(item.count * (1 - leavePercentage));
+          if (takeAmount > 0) {
+            try { await chest.withdraw(item.type, null, takeAmount); } catch (err) {}
+          }
+        }
+        chest.close();
+      } catch (err) {}
+    }
+  }
+  async coordinatedBackup(stashLocation, botCount) {
+    try {
+      if (!globalSwarmCoordinator) return;
+      const bots = globalSwarmCoordinator.getBotsNear(stashLocation, 256) || [];
+      const selected = bots.slice(0, Math.min(botCount || 1, bots.length));
+      const containers = await this.findNearbyContainers(32);
+      const containersPerBot = Math.ceil(containers.length / Math.max(1, selected.length));
+      for (let i = 0; i < selected.length; i++) {
+        const bot = selected[i];
+        const botContainers = containers.slice(i * containersPerBot, (i + 1) * containersPerBot);
+        globalSwarmCoordinator.sendToBot(bot.id, {
+          type: 'TASK_ASSIGNMENT',
+          task: 'LOOT_STASH',
+          target: stashLocation,
+          containers: botContainers.map(b => b.position)
+        });
+      }
+    } catch (err) {
+      console.log(`[BACKUP] Coordination error: ${err.message}`);
+    }
+  }
+  async assessBackupRisk(stashLocation) {
+    try {
+      // Check nearby players
+      const nearbyPlayers = Object.values(this.bot.players || {}).filter(p => {
+        const pos = p.entity?.position;
+        if (!pos) return false;
+        const dist = this.bot.entity.position.distanceTo(pos);
+        return p.username !== this.bot.username && dist < 128;
+      });
+      if (nearbyPlayers.length > 0) {
+        console.log('[BACKUP] Players nearby, aborting');
+        return { safe: false, reason: 'players_nearby' };
+      }
+      // TODO: Owner detection/recent activity could be implemented with server logs/heuristics
+      return { safe: true };
+    } catch (err) {
+      return { safe: true };
+    }
+  }
+}
+
 // === ADVANCED STASH SCANNER ===
 class StashScanner {
   constructor(bot, swarmCoordinator = null) {
@@ -2765,8 +3082,10 @@ class StashScanner {
           items: items.map(i => ({ name: i.name, count: i.count, value: ITEM_VALUES[i.name] || 1 }))
         });
         
-        // Loot valuable items
-        await this.lootContainer(container, items);
+        // Loot valuable items (disabled if auto-backup enabled)
+        if (!(config.backup?.enabled && config.backup?.autoBackup)) {
+          await this.lootContainer(container, items);
+        }
         
         container.close();
         await sleep(200);
@@ -2799,22 +3118,36 @@ class StashScanner {
       console.log('[STASH] 📡 Broadcast stash discovery to swarm');
     }
     
-    // Auto-navigate home if carrying valuables
-    const enderManager = new EnderChestManager(this.bot);
-    if (enderManager.shouldDepositInventory()) {
-      console.log('[STASH] 💎 Carrying valuables, depositing in ender chest');
-      await enderManager.depositValuables();
-      
-      if (config.homeBase.coords) {
-        console.log('[STASH] 🏠 Heading home with loot');
-        this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
-          config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 10
-        )).catch(() => {});
+    // Auto-navigate home if carrying valuables (disabled if auto-backup enabled)
+    if (!(config.backup?.enabled && config.backup?.autoBackup)) {
+      const enderManager = new EnderChestManager(this.bot);
+      if (enderManager.shouldDepositInventory()) {
+        console.log('[STASH] 💎 Carrying valuables, depositing in ender chest');
+        await enderManager.depositValuables();
+        
+        if (config.homeBase.coords) {
+          console.log('[STASH] 🏠 Heading home with loot');
+          this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+            config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 10
+          )).catch(() => {});
+        }
       }
     }
     
     // Save stash report
     this.saveStashReport(stash);
+
+    // Trigger auto-backup when configured
+    if (config.backup?.enabled && config.backup?.autoBackup) {
+      try {
+        console.log(`[SCANNER] Found stash! Starting auto-backup...`);
+        const backup = new StashBackup(this.bot);
+        await backup.backupStash({ x: center.x, y: center.y, z: center.z });
+        console.log(`[SCANNER] Backup complete, resuming scan...`);
+      } catch (err) {
+        console.log(`[SCANNER] Auto-backup failed: ${err.message}`);
+      }
+    }
     
     console.log(`[STASH] 💎 Documented stash: ${chests.length} chests, Value: ${stash.totalValue}`);
   }
@@ -14476,6 +14809,7 @@ let globalBaseMonitor = null;
 let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
 let globalSchematicLoader = new SchematicLoader();
+let globalBackupManager = new BackupManager();
 
 http.createServer((req, res) => {
   // === RATE LIMITING (Issue #14) ===
@@ -14656,6 +14990,14 @@ http.createServer((req, res) => {
         total: globalSchematicLoader.listSchematics().length,
         loaded: globalSchematicLoader.listSchematics()
       }
+    }));
+  } else if (req.url === '/api/backup-status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      activeBackups: globalBackupManager?.activeBackups || [],
+      completedBackups: globalBackupManager?.completedBackups || [],
+      totalValueBacked: (config.analytics.backup?.totalValueBacked) || 0,
+      backupQueue: globalBackupManager?.queue || []
     }));
   } else if (req.url === '/swarm') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
