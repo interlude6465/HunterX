@@ -12997,6 +12997,11 @@ async function launchBot(username, role = 'fighter') {
         bot.dangerMonitor.stopMonitoring();
         bot.dangerMonitor = null;
       }
+      
+      // Unregister from supply chain manager
+      if (globalSupplyChainManager && globalSupplyChainManager.activeBots.has(bot.username)) {
+        globalSupplyChainManager.unregisterBot(bot.username);
+      }
 
       // Close WebSocket connection
       if (wsClient) {
@@ -13288,6 +13293,7 @@ console.log(`
 ║  ✅ Combat AI ready                                   ║
 ║  ✅ Conversation system active                        ║
 ║  ✅ Dashboard running on :8080                        ║
+║  🔗 Supply Chain Dashboard on :8081                   ║
 ║  ✅ Dupe knowledge base (${knowledgeBaseCount} methods)               ║
 ║  ✅ Plugin analyzer ready                             ║
 ║  ✅ Automated testing framework                       ║
@@ -14394,9 +14400,9 @@ function initializeSupplyChainServer() {
     }
   });
   
-  httpServer.listen(8080, () => {
-    console.log('[SUPPLY] 🌐 Supply Chain Dashboard running on http://localhost:8080');
-    console.log('[SUPPLY] 📊 Task Queue UI: http://localhost:8080/task-queue');
+  httpServer.listen(8081, () => {
+    console.log('[SUPPLY] 🌐 Supply Chain Dashboard running on http://localhost:8081');
+    console.log('[SUPPLY] 📊 Task Queue UI: http://localhost:8081/task-queue');
   });
 }
 
@@ -14703,6 +14709,19 @@ setTimeout(showMenu, 1000);
 // === GRACEFUL SHUTDOWN ===
 process.on('SIGINT', () => {
   console.log('\n\n[SHUTDOWN] Saving data...');
+  
+  // Save supply chain data
+  if (globalSupplyChainManager) {
+    globalSupplyChainManager.inventory.save();
+    globalSupplyChainManager.productionTracker.save();
+    console.log('[SUPPLY] Saved inventory and production data');
+  }
+  
+  // Stop supply chain processing
+  if (globalSupplyChainManager) {
+    globalSupplyChainManager.processing = false;
+  }
+  
   if (globalBot) globalBot.quit();
   process.exit(0);
 });
