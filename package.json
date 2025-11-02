@@ -16,9 +16,9 @@
   "dependencies": {
     "mineflayer": "^4.0.0",
     "mineflayer-pvp": "^1.0.0",
-    "mineflayer-pathfinder": "^2.0.0",
+    "@miner-org/mineflayer-baritone": "^4.1.1",
     "vec3": "^0.1.8",
-    "brain.js": "^2.0.0",
+    "brain.js": "^2.0.0-beta.24",
     "ws": "^8.0.0",
     "socks": "^2.7.0",
     "prismarine-nbt": "^2.0.0"
