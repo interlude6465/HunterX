@@ -388,6 +388,23 @@ const config = {
     visitedChunks: new Set()
   },
   
+  // Auto-stash backup configuration
+  backup: {
+    enabled: true,
+    autoBackup: true,
+    backupPriority: [
+      'diamond', 'netherite_ingot', 'netherite_scrap', 'ancient_debris',
+      'emerald', 'diamond_block', 'emerald_block',
+      'elytra', 'totem_of_undying', 'shulker_box',
+      'enchanted_book', 'nether_star', 'beacon',
+      'golden_apple', 'enchanted_golden_apple'
+    ],
+    leavePercentage: 0.1,
+    riskAssessment: true,
+    multiBot: true,
+    maxBotsPerBackup: 3
+  },
+  
   // Combat settings
   combat: {
     maxSelfDamage: 6,
@@ -471,6 +488,7 @@ const config = {
       }
     },
     stashes: { found: 0, totalValue: 0, bestStash: null },
+    backup: { stashesBackedUp: 0, totalValueBacked: 0 },
     production: { items: {}, lastUpdate: null }
   },
   training: { episodes: [], replayBuffer: [], maxBufferSize: 10000 },
@@ -555,6 +573,21 @@ const config = {
     maxCPS: 20, // No limit in tier 0
     maxReach: 6.0, // No limit in tier 0
     movementSpeed: 1.0
+  // Maintenance system
+  maintenance: {
+    autoRepair: {
+      enabled: true,
+      durabilityThreshold: 0.5,
+      xpFarmLocation: null
+    },
+    elytraSwap: {
+      enabled: true,
+      durabilityThreshold: 100,
+      keepSpares: 3
+    },
+    lastRepair: null,
+    lastElytraSwap: null,
+    schedulerActive: false
   }
 };
 
@@ -3050,6 +3083,425 @@ class EnderChestManager {
   }
 }
 
+// === AUTO-REPAIR SYSTEM ===
+class AutoRepair {
+  constructor(bot) {
+    this.bot = bot;
+    this.repairThreshold = config.maintenance.autoRepair.durabilityThreshold;
+    this.xpFarmLocation = config.maintenance.autoRepair.xpFarmLocation;
+    this.isRepairing = false;
+  }
+  
+  checkArmorDurability() {
+    const armor = [
+      this.bot.inventory.slots[5],
+      this.bot.inventory.slots[6],
+      this.bot.inventory.slots[7],
+      this.bot.inventory.slots[8]
+    ];
+    
+    for (const piece of armor) {
+      if (!piece || !piece.maxDurability) continue;
+      
+      const durabilityRatio = piece.durabilityUsed / piece.maxDurability;
+      
+      if (durabilityRatio > this.repairThreshold) {
+        return { needsRepair: true, item: piece, durabilityRatio };
+      }
+    }
+    
+    return { needsRepair: false };
+  }
+  
+  hasMendingGear() {
+    const armor = [
+      this.bot.inventory.slots[5],
+      this.bot.inventory.slots[6],
+      this.bot.inventory.slots[7],
+      this.bot.inventory.slots[8]
+    ];
+    
+    for (const piece of armor) {
+      if (!piece || !piece.nbt) continue;
+      
+      try {
+        const enchantments = piece.nbt.value?.Enchantments?.value?.value || [];
+        const hasMending = enchantments.some(e => {
+          const id = e.id?.value || e.id;
+          return id === 'minecraft:mending' || id === 'mending';
+        });
+        
+        if (hasMending) return true;
+      } catch (err) {
+        continue;
+      }
+    }
+    
+    return false;
+  }
+  
+  async goToXPFarm() {
+    if (!this.xpFarmLocation) {
+      console.log('[REPAIR] No XP farm location configured');
+      return false;
+    }
+    
+    try {
+      console.log('[REPAIR] Traveling to XP farm...');
+      const goal = new goals.GoalNear(
+        new Vec3(this.xpFarmLocation.x, this.xpFarmLocation.y, this.xpFarmLocation.z),
+        2
+      );
+      await this.bot.ashfinder.goto(goal);
+      console.log('[REPAIR] Arrived at XP farm');
+      return true;
+    } catch (err) {
+      console.log(`[REPAIR] Failed to reach XP farm: ${err.message}`);
+      return false;
+    }
+  }
+  
+  async repairRoutine() {
+    if (this.isRepairing) {
+      console.log('[REPAIR] Already repairing, skipping...');
+      return false;
+    }
+    
+    const check = this.checkArmorDurability();
+    
+    if (!check.needsRepair) {
+      return false;
+    }
+    
+    this.isRepairing = true;
+    
+    try {
+      console.log(`[REPAIR] ${check.item.name} needs repair (${(check.durabilityRatio * 100).toFixed(1)}% damaged)`);
+      
+      if (!this.hasMendingGear()) {
+        console.log('[REPAIR] No mending gear equipped, cannot auto-repair');
+        this.isRepairing = false;
+        return false;
+      }
+      
+      if (this.xpFarmLocation) {
+        const arrived = await this.goToXPFarm();
+        if (!arrived) {
+          this.isRepairing = false;
+          return false;
+        }
+        
+        console.log('[REPAIR] Standing in XP farm, waiting for repair...');
+        await this.waitForFullRepair();
+        
+        console.log('[REPAIR] ✅ Armor fully repaired!');
+        config.maintenance.lastRepair = Date.now();
+        this.isRepairing = false;
+        return true;
+      } else {
+        console.log('[REPAIR] No XP farm location set. Use "set xp farm here" command.');
+        this.isRepairing = false;
+        return false;
+      }
+    } catch (err) {
+      console.log(`[REPAIR] Repair routine failed: ${err.message}`);
+      this.isRepairing = false;
+      return false;
+    }
+  }
+  
+  async waitForFullRepair() {
+    return new Promise((resolve) => {
+      const checkInterval = safeSetInterval(() => {
+        const check = this.checkArmorDurability();
+        
+        if (!check.needsRepair) {
+          clearTrackedInterval(checkInterval);
+          resolve();
+        }
+      }, 5000, 'Armor Repair Check');
+      
+      setTimeout(() => {
+        clearTrackedInterval(checkInterval);
+        resolve();
+      }, 300000);
+    });
+  }
+  
+  setXPFarmLocation(coords) {
+    this.xpFarmLocation = coords;
+    config.maintenance.autoRepair.xpFarmLocation = coords;
+    console.log(`[REPAIR] XP farm location set to ${coords.x}, ${coords.y}, ${coords.z}`);
+  }
+}
+
+// === ELYTRA MANAGER ===
+class ElytraManager {
+  constructor(bot) {
+    this.bot = bot;
+    this.durabilityThreshold = config.maintenance.elytraSwap.durabilityThreshold;
+    this.isSwapping = false;
+  }
+  
+  checkElytraDurability() {
+    const chestplate = this.bot.inventory.slots[6];
+    
+    if (!chestplate || chestplate.name !== 'elytra') {
+      return { needsSwap: false, hasElytra: false };
+    }
+    
+    if (!chestplate.maxDurability) {
+      return { needsSwap: false, hasElytra: true };
+    }
+    
+    const remainingDurability = chestplate.maxDurability - chestplate.durabilityUsed;
+    
+    if (remainingDurability < this.durabilityThreshold) {
+      console.log(`[ELYTRA] Durability low: ${remainingDurability}/${chestplate.maxDurability}`);
+      return { needsSwap: true, remainingDurability, hasElytra: true };
+    }
+    
+    return { needsSwap: false, hasElytra: true, remainingDurability };
+  }
+  
+  async findNearbyEnderChest() {
+    const enderChestId = this.bot.registry.blocksByName.ender_chest?.id;
+    if (!enderChestId) return null;
+    
+    const enderChest = this.bot.findBlock({
+      matching: enderChestId,
+      maxDistance: 32
+    });
+    
+    return enderChest;
+  }
+  
+  async goToEnderChest() {
+    if (config.homeBase.coords && config.homeBase.enderChestSetup) {
+      console.log('[ELYTRA] Going to home base ender chest...');
+      try {
+        const goal = new goals.GoalNear(
+          new Vec3(config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z),
+          10
+        );
+        await this.bot.ashfinder.goto(goal);
+        return true;
+      } catch (err) {
+        console.log(`[ELYTRA] Failed to reach home base: ${err.message}`);
+        return false;
+      }
+    }
+    
+    const enderChestItem = this.bot.inventory.items().find(item => item.name === 'ender_chest');
+    if (enderChestItem) {
+      console.log('[ELYTRA] Placing ender chest from inventory...');
+      await this.placeEnderChest();
+      return true;
+    }
+    
+    console.log('[ELYTRA] No ender chest available!');
+    return false;
+  }
+  
+  async placeEnderChest() {
+    const enderChestItem = this.bot.inventory.items().find(i => i.name === 'ender_chest');
+    if (!enderChestItem) return false;
+    
+    try {
+      const refBlock = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
+      if (!refBlock) return false;
+      
+      await this.bot.equip(enderChestItem, 'hand');
+      await this.bot.placeBlock(refBlock, new Vec3(1, 1, 0));
+      console.log('[ELYTRA] Placed ender chest');
+      return true;
+    } catch (err) {
+      console.log(`[ELYTRA] Failed to place ender chest: ${err.message}`);
+      return false;
+    }
+  }
+  
+  async swapElytraFromEnderChest() {
+    if (this.isSwapping) {
+      console.log('[ELYTRA] Already swapping, skipping...');
+      return false;
+    }
+    
+    this.isSwapping = true;
+    
+    try {
+      console.log('[ELYTRA] Starting elytra swap...');
+      
+      let enderChest = await this.findNearbyEnderChest();
+      
+      if (!enderChest) {
+        console.log('[ELYTRA] No ender chest nearby, finding one...');
+        const found = await this.goToEnderChest();
+        if (!found) {
+          this.isSwapping = false;
+          return false;
+        }
+        enderChest = await this.findNearbyEnderChest();
+      }
+      
+      if (!enderChest) {
+        console.log('[ELYTRA] Still no ender chest available!');
+        this.isSwapping = false;
+        return false;
+      }
+      
+      const container = await this.bot.openContainer(enderChest);
+      
+      const spareElytra = container.containerItems().find(item => {
+        if (item.name !== 'elytra') return false;
+        if (!item.maxDurability) return true;
+        const remaining = item.maxDurability - item.durabilityUsed;
+        return remaining > this.durabilityThreshold;
+      });
+      
+      if (!spareElytra) {
+        console.log('[ELYTRA] ⚠️ No spare elytra available in ender chest!');
+        container.close();
+        this.isSwapping = false;
+        return false;
+      }
+      
+      const damagedElytra = this.bot.inventory.slots[6];
+      if (damagedElytra && damagedElytra.name === 'elytra') {
+        await this.bot.unequip('torso');
+        await container.deposit(damagedElytra.type, null, 1);
+        console.log('[ELYTRA] Deposited damaged elytra');
+      }
+      
+      await container.withdraw(spareElytra.type, null, 1);
+      console.log('[ELYTRA] Withdrew fresh elytra');
+      
+      container.close();
+      
+      const freshElytra = this.bot.inventory.items().find(i => i.name === 'elytra');
+      if (freshElytra) {
+        await this.bot.equip(freshElytra, 'torso');
+        console.log('[ELYTRA] ✅ Elytra swapped successfully!');
+        config.maintenance.lastElytraSwap = Date.now();
+        this.isSwapping = false;
+        return true;
+      }
+      
+      this.isSwapping = false;
+      return false;
+    } catch (err) {
+      console.log(`[ELYTRA] Swap failed: ${err.message}`);
+      this.isSwapping = false;
+      return false;
+    }
+  }
+  
+  async autoManageElytra() {
+    const check = this.checkElytraDurability();
+    
+    if (check.needsSwap) {
+      return await this.swapElytraFromEnderChest();
+    }
+    
+    return false;
+  }
+}
+
+// === MAINTENANCE SCHEDULER ===
+class MaintenanceScheduler {
+  constructor(bot) {
+    this.bot = bot;
+    this.autoRepair = new AutoRepair(bot);
+    this.elytraManager = new ElytraManager(bot);
+    this.checkInterval = null;
+    this.elytraInterval = null;
+  }
+  
+  start() {
+    if (config.maintenance.schedulerActive) {
+      console.log('[MAINTENANCE] Scheduler already active');
+      return;
+    }
+    
+    console.log('[MAINTENANCE] Starting maintenance scheduler...');
+    
+    if (config.maintenance.autoRepair.enabled) {
+      this.checkInterval = safeSetInterval(async () => {
+        try {
+          if (this.bot.pathfinder && !this.bot.pathfinder.isMoving()) {
+            await this.autoRepair.repairRoutine();
+          }
+        } catch (err) {
+          console.log(`[MAINTENANCE] Repair check error: ${err.message}`);
+        }
+      }, 60000, 'Auto-Repair Check');
+      console.log('[MAINTENANCE] ✅ Auto-repair enabled (checks every 60s)');
+    }
+    
+    if (config.maintenance.elytraSwap.enabled) {
+      this.elytraInterval = safeSetInterval(async () => {
+        try {
+          await this.elytraManager.autoManageElytra();
+        } catch (err) {
+          console.log(`[MAINTENANCE] Elytra check error: ${err.message}`);
+        }
+      }, 10000, 'Elytra Durability Check');
+      console.log('[MAINTENANCE] ✅ Elytra swap enabled (checks every 10s)');
+    }
+    
+    config.maintenance.schedulerActive = true;
+    console.log('[MAINTENANCE] Scheduler started successfully');
+  }
+  
+  stop() {
+    if (!config.maintenance.schedulerActive) {
+      console.log('[MAINTENANCE] Scheduler not active');
+      return;
+    }
+    
+    console.log('[MAINTENANCE] Stopping maintenance scheduler...');
+    
+    if (this.checkInterval) {
+      clearTrackedInterval(this.checkInterval);
+      this.checkInterval = null;
+    }
+    
+    if (this.elytraInterval) {
+      clearTrackedInterval(this.elytraInterval);
+      this.elytraInterval = null;
+    }
+    
+    config.maintenance.schedulerActive = false;
+    console.log('[MAINTENANCE] Scheduler stopped');
+  }
+  
+  getStatus() {
+    const armorCheck = this.autoRepair.checkArmorDurability();
+    const elytraCheck = this.elytraManager.checkElytraDurability();
+    
+    return {
+      schedulerActive: config.maintenance.schedulerActive,
+      autoRepairEnabled: config.maintenance.autoRepair.enabled,
+      elytraSwapEnabled: config.maintenance.elytraSwap.enabled,
+      armorStatus: armorCheck.needsRepair ? 
+        `Needs repair (${(armorCheck.durabilityRatio * 100).toFixed(1)}% damaged)` : 
+        'Good condition',
+      elytraStatus: elytraCheck.hasElytra ? 
+        (elytraCheck.needsSwap ? 
+          `Needs swap (${elytraCheck.remainingDurability} durability)` : 
+          `Good condition (${elytraCheck.remainingDurability || 'N/A'} durability)`) :
+        'No elytra equipped',
+      lastRepair: config.maintenance.lastRepair ? 
+        new Date(config.maintenance.lastRepair).toLocaleString() : 
+        'Never',
+      lastElytraSwap: config.maintenance.lastElytraSwap ? 
+        new Date(config.maintenance.lastElytraSwap).toLocaleString() : 
+        'Never',
+      xpFarmSet: !!config.maintenance.autoRepair.xpFarmLocation
+    };
+  }
+}
+
 // === SCHEMATIC BUILDER ===
 class SchematicBuilder {
   constructor(swarmCoordinator) {
@@ -3415,6 +3867,305 @@ class BuilderWorker {
 }
 
 
+// === AUTO STASH BACKUP SYSTEM ===
+class BackupManager {
+  constructor() {
+    this.queue = [];
+    this.activeBackups = [];
+    this.completedBackups = [];
+  }
+  startBackup(stashLocation, itemsPlanned) {
+    const op = {
+      id: `backup_${Date.now()}`,
+      stashLocation,
+      itemsPlanned,
+      tripsPlanned: 0,
+      tripsCompleted: 0,
+      startedAt: Date.now(),
+      status: 'active'
+    };
+    this.activeBackups.push(op);
+    return op;
+  }
+  completeBackup(op) {
+    if (!op) return;
+    op.endedAt = Date.now();
+    op.status = 'complete';
+    this.activeBackups = this.activeBackups.filter(b => b.id !== op.id);
+    this.completedBackups.push(op);
+    return op;
+  }
+}
+
+class StashBackup {
+  constructor(bot) {
+    this.bot = bot;
+    this.backupPriority = (config.backup && Array.isArray(config.backup.backupPriority))
+      ? config.backup.backupPriority
+      : [
+        'diamond', 'netherite_ingot', 'netherite_scrap', 'ancient_debris',
+        'emerald', 'diamond_block', 'emerald_block',
+        'elytra', 'totem_of_undying', 'shulker_box',
+        'enchanted_book', 'nether_star', 'beacon',
+        'golden_apple', 'enchanted_golden_apple'
+      ];
+    this.leavePercentage = config.backup?.leavePercentage ?? 0.1;
+  }
+  async backupStash(stashLocation) {
+    try {
+      console.log(`[BACKUP] Starting backup of stash at ${stashLocation.x}, ${stashLocation.y}, ${stashLocation.z}`);
+      if (config.backup?.riskAssessment) {
+        const risk = await this.assessBackupRisk(stashLocation);
+        if (!risk.safe) {
+          console.log(`[BACKUP] Risk too high (${risk.reason}). Queuing backup.`);
+          if (globalBackupManager) {
+            globalBackupManager.queue.push({ stashLocation, reason: risk.reason, queuedAt: Date.now() });
+          }
+          return;
+        }
+      }
+      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+        stashLocation.x, stashLocation.y, stashLocation.z
+      ), 2)).catch(() => {});
+      const containers = await this.findNearbyContainers(32);
+      const valuableItems = await this.catalogStashContents(containers);
+      const trips = this.planBackupTrips(valuableItems);
+      console.log(`[BACKUP] Found ${valuableItems.length} valuable item entries, ${trips.length} trips required`);
+      let op = null;
+      if (globalBackupManager) {
+        op = globalBackupManager.startBackup(stashLocation, valuableItems.length);
+        op.tripsPlanned = trips.length;
+      }
+      if (config.backup?.multiBot) {
+        try {
+          await this.coordinatedBackup(stashLocation, config.backup.maxBotsPerBackup || 3);
+        } catch (e) {
+          console.log(`[BACKUP] Coordination error: ${e.message}`);
+        }
+      }
+      for (let i = 0; i < trips.length; i++) {
+        await this.executeBackupTrip(trips[i]);
+        if (op) op.tripsCompleted = i + 1;
+        console.log(`[BACKUP] Trip ${i + 1}/${trips.length} complete`);
+      }
+      console.log('[BACKUP] Stash backup complete!');
+      const totalValue = this.calculateValue(valuableItems);
+      config.analytics.backup.stashesBackedUp = (config.analytics.backup.stashesBackedUp || 0) + 1;
+      config.analytics.backup.totalValueBacked = (config.analytics.backup.totalValueBacked || 0) + totalValue;
+      if (op && globalBackupManager) {
+        globalBackupManager.completeBackup(op);
+      }
+    } catch (err) {
+      console.log(`[BACKUP] Error during backup: ${err.message}`);
+    }
+  }
+  async findNearbyContainers(range = 32) {
+    try {
+      const positions = this.bot.findBlocks({
+        matching: (blockId) => {
+          const name = this.bot.registry.blocks[blockId]?.name || '';
+          if (!name) return false;
+          if (name === 'ender_chest') return false; // exclude ender chest from stash containers
+          return name.includes('chest') || name.includes('barrel') || name.includes('shulker');
+        },
+        maxDistance: range,
+        count: 200
+      });
+      const blocks = positions.map(pos => this.bot.blockAt(pos)).filter(Boolean);
+      return blocks;
+    } catch (err) {
+      console.log(`[BACKUP] Failed to find containers: ${err.message}`);
+      return [];
+    }
+  }
+  async catalogStashContents(containers) {
+    const valuableItems = [];
+    for (const container of containers) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const items = chest.containerItems();
+        for (const item of items) {
+          if (this.isValuable(item)) {
+            const takeAmount = Math.max(0, Math.floor(item.count * (1 - this.leavePercentage)));
+            if (takeAmount > 0) {
+              valuableItems.push({
+                item: { ...item, count: takeAmount },
+                container,
+                priority: this.getPriority(item)
+              });
+            }
+          }
+        }
+        chest.close();
+        await sleep(200);
+      } catch (err) {
+        console.log(`[BACKUP] Failed to open catalog container: ${err.message}`);
+      }
+    }
+    valuableItems.sort((a, b) => b.priority - a.priority);
+    return valuableItems;
+  }
+  isValuable(item) {
+    if (!item) return false;
+    if (this.backupPriority.includes(item.name)) return true;
+    if (item.nbt?.value?.Enchantments) return true;
+    if (item.name?.includes('shulker_box')) return true;
+    const unitValue = this.getItemValue(item.name);
+    return unitValue * (item.count || 1) > 1000;
+  }
+  getPriority(item) {
+    const index = this.backupPriority.indexOf(item.name);
+    if (index !== -1) return 1000 - index;
+    if (item.nbt?.value?.Enchantments) return 500;
+    if (item.name?.includes('shulker_box')) return 800;
+    return this.getItemValue(item.name) * (item.count || 1);
+  }
+  planBackupTrips(valuableItems) {
+    const trips = [];
+    let currentTrip = [];
+    let currentSlots = 0;
+    for (const valuable of valuableItems) {
+      if (currentSlots + 1 <= 36) {
+        currentTrip.push(valuable);
+        currentSlots++;
+      } else {
+        trips.push(currentTrip);
+        currentTrip = [valuable];
+        currentSlots = 1;
+      }
+    }
+    if (currentTrip.length > 0) trips.push(currentTrip);
+    return trips;
+  }
+  async executeBackupTrip(tripItems) {
+    for (const { item, container } of tripItems) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const amount = Math.min(item.count, item.count);
+        await chest.withdraw(item.type, null, amount);
+        chest.close();
+        await sleep(150);
+      } catch (err) {
+        console.log(`[BACKUP] Withdraw failed: ${err.message}`);
+      }
+    }
+    console.log(`[BACKUP] Collected ${tripItems.length} items, traveling to home base...`);
+    await this.goToHomeBase();
+    const enderChest = await this.findOrPlaceEnderChest();
+    try {
+      const chest = await this.bot.openContainer(enderChest);
+      for (const { item } of tripItems) {
+        const invItem = this.bot.inventory.items().find(i => i.type === item.type);
+        if (invItem) {
+          try {
+            await chest.deposit(invItem.type, null, invItem.count);
+            console.log(`[BACKUP] Deposited ${invItem.count}x ${invItem.name}`);
+          } catch (err) {
+            console.log(`[BACKUP] Deposit failed: ${err.message}`);
+          }
+        }
+      }
+      chest.close();
+    } catch (err) {
+      console.log(`[BACKUP] Failed to open ender chest: ${err.message}`);
+    }
+    console.log('[BACKUP] Returning to stash...');
+    // Note: path back to stash can be handled by caller/scanner if needed
+  }
+  async goToHomeBase() {
+    if (!config.homeBase?.coords) {
+      console.log('[BACKUP] No home base set, using current location');
+      return;
+    }
+    const { x, y, z } = config.homeBase.coords;
+    try {
+      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2));
+    } catch (err) {
+      console.log(`[BACKUP] Path to home base failed: ${err.message}`);
+    }
+  }
+  async findOrPlaceEnderChest() {
+    let enderChest = this.bot.findBlock({
+      matching: this.bot.registry.blocksByName.ender_chest?.id,
+      maxDistance: 16
+    });
+    if (enderChest) return enderChest;
+    const enderChestItem = this.bot.inventory.items().find(item => item.name === 'ender_chest');
+    if (!enderChestItem) throw new Error('No ender chest available');
+    const placeBlock = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
+    try {
+      await this.bot.equip(enderChestItem, 'hand');
+      await this.bot.placeBlock(placeBlock, new Vec3(0, 1, 0));
+    } catch (err) {
+      console.log(`[BACKUP] Failed to place ender chest: ${err.message}`);
+    }
+    enderChest = this.bot.findBlock({
+      matching: this.bot.registry.blocksByName.ender_chest?.id,
+      maxDistance: 4
+    });
+    if (!enderChest) throw new Error('Ender chest placement failed');
+    return enderChest;
+  }
+  getItemValue(name) { return ITEM_VALUES[name] || 1; }
+  calculateValue(items) { return items.reduce((sum, v) => sum + this.getItemValue(v.item.name) * (v.item.count || 1), 0); }
+  async smartBackup(containers) {
+    const leavePercentage = this.leavePercentage;
+    for (const container of containers) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const items = chest.containerItems();
+        for (const item of items) {
+          const takeAmount = Math.floor(item.count * (1 - leavePercentage));
+          if (takeAmount > 0) {
+            try { await chest.withdraw(item.type, null, takeAmount); } catch (err) {}
+          }
+        }
+        chest.close();
+      } catch (err) {}
+    }
+  }
+  async coordinatedBackup(stashLocation, botCount) {
+    try {
+      if (!globalSwarmCoordinator) return;
+      const bots = globalSwarmCoordinator.getBotsNear(stashLocation, 256) || [];
+      const selected = bots.slice(0, Math.min(botCount || 1, bots.length));
+      const containers = await this.findNearbyContainers(32);
+      const containersPerBot = Math.ceil(containers.length / Math.max(1, selected.length));
+      for (let i = 0; i < selected.length; i++) {
+        const bot = selected[i];
+        const botContainers = containers.slice(i * containersPerBot, (i + 1) * containersPerBot);
+        globalSwarmCoordinator.sendToBot(bot.id, {
+          type: 'TASK_ASSIGNMENT',
+          task: 'LOOT_STASH',
+          target: stashLocation,
+          containers: botContainers.map(b => b.position)
+        });
+      }
+    } catch (err) {
+      console.log(`[BACKUP] Coordination error: ${err.message}`);
+    }
+  }
+  async assessBackupRisk(stashLocation) {
+    try {
+      // Check nearby players
+      const nearbyPlayers = Object.values(this.bot.players || {}).filter(p => {
+        const pos = p.entity?.position;
+        if (!pos) return false;
+        const dist = this.bot.entity.position.distanceTo(pos);
+        return p.username !== this.bot.username && dist < 128;
+      });
+      if (nearbyPlayers.length > 0) {
+        console.log('[BACKUP] Players nearby, aborting');
+        return { safe: false, reason: 'players_nearby' };
+      }
+      // TODO: Owner detection/recent activity could be implemented with server logs/heuristics
+      return { safe: true };
+    } catch (err) {
+      return { safe: true };
+    }
+  }
+}
+
 // === ADVANCED STASH SCANNER ===
 class StashScanner {
   constructor(bot, swarmCoordinator = null) {
@@ -3542,8 +4293,10 @@ class StashScanner {
           items: items.map(i => ({ name: i.name, count: i.count, value: ITEM_VALUES[i.name] || 1 }))
         });
         
-        // Loot valuable items
-        await this.lootContainer(container, items);
+        // Loot valuable items (disabled if auto-backup enabled)
+        if (!(config.backup?.enabled && config.backup?.autoBackup)) {
+          await this.lootContainer(container, items);
+        }
         
         container.close();
         await sleep(200);
@@ -3576,22 +4329,36 @@ class StashScanner {
       console.log('[STASH] 📡 Broadcast stash discovery to swarm');
     }
     
-    // Auto-navigate home if carrying valuables
-    const enderManager = new EnderChestManager(this.bot);
-    if (enderManager.shouldDepositInventory()) {
-      console.log('[STASH] 💎 Carrying valuables, depositing in ender chest');
-      await enderManager.depositValuables();
-      
-      if (config.homeBase.coords) {
-        console.log('[STASH] 🏠 Heading home with loot');
-        this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
-          config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 10
-        )).catch(() => {});
+    // Auto-navigate home if carrying valuables (disabled if auto-backup enabled)
+    if (!(config.backup?.enabled && config.backup?.autoBackup)) {
+      const enderManager = new EnderChestManager(this.bot);
+      if (enderManager.shouldDepositInventory()) {
+        console.log('[STASH] 💎 Carrying valuables, depositing in ender chest');
+        await enderManager.depositValuables();
+        
+        if (config.homeBase.coords) {
+          console.log('[STASH] 🏠 Heading home with loot');
+          this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+            config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 10
+          )).catch(() => {});
+        }
       }
     }
     
     // Save stash report
     this.saveStashReport(stash);
+
+    // Trigger auto-backup when configured
+    if (config.backup?.enabled && config.backup?.autoBackup) {
+      try {
+        console.log(`[SCANNER] Found stash! Starting auto-backup...`);
+        const backup = new StashBackup(this.bot);
+        await backup.backupStash({ x: center.x, y: center.y, z: center.z });
+        console.log(`[SCANNER] Backup complete, resuming scan...`);
+      } catch (err) {
+        console.log(`[SCANNER] Auto-backup failed: ${err.message}`);
+      }
+    }
     
     console.log(`[STASH] 💎 Documented stash: ${chests.length} chests, Value: ${stash.totalValue}`);
   }
@@ -7091,6 +7858,10 @@ const ITEM_KNOWLEDGE = {
     optimal_strategy: "Find shipwreck/underwater ruins, get map, follow to buried treasure"
   },
   
+  isCommand(message) {
+    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'maintenance', 'repair', 'fix armor', 'swap elytra', 'check elytra', 'set xp farm'];
+    return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
+  }
   "nautilus_shell": {
     sources: [
       { type: "mob_drop", mob: "drowned", drop_rate: 0.03, looting_bonus: 0.01 },
@@ -10165,6 +10936,105 @@ class ConversationAI {
       return;
     }
     
+    // Maintenance commands
+    if (lower.includes('maintenance status') || lower.includes('repair status')) {
+      if (this.bot.maintenanceScheduler) {
+        const status = this.bot.maintenanceScheduler.getStatus();
+        this.bot.chat(`🔧 Maintenance Status:`);
+        this.bot.chat(`Scheduler: ${status.schedulerActive ? '✅ Active' : '❌ Inactive'}`);
+        this.bot.chat(`Auto-repair: ${status.autoRepairEnabled ? '✅' : '❌'} - ${status.armorStatus}`);
+        this.bot.chat(`Elytra swap: ${status.elytraSwapEnabled ? '✅' : '❌'} - ${status.elytraStatus}`);
+        this.bot.chat(`XP Farm: ${status.xpFarmSet ? '✅ Set' : '❌ Not set'}`);
+        this.bot.chat(`Last repair: ${status.lastRepair}`);
+        this.bot.chat(`Last elytra swap: ${status.lastElytraSwap}`);
+      } else {
+        this.bot.chat("Maintenance system not initialized.");
+      }
+      return;
+    }
+    
+    if (lower.includes('start maintenance')) {
+      if (!this.bot.maintenanceScheduler) {
+        this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+      }
+      this.bot.maintenanceScheduler.start();
+      this.bot.chat("🔧 Maintenance scheduler started!");
+      return;
+    }
+    
+    if (lower.includes('stop maintenance')) {
+      if (this.bot.maintenanceScheduler) {
+        this.bot.maintenanceScheduler.stop();
+        this.bot.chat("🔧 Maintenance scheduler stopped.");
+      }
+      return;
+    }
+    
+    if (lower.includes('repair armor') || lower.includes('fix armor')) {
+      if (!this.bot.maintenanceScheduler) {
+        this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+      }
+      this.bot.chat("🔧 Starting armor repair...");
+      const success = await this.bot.maintenanceScheduler.autoRepair.repairRoutine();
+      if (success) {
+        this.bot.chat("✅ Armor repaired successfully!");
+      } else {
+        this.bot.chat("❌ Armor repair failed or not needed.");
+      }
+      return;
+    }
+    
+    if (lower.includes('swap elytra') || lower.includes('fix elytra')) {
+      if (!this.bot.maintenanceScheduler) {
+        this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+      }
+      this.bot.chat("🪽 Swapping elytra...");
+      const success = await this.bot.maintenanceScheduler.elytraManager.swapElytraFromEnderChest();
+      if (success) {
+        this.bot.chat("✅ Elytra swapped successfully!");
+      } else {
+        this.bot.chat("❌ Elytra swap failed or not needed.");
+      }
+      return;
+    }
+    
+    if (lower.includes('check elytra')) {
+      if (!this.bot.maintenanceScheduler) {
+        this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+      }
+      const check = this.bot.maintenanceScheduler.elytraManager.checkElytraDurability();
+      if (check.hasElytra) {
+        this.bot.chat(`🪽 Elytra: ${check.remainingDurability || 'N/A'} durability remaining`);
+        if (check.needsSwap) {
+          this.bot.chat("⚠️ Needs replacement!");
+        }
+      } else {
+        this.bot.chat("No elytra equipped.");
+      }
+      return;
+    }
+    
+    if (lower.includes('set xp farm')) {
+      if (lower.includes('here')) {
+        if (!this.bot.maintenanceScheduler) {
+          this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+        }
+        const pos = this.bot.entity.position;
+        const coords = new Vec3(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
+        this.bot.maintenanceScheduler.autoRepair.setXPFarmLocation(coords);
+        this.bot.chat(`⚡ XP farm location set at ${coords.x}, ${coords.y}, ${coords.z}`);
+      } else {
+        const coords = this.extractCoords(message);
+        if (coords) {
+          if (!this.bot.maintenanceScheduler) {
+            this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+          }
+          this.bot.maintenanceScheduler.autoRepair.setXPFarmLocation(coords);
+          this.bot.chat(`⚡ XP farm location set at ${coords.x}, ${coords.y}, ${coords.z}`);
+        } else {
+          this.bot.chat("Usage: 'set xp farm here' or 'set xp farm x,y,z'");
+        }
+      }
     // Item Finder commands
     if (lower.includes('find') || lower.includes('hunt') || lower.includes('collect') || lower.includes('get me') || lower.includes('fish for') || lower.includes('farm')) {
       await this.handleItemFinderCommand(username, message);
@@ -15253,6 +16123,7 @@ let globalBaseMonitor = null;
 let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
 let globalSchematicLoader = new SchematicLoader();
+let globalBackupManager = new BackupManager();
 
 // Anti-cheat bypass system global instances
 let serverProfileManager = null;
@@ -15437,7 +16308,25 @@ http.createServer((req, res) => {
       schematics: {
         total: globalSchematicLoader.listSchematics().length,
         loaded: globalSchematicLoader.listSchematics()
+      },
+      maintenance: globalBot?.maintenanceScheduler ? globalBot.maintenanceScheduler.getStatus() : {
+        schedulerActive: config.maintenance.schedulerActive,
+        autoRepairEnabled: config.maintenance.autoRepair.enabled,
+        elytraSwapEnabled: config.maintenance.elytraSwap.enabled,
+        armorStatus: 'N/A',
+        elytraStatus: 'N/A',
+        lastRepair: config.maintenance.lastRepair ? new Date(config.maintenance.lastRepair).toLocaleString() : 'Never',
+        lastElytraSwap: config.maintenance.lastElytraSwap ? new Date(config.maintenance.lastElytraSwap).toLocaleString() : 'Never',
+        xpFarmSet: !!config.maintenance.autoRepair.xpFarmLocation
       }
+    }));
+  } else if (req.url === '/api/backup-status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      activeBackups: globalBackupManager?.activeBackups || [],
+      completedBackups: globalBackupManager?.completedBackups || [],
+      totalValueBacked: (config.analytics.backup?.totalValueBacked) || 0,
+      backupQueue: globalBackupManager?.queue || []
     }));
   } else if (req.url === '/swarm') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -16242,6 +17131,15 @@ async function launchBot(username, role = 'fighter') {
     
     // Initialize ender chest manager
     enderManager = new EnderChestManager(bot);
+    
+    // Initialize maintenance scheduler
+    bot.maintenanceScheduler = new MaintenanceScheduler(bot);
+    if (config.maintenance.autoRepair.enabled || config.maintenance.elytraSwap.enabled) {
+      bot.maintenanceScheduler.start();
+      console.log('[MAINTENANCE] Scheduler initialized and started');
+    } else {
+      console.log('[MAINTENANCE] Scheduler initialized (disabled)');
+    }
     
     // Initialize movement manager
     bot.movementManager = new MovementModeManager(bot);
