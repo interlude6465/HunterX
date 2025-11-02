@@ -390,6 +390,23 @@ const config = {
     visitedChunks: new Set()
   },
   
+  // Auto-stash backup configuration
+  backup: {
+    enabled: true,
+    autoBackup: true,
+    backupPriority: [
+      'diamond', 'netherite_ingot', 'netherite_scrap', 'ancient_debris',
+      'emerald', 'diamond_block', 'emerald_block',
+      'elytra', 'totem_of_undying', 'shulker_box',
+      'enchanted_book', 'nether_star', 'beacon',
+      'golden_apple', 'enchanted_golden_apple'
+    ],
+    leavePercentage: 0.1,
+    riskAssessment: true,
+    multiBot: true,
+    maxBotsPerBackup: 3
+  },
+  
   // Combat settings
   combat: {
     maxSelfDamage: 6,
@@ -487,6 +504,7 @@ const config = {
       }
     },
     stashes: { found: 0, totalValue: 0, bestStash: null },
+    backup: { stashesBackedUp: 0, totalValueBacked: 0 },
     production: { items: {}, lastUpdate: null }
   },
   training: { episodes: [], replayBuffer: [], maxBufferSize: 10000 },
@@ -578,6 +596,34 @@ const config = {
     commandsExecuted: 0,
     avgResponseTime: 0,
     lastInteraction: null
+  },
+  
+  // Anti-cheat bypass system
+  anticheat: {
+    enabled: false, // Starts disabled (overpowered mode)
+    tier: 0, // 0 = overpowered, 1-3 = humanization tiers
+    reactiveMode: true, // Only activate when flagged
+    autoDeescalate: true,
+    deescalateInterval: 600000, // 10 minutes
+    emergency: false,
+    maxCPS: 20, // No limit in tier 0
+    maxReach: 6.0, // No limit in tier 0
+    movementSpeed: 1.0
+  // Maintenance system
+  maintenance: {
+    autoRepair: {
+      enabled: true,
+      durabilityThreshold: 0.5,
+      xpFarmLocation: null
+    },
+    elytraSwap: {
+      enabled: true,
+      durabilityThreshold: 100,
+      keepSpares: 3
+    },
+    lastRepair: null,
+    lastElytraSwap: null,
+    schedulerActive: false
   }
 };
 
@@ -887,6 +933,770 @@ const ENDER_CHEST_PRIORITY_ITEMS = [
   'diamond', 'diamond_block', 'emerald', 'emerald_block',
   'shulker_box', 'black_shulker_box', 'white_shulker_box'
 ];
+
+// === ANTI-CHEAT BYPASS SYSTEM ===
+
+// Server Profile Manager - Manages server-specific anti-cheat profiles
+class ServerProfileManager {
+  constructor() {
+    this.profilePath = './data/server-profiles.json';
+    this.defaultProfiles = {
+      '2b2t.org': {
+        anticheat: 'none',
+        recommendedTier: 0,
+        flags: []
+      },
+      'hypixel.net': {
+        anticheat: 'watchdog',
+        recommendedTier: 2,
+        sensitiveActions: ['killaura', 'reach', 'speed'],
+        maxReach: 3.0,
+        maxCPS: 6,
+        flags: []
+      },
+      'generic': {
+        anticheat: 'grim/aac',
+        recommendedTier: 1,
+        adaptiveMode: true,
+        flags: []
+      }
+    };
+    this.profiles = this.loadProfiles();
+  }
+  
+  loadProfiles() {
+    let storedProfiles = {};
+    if (fs.existsSync(this.profilePath)) {
+      storedProfiles = safeReadJson(this.profilePath, {}) || {};
+    }
+    
+    const profiles = {};
+    for (const [key, value] of Object.entries(this.defaultProfiles)) {
+      profiles[key] = {
+        ...value,
+        flags: Array.isArray(value.flags) ? [...value.flags] : []
+      };
+    }
+    
+    if (storedProfiles && typeof storedProfiles === 'object') {
+      for (const [key, value] of Object.entries(storedProfiles)) {
+        profiles[key] = {
+          ...profiles.generic,
+          ...value,
+          flags: Array.isArray(value?.flags) ? value.flags.slice(-50) : []
+        };
+      }
+    }
+    
+    return profiles;
+  }
+  
+  normalizeKey(serverAddress) {
+    if (!serverAddress || typeof serverAddress !== 'string') {
+      return 'generic';
+    }
+    return serverAddress.trim().toLowerCase();
+  }
+  
+  getServerProfile(serverAddress) {
+    const key = this.normalizeKey(serverAddress);
+    const profile = this.profiles[key] || this.profiles['generic'];
+    console.log(`[ANTICHEAT] Server profile: ${profile.anticheat}`);
+    return profile;
+  }
+  
+  updateProfile(serverAddress, flagType) {
+    const key = this.normalizeKey(serverAddress);
+    if (!this.profiles[key]) {
+      this.profiles[key] = {
+        ...this.defaultProfiles.generic,
+        flags: []
+      };
+    }
+    
+    const profile = this.profiles[key];
+    profile.flags = profile.flags || [];
+    profile.flags.push({
+      type: flagType,
+      timestamp: Date.now()
+    });
+    if (profile.flags.length > 50) {
+      profile.flags = profile.flags.slice(-50);
+    }
+    
+    if (profile.adaptiveMode) {
+      const severityBoost = ['COMBAT', 'MOVEMENT', 'PACKET', 'TIMER'].includes(flagType) ? 2 : 1;
+      profile.recommendedTier = Math.min(3, (profile.recommendedTier || 0) + severityBoost);
+    }
+    
+    this.saveProfiles();
+  }
+  
+  saveProfiles() {
+    safeWriteJson(this.profilePath, this.profiles);
+  }
+}
+
+// Anti-Cheat Detector - Monitors kicks and manages tier escalation
+class AntiCheatDetector {
+  constructor(bot, profileManager) {
+    this.bot = bot;
+    this.profileManager = profileManager;
+    this.kickHistory = [];
+    this.flagHistory = [];
+    this.currentTier = 0;
+    this.serverProfile = null;
+    this.deescalationHandle = null;
+    this.lastFlagTimestamp = null;
+  }
+  
+  initialize() {
+    this.serverProfile = this.profileManager?.getServerProfile(config.server);
+    globalAntiCheatDetector = this;
+    
+    if (this.serverProfile && this.serverProfile.recommendedTier > 0 && config.anticheat.reactiveMode) {
+      console.log(`[ANTICHEAT] Server has known anti-cheat: ${this.serverProfile.anticheat}`);
+      console.log(`[ANTICHEAT] Recommended tier: ${this.serverProfile.recommendedTier}`);
+      console.log('[ANTICHEAT] Reactive mode enabled, running overpowered until flagged');
+    }
+  }
+  
+  monitorKicks() {
+    if (!this.bot) return;
+    
+    addTrackedListener(this.bot, 'kicked', (reason) => {
+      const reasonText = this.normalizeReason(reason);
+      if (!reasonText) return;
+      
+      console.log(`[ANTICHEAT] 🚨 Kicked: ${reasonText}`);
+      const flagType = this.classifyKickReason(reasonText);
+      if (flagType) {
+        this.handleAntiCheatFlag(flagType, reasonText);
+      }
+    });
+    
+    addTrackedListener(this.bot, 'end', (reason) => {
+      const reasonText = this.normalizeReason(reason);
+      if (!reasonText || reasonText === 'disconnect.quitting') return;
+      
+      console.log(`[ANTICHEAT] Disconnected: ${reasonText}`);
+      const flagType = this.classifyKickReason(reasonText);
+      if (flagType) {
+        this.handleAntiCheatFlag(flagType, reasonText);
+      }
+    });
+  }
+  
+  normalizeReason(reason) {
+    if (!reason) return '';
+    if (typeof reason === 'string') return reason;
+    if (typeof reason === 'object') {
+      if (reason.text) return reason.text;
+      if (reason.reason) return reason.reason;
+      try {
+        return JSON.stringify(reason);
+      } catch (err) {
+        return String(reason);
+      }
+    }
+    return String(reason);
+  }
+  
+  classifyKickReason(reason) {
+    if (!reason) return null;
+    const reasonLower = reason.toLowerCase();
+    
+    if (reasonLower.includes('fly') ||
+        reasonLower.includes('flying') ||
+        (reasonLower.includes('illegal') && reasonLower.includes('move'))) {
+      return 'MOVEMENT';
+    }
+    
+    if (reasonLower.includes('reach') ||
+        reasonLower.includes('killaura') ||
+        reasonLower.includes('aimbot')) {
+      return 'COMBAT';
+    }
+    
+    if (reasonLower.includes('speed') ||
+        reasonLower.includes('too fast')) {
+      return 'SPEED';
+    }
+    
+    if (reasonLower.includes('packet') ||
+        reasonLower.includes('spam')) {
+      return 'PACKET';
+    }
+    
+    if (reasonLower.includes('timer')) {
+      return 'TIMER';
+    }
+    
+    if (reasonLower.includes('cheat') ||
+        reasonLower.includes('hack') ||
+        reasonLower.includes('grim') ||
+        reasonLower.includes('aac') ||
+        reasonLower.includes('suspicious')) {
+      return 'GENERIC';
+    }
+    
+    return null;
+  }
+  
+  handleAntiCheatFlag(flagType, reason) {
+    const timestamp = Date.now();
+    const flag = {
+      type: flagType,
+      reason,
+      timestamp,
+      tier: this.currentTier
+    };
+    
+    this.flagHistory.push(flag);
+    this.kickHistory.push(flag);
+    this.flagHistory = this.flagHistory.slice(-100);
+    this.kickHistory = this.kickHistory.slice(-50);
+    this.lastFlagTimestamp = timestamp;
+    config.anticheat.lastFlagTimestamp = timestamp;
+    
+    if (this.profileManager) {
+      this.profileManager.updateProfile(config.server, flagType);
+    }
+    
+    console.log(`[ANTICHEAT] Detected flag ${flagType}`);
+    this.escalateTier();
+  }
+  
+  escalateTier() {
+    const now = Date.now();
+    const recentFlags = this.flagHistory.filter(flag => now - flag.timestamp < 300000);
+    
+    let targetTier = this.currentTier;
+    if (recentFlags.length >= 3) {
+      targetTier = 3;
+    } else if (recentFlags.length >= 2) {
+      targetTier = Math.min(3, this.currentTier + 2);
+    } else {
+      targetTier = Math.min(3, this.currentTier + 1);
+    }
+    
+    if (targetTier !== this.currentTier) {
+      console.log(`[ANTICHEAT] ⚠️ Escalating to Tier ${targetTier}`);
+      this.currentTier = targetTier;
+      config.anticheat.lastTierChange = now;
+      
+      if (globalAntiCheatBypass) {
+        globalAntiCheatBypass.setTier(targetTier);
+      } else {
+        config.anticheat.tier = targetTier;
+        config.anticheat.enabled = targetTier > 0;
+      }
+    } else if (globalAntiCheatBypass) {
+      globalAntiCheatBypass.refreshTierSettings();
+    }
+  }
+  
+  attemptTierDeescalation() {
+    if (!config.anticheat.autoDeescalate) return;
+    
+    if (this.deescalationHandle) {
+      clearTrackedInterval(this.deescalationHandle);
+    }
+    
+    this.deescalationHandle = safeSetInterval(() => {
+      if (this.currentTier === 0) return;
+      
+      const lastFlag = this.flagHistory[this.flagHistory.length - 1];
+      const lastTimestamp = lastFlag ? lastFlag.timestamp : 0;
+      const interval = config.anticheat.deescalateInterval || 600000;
+      
+      if (Date.now() - lastTimestamp > interval) {
+        this.currentTier = Math.max(0, this.currentTier - 1);
+        config.anticheat.lastTierChange = Date.now();
+        
+        console.log(`[ANTICHEAT] 📉 Deescalated to Tier ${this.currentTier}`);
+        
+        if (globalAntiCheatBypass) {
+          globalAntiCheatBypass.setTier(this.currentTier);
+        } else {
+          config.anticheat.tier = this.currentTier;
+          config.anticheat.enabled = this.currentTier > 0;
+        }
+        
+        if (this.currentTier === 0) {
+          console.log('[ANTICHEAT] 🚀 FULL OVERPOWERED MODE RESTORED');
+        }
+      }
+    }, config.anticheat.deescalateInterval || 600000, 'AntiCheatDeescalation');
+  }
+  
+  getNextDeescalationTime() {
+    const lastFlag = this.flagHistory[this.flagHistory.length - 1];
+    if (!lastFlag) return null;
+    
+    const interval = config.anticheat.deescalateInterval || 600000;
+    return new Date(lastFlag.timestamp + interval).toISOString();
+  }
+  
+  shutdown() {
+    if (this.deescalationHandle) {
+      clearTrackedInterval(this.deescalationHandle);
+      this.deescalationHandle = null;
+    }
+  }
+}
+
+// Tier 1: Basic Humanization
+class Tier1Humanization {
+  constructor(bot) {
+    this.bot = bot;
+    this.originalFunctions = {};
+    this.active = false;
+  }
+  
+  activate() {
+    if (this.active) return;
+    this.active = true;
+    console.log('[ANTICHEAT] Tier 1: Basic Humanization activated');
+    
+    // Apply CPS limiter
+    this.applyCPSLimiter();
+  }
+  
+  deactivate() {
+    this.active = false;
+    // Restore original functions if needed
+  }
+  
+  applyCPSLimiter() {
+    config.anticheat.maxCPS = 7; // 4-7 CPS
+  }
+  
+  async addRandomDelay() {
+    const delay = Math.floor(Math.random() * 150) + 50; // 50-200ms
+    return new Promise(resolve => setTimeout(resolve, delay));
+  }
+  
+  getRandomChar() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz';
+    return chars[Math.floor(Math.random() * chars.length)];
+  }
+  
+  addTypo(message) {
+    if (!message || message.length === 0) return message;
+    const pos = Math.floor(Math.random() * message.length);
+    return message.slice(0, pos) + this.getRandomChar() + message.slice(pos + 1);
+  }
+  
+  async simulateTypoInChat(message) {
+    // 5% chance of "typo" followed by correction
+    if (Math.random() < 0.05) {
+      const typoMessage = this.addTypo(message);
+      this.bot.chat(typoMessage);
+      await this.addRandomDelay();
+      this.bot.chat(`*${message}`); // correction
+    } else {
+      this.bot.chat(message);
+    }
+  }
+  
+  addMovementNoise(goal) {
+    if (!goal) return goal;
+    // Add slight random offsets to pathfinding
+    const noise = {
+      x: (Math.random() - 0.5) * 0.3,
+      y: 0,
+      z: (Math.random() - 0.5) * 0.3
+    };
+    
+    return {
+      x: goal.x + noise.x,
+      y: goal.y,
+      z: goal.z + noise.z
+    };
+  }
+  
+  addAimWobble(yaw, pitch) {
+    const wobble = {
+      yaw: (Math.random() - 0.5) * 0.1, // ±0.05 radians
+      pitch: (Math.random() - 0.5) * 0.08
+    };
+    
+    return {
+      yaw: yaw + wobble.yaw,
+      pitch: pitch + wobble.pitch
+    };
+  }
+}
+
+// Tier 2: Advanced Evasion
+class Tier2AdvancedEvasion extends Tier1Humanization {
+  constructor(bot) {
+    super(bot);
+    this.packetQueue = [];
+  }
+  
+  activate() {
+    super.activate();
+    console.log('[ANTICHEAT] Tier 2: Advanced Evasion activated');
+    
+    // Set stricter limits
+    config.anticheat.maxCPS = 6;
+    config.anticheat.maxReach = 3.2;
+    config.anticheat.movementSpeed = 0.9;
+  }
+  
+  limitReach(target) {
+    if (!target || !target.position || !this.bot.entity) return false;
+    
+    const distance = this.bot.entity.position.distanceTo(target.position);
+    const maxReach = 3.0 + (Math.random() * 0.2); // 3.0-3.2 blocks
+    
+    if (distance > maxReach) {
+      console.log(`[ANTICHEAT] Reach limit: ${distance.toFixed(2)} > ${maxReach.toFixed(2)}`);
+      return false; // Don't attack
+    }
+    
+    return true;
+  }
+  
+  addAngleImperfection(targetYaw, currentYaw) {
+    const diff = targetYaw - currentYaw;
+    
+    // Avoid perfect 180° turns
+    if (Math.abs(diff) > 3.1 && Math.abs(diff) < 3.2) {
+      const error = (Math.random() - 0.5) * 0.1;
+      return targetYaw + error;
+    }
+    
+    // Add slight imperfection to all turns
+    const smallError = (Math.random() - 0.5) * 0.02;
+    return targetYaw + smallError;
+  }
+  
+  smartSprint() {
+    let sprintTime = 0;
+    
+    const interval = safeSetInterval(() => {
+      if (!this.bot || !this.bot.getControlState) return;
+      
+      try {
+        if (this.bot.getControlState('sprint')) {
+          sprintTime += 100;
+          
+          // Occasionally stop sprinting (human fatigue simulation)
+          if (sprintTime > 30000 && Math.random() < 0.1) {
+            this.bot.setControlState('sprint', false);
+            setTimeout(() => {
+              if (this.bot && this.bot.setControlState) {
+                this.bot.setControlState('sprint', true);
+              }
+              sprintTime = 0;
+            }, Math.random() * 2000 + 1000);
+          }
+        }
+      } catch (err) {
+        // Ignore errors from disconnected bot
+      }
+    }, 100, 'SmartSprint');
+    
+    return interval;
+  }
+}
+
+// Tier 3: ML Counter (Elite)
+class Tier3MLCounter extends Tier2AdvancedEvasion {
+  constructor(bot) {
+    super(bot);
+    this.behaviorRotationInterval = 300000; // 5 minutes
+    this.currentPattern = 0;
+    this.patterns = this.loadPatterns();
+    this.rotationInterval = null;
+  }
+  
+  activate() {
+    super.activate();
+    console.log('[ANTICHEAT] Tier 3: ML Counter (Elite) activated');
+    
+    // Set most conservative limits
+    config.anticheat.maxCPS = 5;
+    config.anticheat.maxReach = 3.0;
+    config.anticheat.movementSpeed = 0.8;
+    
+    // Start pattern rotation
+    this.rotateBehaviorPatterns();
+    
+    // Monitor for rubberbanding
+    this.monitorServerFlags();
+  }
+  
+  deactivate() {
+    super.deactivate();
+    if (this.rotationInterval) {
+      clearTrackedInterval(this.rotationInterval);
+    }
+  }
+  
+  loadPatterns() {
+    return [
+      {
+        name: 'Aggressive',
+        cpsCurve: [6, 7, 6.5, 7, 6, 6.5],
+        movementStyle: 'direct',
+        attackPattern: 'burst'
+      },
+      {
+        name: 'Defensive',
+        cpsCurve: [4, 5, 4.5, 5, 4, 4.5],
+        movementStyle: 'cautious',
+        attackPattern: 'measured'
+      },
+      {
+        name: 'Balanced',
+        cpsCurve: [5, 6, 5.5, 6, 5, 5.5],
+        movementStyle: 'normal',
+        attackPattern: 'standard'
+      }
+    ];
+  }
+  
+  rotateBehaviorPatterns() {
+    this.rotationInterval = safeSetInterval(() => {
+      this.currentPattern = (this.currentPattern + 1) % this.patterns.length;
+      
+      const pattern = this.patterns[this.currentPattern];
+      
+      console.log(`[ANTICHEAT] 🔄 Rotating to pattern: ${pattern.name}`);
+      
+      // Apply pattern settings
+      this.applyCPSCurve(pattern.cpsCurve);
+    }, this.behaviorRotationInterval, 'BehaviorPatternRotation');
+  }
+  
+  applyCPSCurve(curve) {
+    // Dynamically adjust CPS over time
+    this.cpsCurve = curve;
+    this.cpsIndex = 0;
+    
+    // Update config with first value
+    if (curve && curve.length > 0) {
+      config.anticheat.maxCPS = curve[0];
+    }
+  }
+  
+  monitorServerFlags() {
+    let recentActions = [];
+    
+    this.bot.on('packet', (data, meta) => {
+      try {
+        // Monitor for potential flag packets
+        if (meta.name === 'position' || meta.name === 'entity_velocity') {
+          recentActions.push({
+            type: meta.name,
+            timestamp: Date.now()
+          });
+          
+          // Keep only last 10 seconds
+          recentActions = recentActions.filter(a => 
+            Date.now() - a.timestamp < 10000
+          );
+          
+          // Detect rubberbanding (sign of flags)
+          if (this.detectRubberbanding(recentActions)) {
+            console.log('[ANTICHEAT] ⚠️ Rubberbanding detected - going full human mode');
+            this.activateFullHumanMode();
+          }
+        }
+      } catch (err) {
+        // Ignore packet errors
+      }
+    });
+  }
+  
+  detectRubberbanding(actions) {
+    const positionActions = actions.filter(a => a.type === 'position');
+    
+    if (positionActions.length >= 3) {
+      // Check for position corrections in short time
+      const timeDiff = positionActions[positionActions.length - 1].timestamp - 
+                       positionActions[0].timestamp;
+      
+      if (timeDiff < 1000) {
+        return true; // Likely rubberbanding
+      }
+    }
+    
+    return false;
+  }
+  
+  activateFullHumanMode() {
+    // Emergency mode - extremely conservative
+    config.anticheat.emergency = true;
+    
+    // Drastically reduce all actions
+    config.anticheat.maxCPS = 3;
+    config.anticheat.maxReach = 2.8;
+    config.anticheat.movementSpeed = 0.8;
+    
+    // Disable risky features
+    const originalCrystalPvP = config.combat.crystalPvP;
+    config.combat.crystalPvP = false;
+    
+    console.log('[ANTICHEAT] 🚨 FULL HUMAN MODE ACTIVATED');
+    
+    // Return to normal after 5 minutes if no flags
+    setTimeout(() => {
+      if (!this.recentFlags()) {
+        config.anticheat.emergency = false;
+        config.combat.crystalPvP = originalCrystalPvP;
+        console.log('[ANTICHEAT] ✅ Exiting emergency mode');
+      }
+    }, 300000);
+  }
+  
+  recentFlags() {
+    if (!globalAntiCheatDetector) return false;
+    
+    const recentFlags = globalAntiCheatDetector.flagHistory.filter(f => 
+      Date.now() - f.timestamp < 300000 // Last 5 minutes
+    );
+    
+    return recentFlags.length > 0;
+  }
+  
+  addBehavioralEntropy(action) {
+    // Add random "mistakes" that humans make
+    if (Math.random() < 0.02) {
+      // 2% chance of human-like mistake
+      return this.simulateMistake(action);
+    }
+    
+    return action;
+  }
+  
+  simulateMistake(action) {
+    const mistakes = [
+      'miss_click',
+      'overshoot',
+      'pause',
+      'double_tap'
+    ];
+    
+    const mistake = mistakes[Math.floor(Math.random() * mistakes.length)];
+    
+    console.log(`[ANTICHEAT] Simulating mistake: ${mistake}`);
+    
+    return { ...action, mistake };
+  }
+}
+
+// Main Anti-Cheat Bypass Controller
+class AntiCheatBypassController {
+  constructor(bot, profileManager) {
+    this.bot = bot;
+    this.profileManager = profileManager;
+    this.detector = new AntiCheatDetector(bot, profileManager);
+    this.tier1 = new Tier1Humanization(bot);
+    this.tier2 = new Tier2AdvancedEvasion(bot);
+    this.tier3 = new Tier3MLCounter(bot);
+    this.currentTier = 0;
+  }
+  
+  initialize() {
+    console.log('[ANTICHEAT] 🚀 Starting in FULL OVERPOWERED MODE');
+    
+    this.detector.initialize();
+    this.detector.monitorKicks();
+    this.detector.attemptTierDeescalation();
+    
+    const profile = this.profileManager?.getServerProfile(config.server);
+    
+    if (profile && profile.recommendedTier > 0 && !config.anticheat.reactiveMode) {
+      console.log(`[ANTICHEAT] Starting at recommended Tier ${profile.recommendedTier}`);
+      this.setTier(profile.recommendedTier);
+    }
+  }
+  
+  setTier(tier) {
+    if (tier === this.currentTier) return;
+    
+    this.currentTier = tier;
+    config.anticheat.tier = tier;
+    
+    this.disableAllTiers();
+    
+    switch (tier) {
+      case 0:
+        console.log('[ANTICHEAT] 🔥 OVERPOWERED MODE - NO LIMITS');
+        config.anticheat.enabled = false;
+        config.anticheat.maxCPS = 20;
+        config.anticheat.maxReach = 6.0;
+        config.anticheat.movementSpeed = 1.0;
+        break;
+      
+      case 1:
+        console.log('[ANTICHEAT] Tier 1: Basic Humanization');
+        config.anticheat.enabled = true;
+        this.tier1.activate();
+        break;
+      
+      case 2:
+        console.log('[ANTICHEAT] Tier 2: Advanced Evasion');
+        config.anticheat.enabled = true;
+        this.tier1.activate();
+        this.tier2.activate();
+        break;
+      
+      case 3:
+        console.log('[ANTICHEAT] Tier 3: ML Counter (Elite)');
+        config.anticheat.enabled = true;
+        this.tier1.activate();
+        this.tier2.activate();
+        this.tier3.activate();
+        break;
+    }
+    
+    this.detector.currentTier = tier;
+  }
+  
+  refreshTierSettings() {
+    if (this.currentTier > 0) {
+      this.setTier(this.currentTier);
+    }
+  }
+  
+  disableAllTiers() {
+    try {
+      if (this.tier1) this.tier1.deactivate();
+      if (this.tier2) this.tier2.deactivate();
+      if (this.tier3) this.tier3.deactivate();
+    } catch (err) {
+      // Ignore deactivation errors
+    }
+  }
+  
+  getStatus() {
+    return {
+      currentTier: this.currentTier,
+      mode: this.currentTier === 0 ? 'OVERPOWERED' : `HUMANIZED_T${this.currentTier}`,
+      recentFlags: this.detector ? this.detector.flagHistory.slice(-5) : [],
+      nextDeescalation: this.detector ? this.detector.getNextDeescalationTime() : null,
+      emergency: config.anticheat.emergency || false,
+      settings: {
+        maxCPS: config.anticheat.maxCPS,
+        maxReach: config.anticheat.maxReach,
+        movementSpeed: config.anticheat.movementSpeed
+      }
+    };
+  }
+  
+  shutdown() {
+    this.disableAllTiers();
+    if (this.detector) {
+      this.detector.shutdown();
+    }
+  }
+}
 
 // === SWARM COORDINATOR ===
 class SwarmCoordinator {
@@ -2309,6 +3119,425 @@ class EnderChestManager {
   }
 }
 
+// === AUTO-REPAIR SYSTEM ===
+class AutoRepair {
+  constructor(bot) {
+    this.bot = bot;
+    this.repairThreshold = config.maintenance.autoRepair.durabilityThreshold;
+    this.xpFarmLocation = config.maintenance.autoRepair.xpFarmLocation;
+    this.isRepairing = false;
+  }
+  
+  checkArmorDurability() {
+    const armor = [
+      this.bot.inventory.slots[5],
+      this.bot.inventory.slots[6],
+      this.bot.inventory.slots[7],
+      this.bot.inventory.slots[8]
+    ];
+    
+    for (const piece of armor) {
+      if (!piece || !piece.maxDurability) continue;
+      
+      const durabilityRatio = piece.durabilityUsed / piece.maxDurability;
+      
+      if (durabilityRatio > this.repairThreshold) {
+        return { needsRepair: true, item: piece, durabilityRatio };
+      }
+    }
+    
+    return { needsRepair: false };
+  }
+  
+  hasMendingGear() {
+    const armor = [
+      this.bot.inventory.slots[5],
+      this.bot.inventory.slots[6],
+      this.bot.inventory.slots[7],
+      this.bot.inventory.slots[8]
+    ];
+    
+    for (const piece of armor) {
+      if (!piece || !piece.nbt) continue;
+      
+      try {
+        const enchantments = piece.nbt.value?.Enchantments?.value?.value || [];
+        const hasMending = enchantments.some(e => {
+          const id = e.id?.value || e.id;
+          return id === 'minecraft:mending' || id === 'mending';
+        });
+        
+        if (hasMending) return true;
+      } catch (err) {
+        continue;
+      }
+    }
+    
+    return false;
+  }
+  
+  async goToXPFarm() {
+    if (!this.xpFarmLocation) {
+      console.log('[REPAIR] No XP farm location configured');
+      return false;
+    }
+    
+    try {
+      console.log('[REPAIR] Traveling to XP farm...');
+      const goal = new goals.GoalNear(
+        new Vec3(this.xpFarmLocation.x, this.xpFarmLocation.y, this.xpFarmLocation.z),
+        2
+      );
+      await this.bot.ashfinder.goto(goal);
+      console.log('[REPAIR] Arrived at XP farm');
+      return true;
+    } catch (err) {
+      console.log(`[REPAIR] Failed to reach XP farm: ${err.message}`);
+      return false;
+    }
+  }
+  
+  async repairRoutine() {
+    if (this.isRepairing) {
+      console.log('[REPAIR] Already repairing, skipping...');
+      return false;
+    }
+    
+    const check = this.checkArmorDurability();
+    
+    if (!check.needsRepair) {
+      return false;
+    }
+    
+    this.isRepairing = true;
+    
+    try {
+      console.log(`[REPAIR] ${check.item.name} needs repair (${(check.durabilityRatio * 100).toFixed(1)}% damaged)`);
+      
+      if (!this.hasMendingGear()) {
+        console.log('[REPAIR] No mending gear equipped, cannot auto-repair');
+        this.isRepairing = false;
+        return false;
+      }
+      
+      if (this.xpFarmLocation) {
+        const arrived = await this.goToXPFarm();
+        if (!arrived) {
+          this.isRepairing = false;
+          return false;
+        }
+        
+        console.log('[REPAIR] Standing in XP farm, waiting for repair...');
+        await this.waitForFullRepair();
+        
+        console.log('[REPAIR] ✅ Armor fully repaired!');
+        config.maintenance.lastRepair = Date.now();
+        this.isRepairing = false;
+        return true;
+      } else {
+        console.log('[REPAIR] No XP farm location set. Use "set xp farm here" command.');
+        this.isRepairing = false;
+        return false;
+      }
+    } catch (err) {
+      console.log(`[REPAIR] Repair routine failed: ${err.message}`);
+      this.isRepairing = false;
+      return false;
+    }
+  }
+  
+  async waitForFullRepair() {
+    return new Promise((resolve) => {
+      const checkInterval = safeSetInterval(() => {
+        const check = this.checkArmorDurability();
+        
+        if (!check.needsRepair) {
+          clearTrackedInterval(checkInterval);
+          resolve();
+        }
+      }, 5000, 'Armor Repair Check');
+      
+      setTimeout(() => {
+        clearTrackedInterval(checkInterval);
+        resolve();
+      }, 300000);
+    });
+  }
+  
+  setXPFarmLocation(coords) {
+    this.xpFarmLocation = coords;
+    config.maintenance.autoRepair.xpFarmLocation = coords;
+    console.log(`[REPAIR] XP farm location set to ${coords.x}, ${coords.y}, ${coords.z}`);
+  }
+}
+
+// === ELYTRA MANAGER ===
+class ElytraManager {
+  constructor(bot) {
+    this.bot = bot;
+    this.durabilityThreshold = config.maintenance.elytraSwap.durabilityThreshold;
+    this.isSwapping = false;
+  }
+  
+  checkElytraDurability() {
+    const chestplate = this.bot.inventory.slots[6];
+    
+    if (!chestplate || chestplate.name !== 'elytra') {
+      return { needsSwap: false, hasElytra: false };
+    }
+    
+    if (!chestplate.maxDurability) {
+      return { needsSwap: false, hasElytra: true };
+    }
+    
+    const remainingDurability = chestplate.maxDurability - chestplate.durabilityUsed;
+    
+    if (remainingDurability < this.durabilityThreshold) {
+      console.log(`[ELYTRA] Durability low: ${remainingDurability}/${chestplate.maxDurability}`);
+      return { needsSwap: true, remainingDurability, hasElytra: true };
+    }
+    
+    return { needsSwap: false, hasElytra: true, remainingDurability };
+  }
+  
+  async findNearbyEnderChest() {
+    const enderChestId = this.bot.registry.blocksByName.ender_chest?.id;
+    if (!enderChestId) return null;
+    
+    const enderChest = this.bot.findBlock({
+      matching: enderChestId,
+      maxDistance: 32
+    });
+    
+    return enderChest;
+  }
+  
+  async goToEnderChest() {
+    if (config.homeBase.coords && config.homeBase.enderChestSetup) {
+      console.log('[ELYTRA] Going to home base ender chest...');
+      try {
+        const goal = new goals.GoalNear(
+          new Vec3(config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z),
+          10
+        );
+        await this.bot.ashfinder.goto(goal);
+        return true;
+      } catch (err) {
+        console.log(`[ELYTRA] Failed to reach home base: ${err.message}`);
+        return false;
+      }
+    }
+    
+    const enderChestItem = this.bot.inventory.items().find(item => item.name === 'ender_chest');
+    if (enderChestItem) {
+      console.log('[ELYTRA] Placing ender chest from inventory...');
+      await this.placeEnderChest();
+      return true;
+    }
+    
+    console.log('[ELYTRA] No ender chest available!');
+    return false;
+  }
+  
+  async placeEnderChest() {
+    const enderChestItem = this.bot.inventory.items().find(i => i.name === 'ender_chest');
+    if (!enderChestItem) return false;
+    
+    try {
+      const refBlock = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
+      if (!refBlock) return false;
+      
+      await this.bot.equip(enderChestItem, 'hand');
+      await this.bot.placeBlock(refBlock, new Vec3(1, 1, 0));
+      console.log('[ELYTRA] Placed ender chest');
+      return true;
+    } catch (err) {
+      console.log(`[ELYTRA] Failed to place ender chest: ${err.message}`);
+      return false;
+    }
+  }
+  
+  async swapElytraFromEnderChest() {
+    if (this.isSwapping) {
+      console.log('[ELYTRA] Already swapping, skipping...');
+      return false;
+    }
+    
+    this.isSwapping = true;
+    
+    try {
+      console.log('[ELYTRA] Starting elytra swap...');
+      
+      let enderChest = await this.findNearbyEnderChest();
+      
+      if (!enderChest) {
+        console.log('[ELYTRA] No ender chest nearby, finding one...');
+        const found = await this.goToEnderChest();
+        if (!found) {
+          this.isSwapping = false;
+          return false;
+        }
+        enderChest = await this.findNearbyEnderChest();
+      }
+      
+      if (!enderChest) {
+        console.log('[ELYTRA] Still no ender chest available!');
+        this.isSwapping = false;
+        return false;
+      }
+      
+      const container = await this.bot.openContainer(enderChest);
+      
+      const spareElytra = container.containerItems().find(item => {
+        if (item.name !== 'elytra') return false;
+        if (!item.maxDurability) return true;
+        const remaining = item.maxDurability - item.durabilityUsed;
+        return remaining > this.durabilityThreshold;
+      });
+      
+      if (!spareElytra) {
+        console.log('[ELYTRA] ⚠️ No spare elytra available in ender chest!');
+        container.close();
+        this.isSwapping = false;
+        return false;
+      }
+      
+      const damagedElytra = this.bot.inventory.slots[6];
+      if (damagedElytra && damagedElytra.name === 'elytra') {
+        await this.bot.unequip('torso');
+        await container.deposit(damagedElytra.type, null, 1);
+        console.log('[ELYTRA] Deposited damaged elytra');
+      }
+      
+      await container.withdraw(spareElytra.type, null, 1);
+      console.log('[ELYTRA] Withdrew fresh elytra');
+      
+      container.close();
+      
+      const freshElytra = this.bot.inventory.items().find(i => i.name === 'elytra');
+      if (freshElytra) {
+        await this.bot.equip(freshElytra, 'torso');
+        console.log('[ELYTRA] ✅ Elytra swapped successfully!');
+        config.maintenance.lastElytraSwap = Date.now();
+        this.isSwapping = false;
+        return true;
+      }
+      
+      this.isSwapping = false;
+      return false;
+    } catch (err) {
+      console.log(`[ELYTRA] Swap failed: ${err.message}`);
+      this.isSwapping = false;
+      return false;
+    }
+  }
+  
+  async autoManageElytra() {
+    const check = this.checkElytraDurability();
+    
+    if (check.needsSwap) {
+      return await this.swapElytraFromEnderChest();
+    }
+    
+    return false;
+  }
+}
+
+// === MAINTENANCE SCHEDULER ===
+class MaintenanceScheduler {
+  constructor(bot) {
+    this.bot = bot;
+    this.autoRepair = new AutoRepair(bot);
+    this.elytraManager = new ElytraManager(bot);
+    this.checkInterval = null;
+    this.elytraInterval = null;
+  }
+  
+  start() {
+    if (config.maintenance.schedulerActive) {
+      console.log('[MAINTENANCE] Scheduler already active');
+      return;
+    }
+    
+    console.log('[MAINTENANCE] Starting maintenance scheduler...');
+    
+    if (config.maintenance.autoRepair.enabled) {
+      this.checkInterval = safeSetInterval(async () => {
+        try {
+          if (this.bot.pathfinder && !this.bot.pathfinder.isMoving()) {
+            await this.autoRepair.repairRoutine();
+          }
+        } catch (err) {
+          console.log(`[MAINTENANCE] Repair check error: ${err.message}`);
+        }
+      }, 60000, 'Auto-Repair Check');
+      console.log('[MAINTENANCE] ✅ Auto-repair enabled (checks every 60s)');
+    }
+    
+    if (config.maintenance.elytraSwap.enabled) {
+      this.elytraInterval = safeSetInterval(async () => {
+        try {
+          await this.elytraManager.autoManageElytra();
+        } catch (err) {
+          console.log(`[MAINTENANCE] Elytra check error: ${err.message}`);
+        }
+      }, 10000, 'Elytra Durability Check');
+      console.log('[MAINTENANCE] ✅ Elytra swap enabled (checks every 10s)');
+    }
+    
+    config.maintenance.schedulerActive = true;
+    console.log('[MAINTENANCE] Scheduler started successfully');
+  }
+  
+  stop() {
+    if (!config.maintenance.schedulerActive) {
+      console.log('[MAINTENANCE] Scheduler not active');
+      return;
+    }
+    
+    console.log('[MAINTENANCE] Stopping maintenance scheduler...');
+    
+    if (this.checkInterval) {
+      clearTrackedInterval(this.checkInterval);
+      this.checkInterval = null;
+    }
+    
+    if (this.elytraInterval) {
+      clearTrackedInterval(this.elytraInterval);
+      this.elytraInterval = null;
+    }
+    
+    config.maintenance.schedulerActive = false;
+    console.log('[MAINTENANCE] Scheduler stopped');
+  }
+  
+  getStatus() {
+    const armorCheck = this.autoRepair.checkArmorDurability();
+    const elytraCheck = this.elytraManager.checkElytraDurability();
+    
+    return {
+      schedulerActive: config.maintenance.schedulerActive,
+      autoRepairEnabled: config.maintenance.autoRepair.enabled,
+      elytraSwapEnabled: config.maintenance.elytraSwap.enabled,
+      armorStatus: armorCheck.needsRepair ? 
+        `Needs repair (${(armorCheck.durabilityRatio * 100).toFixed(1)}% damaged)` : 
+        'Good condition',
+      elytraStatus: elytraCheck.hasElytra ? 
+        (elytraCheck.needsSwap ? 
+          `Needs swap (${elytraCheck.remainingDurability} durability)` : 
+          `Good condition (${elytraCheck.remainingDurability || 'N/A'} durability)`) :
+        'No elytra equipped',
+      lastRepair: config.maintenance.lastRepair ? 
+        new Date(config.maintenance.lastRepair).toLocaleString() : 
+        'Never',
+      lastElytraSwap: config.maintenance.lastElytraSwap ? 
+        new Date(config.maintenance.lastElytraSwap).toLocaleString() : 
+        'Never',
+      xpFarmSet: !!config.maintenance.autoRepair.xpFarmLocation
+    };
+  }
+}
+
 // === SCHEMATIC BUILDER ===
 class SchematicBuilder {
   constructor(swarmCoordinator) {
@@ -2674,6 +3903,305 @@ class BuilderWorker {
 }
 
 
+// === AUTO STASH BACKUP SYSTEM ===
+class BackupManager {
+  constructor() {
+    this.queue = [];
+    this.activeBackups = [];
+    this.completedBackups = [];
+  }
+  startBackup(stashLocation, itemsPlanned) {
+    const op = {
+      id: `backup_${Date.now()}`,
+      stashLocation,
+      itemsPlanned,
+      tripsPlanned: 0,
+      tripsCompleted: 0,
+      startedAt: Date.now(),
+      status: 'active'
+    };
+    this.activeBackups.push(op);
+    return op;
+  }
+  completeBackup(op) {
+    if (!op) return;
+    op.endedAt = Date.now();
+    op.status = 'complete';
+    this.activeBackups = this.activeBackups.filter(b => b.id !== op.id);
+    this.completedBackups.push(op);
+    return op;
+  }
+}
+
+class StashBackup {
+  constructor(bot) {
+    this.bot = bot;
+    this.backupPriority = (config.backup && Array.isArray(config.backup.backupPriority))
+      ? config.backup.backupPriority
+      : [
+        'diamond', 'netherite_ingot', 'netherite_scrap', 'ancient_debris',
+        'emerald', 'diamond_block', 'emerald_block',
+        'elytra', 'totem_of_undying', 'shulker_box',
+        'enchanted_book', 'nether_star', 'beacon',
+        'golden_apple', 'enchanted_golden_apple'
+      ];
+    this.leavePercentage = config.backup?.leavePercentage ?? 0.1;
+  }
+  async backupStash(stashLocation) {
+    try {
+      console.log(`[BACKUP] Starting backup of stash at ${stashLocation.x}, ${stashLocation.y}, ${stashLocation.z}`);
+      if (config.backup?.riskAssessment) {
+        const risk = await this.assessBackupRisk(stashLocation);
+        if (!risk.safe) {
+          console.log(`[BACKUP] Risk too high (${risk.reason}). Queuing backup.`);
+          if (globalBackupManager) {
+            globalBackupManager.queue.push({ stashLocation, reason: risk.reason, queuedAt: Date.now() });
+          }
+          return;
+        }
+      }
+      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+        stashLocation.x, stashLocation.y, stashLocation.z
+      ), 2)).catch(() => {});
+      const containers = await this.findNearbyContainers(32);
+      const valuableItems = await this.catalogStashContents(containers);
+      const trips = this.planBackupTrips(valuableItems);
+      console.log(`[BACKUP] Found ${valuableItems.length} valuable item entries, ${trips.length} trips required`);
+      let op = null;
+      if (globalBackupManager) {
+        op = globalBackupManager.startBackup(stashLocation, valuableItems.length);
+        op.tripsPlanned = trips.length;
+      }
+      if (config.backup?.multiBot) {
+        try {
+          await this.coordinatedBackup(stashLocation, config.backup.maxBotsPerBackup || 3);
+        } catch (e) {
+          console.log(`[BACKUP] Coordination error: ${e.message}`);
+        }
+      }
+      for (let i = 0; i < trips.length; i++) {
+        await this.executeBackupTrip(trips[i]);
+        if (op) op.tripsCompleted = i + 1;
+        console.log(`[BACKUP] Trip ${i + 1}/${trips.length} complete`);
+      }
+      console.log('[BACKUP] Stash backup complete!');
+      const totalValue = this.calculateValue(valuableItems);
+      config.analytics.backup.stashesBackedUp = (config.analytics.backup.stashesBackedUp || 0) + 1;
+      config.analytics.backup.totalValueBacked = (config.analytics.backup.totalValueBacked || 0) + totalValue;
+      if (op && globalBackupManager) {
+        globalBackupManager.completeBackup(op);
+      }
+    } catch (err) {
+      console.log(`[BACKUP] Error during backup: ${err.message}`);
+    }
+  }
+  async findNearbyContainers(range = 32) {
+    try {
+      const positions = this.bot.findBlocks({
+        matching: (blockId) => {
+          const name = this.bot.registry.blocks[blockId]?.name || '';
+          if (!name) return false;
+          if (name === 'ender_chest') return false; // exclude ender chest from stash containers
+          return name.includes('chest') || name.includes('barrel') || name.includes('shulker');
+        },
+        maxDistance: range,
+        count: 200
+      });
+      const blocks = positions.map(pos => this.bot.blockAt(pos)).filter(Boolean);
+      return blocks;
+    } catch (err) {
+      console.log(`[BACKUP] Failed to find containers: ${err.message}`);
+      return [];
+    }
+  }
+  async catalogStashContents(containers) {
+    const valuableItems = [];
+    for (const container of containers) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const items = chest.containerItems();
+        for (const item of items) {
+          if (this.isValuable(item)) {
+            const takeAmount = Math.max(0, Math.floor(item.count * (1 - this.leavePercentage)));
+            if (takeAmount > 0) {
+              valuableItems.push({
+                item: { ...item, count: takeAmount },
+                container,
+                priority: this.getPriority(item)
+              });
+            }
+          }
+        }
+        chest.close();
+        await sleep(200);
+      } catch (err) {
+        console.log(`[BACKUP] Failed to open catalog container: ${err.message}`);
+      }
+    }
+    valuableItems.sort((a, b) => b.priority - a.priority);
+    return valuableItems;
+  }
+  isValuable(item) {
+    if (!item) return false;
+    if (this.backupPriority.includes(item.name)) return true;
+    if (item.nbt?.value?.Enchantments) return true;
+    if (item.name?.includes('shulker_box')) return true;
+    const unitValue = this.getItemValue(item.name);
+    return unitValue * (item.count || 1) > 1000;
+  }
+  getPriority(item) {
+    const index = this.backupPriority.indexOf(item.name);
+    if (index !== -1) return 1000 - index;
+    if (item.nbt?.value?.Enchantments) return 500;
+    if (item.name?.includes('shulker_box')) return 800;
+    return this.getItemValue(item.name) * (item.count || 1);
+  }
+  planBackupTrips(valuableItems) {
+    const trips = [];
+    let currentTrip = [];
+    let currentSlots = 0;
+    for (const valuable of valuableItems) {
+      if (currentSlots + 1 <= 36) {
+        currentTrip.push(valuable);
+        currentSlots++;
+      } else {
+        trips.push(currentTrip);
+        currentTrip = [valuable];
+        currentSlots = 1;
+      }
+    }
+    if (currentTrip.length > 0) trips.push(currentTrip);
+    return trips;
+  }
+  async executeBackupTrip(tripItems) {
+    for (const { item, container } of tripItems) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const amount = Math.min(item.count, item.count);
+        await chest.withdraw(item.type, null, amount);
+        chest.close();
+        await sleep(150);
+      } catch (err) {
+        console.log(`[BACKUP] Withdraw failed: ${err.message}`);
+      }
+    }
+    console.log(`[BACKUP] Collected ${tripItems.length} items, traveling to home base...`);
+    await this.goToHomeBase();
+    const enderChest = await this.findOrPlaceEnderChest();
+    try {
+      const chest = await this.bot.openContainer(enderChest);
+      for (const { item } of tripItems) {
+        const invItem = this.bot.inventory.items().find(i => i.type === item.type);
+        if (invItem) {
+          try {
+            await chest.deposit(invItem.type, null, invItem.count);
+            console.log(`[BACKUP] Deposited ${invItem.count}x ${invItem.name}`);
+          } catch (err) {
+            console.log(`[BACKUP] Deposit failed: ${err.message}`);
+          }
+        }
+      }
+      chest.close();
+    } catch (err) {
+      console.log(`[BACKUP] Failed to open ender chest: ${err.message}`);
+    }
+    console.log('[BACKUP] Returning to stash...');
+    // Note: path back to stash can be handled by caller/scanner if needed
+  }
+  async goToHomeBase() {
+    if (!config.homeBase?.coords) {
+      console.log('[BACKUP] No home base set, using current location');
+      return;
+    }
+    const { x, y, z } = config.homeBase.coords;
+    try {
+      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2));
+    } catch (err) {
+      console.log(`[BACKUP] Path to home base failed: ${err.message}`);
+    }
+  }
+  async findOrPlaceEnderChest() {
+    let enderChest = this.bot.findBlock({
+      matching: this.bot.registry.blocksByName.ender_chest?.id,
+      maxDistance: 16
+    });
+    if (enderChest) return enderChest;
+    const enderChestItem = this.bot.inventory.items().find(item => item.name === 'ender_chest');
+    if (!enderChestItem) throw new Error('No ender chest available');
+    const placeBlock = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
+    try {
+      await this.bot.equip(enderChestItem, 'hand');
+      await this.bot.placeBlock(placeBlock, new Vec3(0, 1, 0));
+    } catch (err) {
+      console.log(`[BACKUP] Failed to place ender chest: ${err.message}`);
+    }
+    enderChest = this.bot.findBlock({
+      matching: this.bot.registry.blocksByName.ender_chest?.id,
+      maxDistance: 4
+    });
+    if (!enderChest) throw new Error('Ender chest placement failed');
+    return enderChest;
+  }
+  getItemValue(name) { return ITEM_VALUES[name] || 1; }
+  calculateValue(items) { return items.reduce((sum, v) => sum + this.getItemValue(v.item.name) * (v.item.count || 1), 0); }
+  async smartBackup(containers) {
+    const leavePercentage = this.leavePercentage;
+    for (const container of containers) {
+      try {
+        const chest = await this.bot.openContainer(container);
+        const items = chest.containerItems();
+        for (const item of items) {
+          const takeAmount = Math.floor(item.count * (1 - leavePercentage));
+          if (takeAmount > 0) {
+            try { await chest.withdraw(item.type, null, takeAmount); } catch (err) {}
+          }
+        }
+        chest.close();
+      } catch (err) {}
+    }
+  }
+  async coordinatedBackup(stashLocation, botCount) {
+    try {
+      if (!globalSwarmCoordinator) return;
+      const bots = globalSwarmCoordinator.getBotsNear(stashLocation, 256) || [];
+      const selected = bots.slice(0, Math.min(botCount || 1, bots.length));
+      const containers = await this.findNearbyContainers(32);
+      const containersPerBot = Math.ceil(containers.length / Math.max(1, selected.length));
+      for (let i = 0; i < selected.length; i++) {
+        const bot = selected[i];
+        const botContainers = containers.slice(i * containersPerBot, (i + 1) * containersPerBot);
+        globalSwarmCoordinator.sendToBot(bot.id, {
+          type: 'TASK_ASSIGNMENT',
+          task: 'LOOT_STASH',
+          target: stashLocation,
+          containers: botContainers.map(b => b.position)
+        });
+      }
+    } catch (err) {
+      console.log(`[BACKUP] Coordination error: ${err.message}`);
+    }
+  }
+  async assessBackupRisk(stashLocation) {
+    try {
+      // Check nearby players
+      const nearbyPlayers = Object.values(this.bot.players || {}).filter(p => {
+        const pos = p.entity?.position;
+        if (!pos) return false;
+        const dist = this.bot.entity.position.distanceTo(pos);
+        return p.username !== this.bot.username && dist < 128;
+      });
+      if (nearbyPlayers.length > 0) {
+        console.log('[BACKUP] Players nearby, aborting');
+        return { safe: false, reason: 'players_nearby' };
+      }
+      // TODO: Owner detection/recent activity could be implemented with server logs/heuristics
+      return { safe: true };
+    } catch (err) {
+      return { safe: true };
+    }
+  }
+}
+
 // === ADVANCED STASH SCANNER ===
 class StashScanner {
   constructor(bot, swarmCoordinator = null) {
@@ -2801,8 +4329,10 @@ class StashScanner {
           items: items.map(i => ({ name: i.name, count: i.count, value: ITEM_VALUES[i.name] || 1 }))
         });
         
-        // Loot valuable items
-        await this.lootContainer(container, items);
+        // Loot valuable items (disabled if auto-backup enabled)
+        if (!(config.backup?.enabled && config.backup?.autoBackup)) {
+          await this.lootContainer(container, items);
+        }
         
         container.close();
         await sleep(200);
@@ -2835,22 +4365,36 @@ class StashScanner {
       console.log('[STASH] 📡 Broadcast stash discovery to swarm');
     }
     
-    // Auto-navigate home if carrying valuables
-    const enderManager = new EnderChestManager(this.bot);
-    if (enderManager.shouldDepositInventory()) {
-      console.log('[STASH] 💎 Carrying valuables, depositing in ender chest');
-      await enderManager.depositValuables();
-      
-      if (config.homeBase.coords) {
-        console.log('[STASH] 🏠 Heading home with loot');
-        this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
-          config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 10
-        )).catch(() => {});
+    // Auto-navigate home if carrying valuables (disabled if auto-backup enabled)
+    if (!(config.backup?.enabled && config.backup?.autoBackup)) {
+      const enderManager = new EnderChestManager(this.bot);
+      if (enderManager.shouldDepositInventory()) {
+        console.log('[STASH] 💎 Carrying valuables, depositing in ender chest');
+        await enderManager.depositValuables();
+        
+        if (config.homeBase.coords) {
+          console.log('[STASH] 🏠 Heading home with loot');
+          this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+            config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 10
+          )).catch(() => {});
+        }
       }
     }
     
     // Save stash report
     this.saveStashReport(stash);
+
+    // Trigger auto-backup when configured
+    if (config.backup?.enabled && config.backup?.autoBackup) {
+      try {
+        console.log(`[SCANNER] Found stash! Starting auto-backup...`);
+        const backup = new StashBackup(this.bot);
+        await backup.backupStash({ x: center.x, y: center.y, z: center.z });
+        console.log(`[SCANNER] Backup complete, resuming scan...`);
+      } catch (err) {
+        console.log(`[SCANNER] Auto-backup failed: ${err.message}`);
+      }
+    }
     
     console.log(`[STASH] 💎 Documented stash: ${chests.length} chests, Value: ${stash.totalValue}`);
   }
@@ -6350,6 +7894,10 @@ const ITEM_KNOWLEDGE = {
     optimal_strategy: "Find shipwreck/underwater ruins, get map, follow to buried treasure"
   },
   
+  isCommand(message) {
+    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'maintenance', 'repair', 'fix armor', 'swap elytra', 'check elytra', 'set xp farm'];
+    return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
+  }
   "nautilus_shell": {
     sources: [
       { type: "mob_drop", mob: "drowned", drop_rate: 0.03, looting_bonus: 0.01 },
@@ -9424,6 +10972,105 @@ class ConversationAI {
       return;
     }
     
+    // Maintenance commands
+    if (lower.includes('maintenance status') || lower.includes('repair status')) {
+      if (this.bot.maintenanceScheduler) {
+        const status = this.bot.maintenanceScheduler.getStatus();
+        this.bot.chat(`🔧 Maintenance Status:`);
+        this.bot.chat(`Scheduler: ${status.schedulerActive ? '✅ Active' : '❌ Inactive'}`);
+        this.bot.chat(`Auto-repair: ${status.autoRepairEnabled ? '✅' : '❌'} - ${status.armorStatus}`);
+        this.bot.chat(`Elytra swap: ${status.elytraSwapEnabled ? '✅' : '❌'} - ${status.elytraStatus}`);
+        this.bot.chat(`XP Farm: ${status.xpFarmSet ? '✅ Set' : '❌ Not set'}`);
+        this.bot.chat(`Last repair: ${status.lastRepair}`);
+        this.bot.chat(`Last elytra swap: ${status.lastElytraSwap}`);
+      } else {
+        this.bot.chat("Maintenance system not initialized.");
+      }
+      return;
+    }
+    
+    if (lower.includes('start maintenance')) {
+      if (!this.bot.maintenanceScheduler) {
+        this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+      }
+      this.bot.maintenanceScheduler.start();
+      this.bot.chat("🔧 Maintenance scheduler started!");
+      return;
+    }
+    
+    if (lower.includes('stop maintenance')) {
+      if (this.bot.maintenanceScheduler) {
+        this.bot.maintenanceScheduler.stop();
+        this.bot.chat("🔧 Maintenance scheduler stopped.");
+      }
+      return;
+    }
+    
+    if (lower.includes('repair armor') || lower.includes('fix armor')) {
+      if (!this.bot.maintenanceScheduler) {
+        this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+      }
+      this.bot.chat("🔧 Starting armor repair...");
+      const success = await this.bot.maintenanceScheduler.autoRepair.repairRoutine();
+      if (success) {
+        this.bot.chat("✅ Armor repaired successfully!");
+      } else {
+        this.bot.chat("❌ Armor repair failed or not needed.");
+      }
+      return;
+    }
+    
+    if (lower.includes('swap elytra') || lower.includes('fix elytra')) {
+      if (!this.bot.maintenanceScheduler) {
+        this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+      }
+      this.bot.chat("🪽 Swapping elytra...");
+      const success = await this.bot.maintenanceScheduler.elytraManager.swapElytraFromEnderChest();
+      if (success) {
+        this.bot.chat("✅ Elytra swapped successfully!");
+      } else {
+        this.bot.chat("❌ Elytra swap failed or not needed.");
+      }
+      return;
+    }
+    
+    if (lower.includes('check elytra')) {
+      if (!this.bot.maintenanceScheduler) {
+        this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+      }
+      const check = this.bot.maintenanceScheduler.elytraManager.checkElytraDurability();
+      if (check.hasElytra) {
+        this.bot.chat(`🪽 Elytra: ${check.remainingDurability || 'N/A'} durability remaining`);
+        if (check.needsSwap) {
+          this.bot.chat("⚠️ Needs replacement!");
+        }
+      } else {
+        this.bot.chat("No elytra equipped.");
+      }
+      return;
+    }
+    
+    if (lower.includes('set xp farm')) {
+      if (lower.includes('here')) {
+        if (!this.bot.maintenanceScheduler) {
+          this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+        }
+        const pos = this.bot.entity.position;
+        const coords = new Vec3(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
+        this.bot.maintenanceScheduler.autoRepair.setXPFarmLocation(coords);
+        this.bot.chat(`⚡ XP farm location set at ${coords.x}, ${coords.y}, ${coords.z}`);
+      } else {
+        const coords = this.extractCoords(message);
+        if (coords) {
+          if (!this.bot.maintenanceScheduler) {
+            this.bot.maintenanceScheduler = new MaintenanceScheduler(this.bot);
+          }
+          this.bot.maintenanceScheduler.autoRepair.setXPFarmLocation(coords);
+          this.bot.chat(`⚡ XP farm location set at ${coords.x}, ${coords.y}, ${coords.z}`);
+        } else {
+          this.bot.chat("Usage: 'set xp farm here' or 'set xp farm x,y,z'");
+        }
+      }
     // Item Finder commands
     if (lower.includes('find') || lower.includes('hunt') || lower.includes('collect') || lower.includes('get me') || lower.includes('fish for') || lower.includes('farm')) {
       await this.handleItemFinderCommand(username, message);
@@ -15577,6 +17224,12 @@ let globalBaseMonitor = null;
 let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
 let globalSchematicLoader = new SchematicLoader();
+let globalBackupManager = new BackupManager();
+
+// Anti-cheat bypass system global instances
+let serverProfileManager = null;
+let globalAntiCheatBypass = null;
+let globalAntiCheatDetector = null;
 
 http.createServer((req, res) => {
   // === RATE LIMITING (Issue #14) ===
@@ -15765,7 +17418,25 @@ http.createServer((req, res) => {
       schematics: {
         total: globalSchematicLoader.listSchematics().length,
         loaded: globalSchematicLoader.listSchematics()
+      },
+      maintenance: globalBot?.maintenanceScheduler ? globalBot.maintenanceScheduler.getStatus() : {
+        schedulerActive: config.maintenance.schedulerActive,
+        autoRepairEnabled: config.maintenance.autoRepair.enabled,
+        elytraSwapEnabled: config.maintenance.elytraSwap.enabled,
+        armorStatus: 'N/A',
+        elytraStatus: 'N/A',
+        lastRepair: config.maintenance.lastRepair ? new Date(config.maintenance.lastRepair).toLocaleString() : 'Never',
+        lastElytraSwap: config.maintenance.lastElytraSwap ? new Date(config.maintenance.lastElytraSwap).toLocaleString() : 'Never',
+        xpFarmSet: !!config.maintenance.autoRepair.xpFarmLocation
       }
+    }));
+  } else if (req.url === '/api/backup-status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      activeBackups: globalBackupManager?.activeBackups || [],
+      completedBackups: globalBackupManager?.completedBackups || [],
+      totalValueBacked: (config.analytics.backup?.totalValueBacked) || 0,
+      backupQueue: globalBackupManager?.queue || []
     }));
   } else if (req.url === '/swarm') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -15773,6 +17444,30 @@ http.createServer((req, res) => {
       res.end(JSON.stringify(globalSwarmCoordinator.getSwarmStatus()));
     } else {
       res.end(JSON.stringify({ error: 'Swarm coordinator not initialized' }));
+    }
+  } else if (req.url === '/api/anticheat-status' || req.url === '/anticheat') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    
+    if (globalAntiCheatBypass && globalAntiCheatDetector) {
+      const status = globalAntiCheatBypass.getStatus();
+      res.end(JSON.stringify({
+        ...status,
+        kickHistory: globalAntiCheatDetector.kickHistory,
+        serverProfile: serverProfileManager ? 
+          serverProfileManager.getServerProfile(config.server) : 
+          { anticheat: 'unknown' },
+        config: {
+          reactiveMode: config.anticheat.reactiveMode,
+          autoDeescalate: config.anticheat.autoDeescalate,
+          enabled: config.anticheat.enabled
+        }
+      }));
+    } else {
+      res.end(JSON.stringify({ 
+        error: 'Anti-cheat bypass system not initialized',
+        currentTier: 0,
+        mode: 'OVERPOWERED' 
+      }));
     }
   } else if (req.url === '/stats.travel') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -16523,6 +18218,17 @@ async function launchBot(username, role = 'fighter') {
   bot.schematicLoader = new SchematicLoader();
   console.log('[BUILD] Schematic builder initialized');
   
+  if (!serverProfileManager) {
+    serverProfileManager = new ServerProfileManager();
+    console.log('[ANTICHEAT] Server profile manager ready');
+  }
+  
+  const antiCheatController = new AntiCheatBypassController(bot, serverProfileManager);
+  bot.antiCheatController = antiCheatController;
+  globalAntiCheatBypass = antiCheatController;
+  globalAntiCheatDetector = antiCheatController.detector;
+  antiCheatController.initialize();
+  
   bot.once('spawn', async () => {
     console.log(`[SPAWN] ${username} joined ${config.server}`);
     
@@ -16536,6 +18242,15 @@ async function launchBot(username, role = 'fighter') {
     
     // Initialize ender chest manager
     enderManager = new EnderChestManager(bot);
+    
+    // Initialize maintenance scheduler
+    bot.maintenanceScheduler = new MaintenanceScheduler(bot);
+    if (config.maintenance.autoRepair.enabled || config.maintenance.elytraSwap.enabled) {
+      bot.maintenanceScheduler.start();
+      console.log('[MAINTENANCE] Scheduler initialized and started');
+    } else {
+      console.log('[MAINTENANCE] Scheduler initialized (disabled)');
+    }
     
     // Initialize movement manager
     bot.movementManager = new MovementModeManager(bot);
@@ -16586,6 +18301,7 @@ async function launchBot(username, role = 'fighter') {
       }
       globalDupeResearchLab.startScheduledCycles();
     }
+    
     // Start periodic memory cleanup
     setInterval(cleanupOldData, 300000); // Every 5 minutes
     
