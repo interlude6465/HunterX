@@ -12214,6 +12214,7 @@ class ConversationAI {
     // Default fallback for unrecognized commands
     this.bot.chat("I didn't understand that command. Try 'help' for options!");
   }
+  }
   
   async handleItemFinderCommand(username, message) {
     console.log(`[HUNTER] 🎯 Item request from ${username}: ${message}`);
@@ -13260,19 +13261,6 @@ class IntelligenceDatabase {
   }
 }
 
-// === PLUGIN ANALYZER ===
-class PluginAnalyzer {
-  constructor() {
-    this.vulnerabilities = [];
-    this.analysisResults = [];
-    this.scanQueue = [];
-    this.continuousScanning = false;
-    this.scanInterval = null;
-    this.scanIntervalMs = 300000; // 5 minutes default
-    this.historicalScans = [];
-    this.pluginRegistry = new Map(); // Track uploaded plugins
-    this.loadContinuousScanData();
-  }
 // === COORDINATE CONVERSION HELPERS ===
 const CoordinateConverter = {
   overworldToNether: (x, y, z) => {
@@ -17870,7 +17858,7 @@ http.createServer((req, res) => {
             position: config.combat.emergency.pendingLog.position,
             escapeGoal: config.combat.emergency.pendingLog.escapeGoal
           } : null
-        }
+        },
         projectile: projectileMetrics ? {
           overall: projectileMetrics.overall,
           bow: projectileMetrics.bow,
@@ -18071,7 +18059,7 @@ http.createServer((req, res) => {
         travelRoutes: config.intelligence.travelRoutes.slice(-10),
         associations: Object.values(config.intelligence.playerAssociations || {}),
         logoutLocations: (config.intelligence.logoutLocations || []).slice(-10)
-      } : null
+      } : null,
       schematics: {
         total: globalSchematicLoader.listSchematics().length,
         loaded: globalSchematicLoader.listSchematics()
@@ -18492,13 +18480,11 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(dashboardHTML);
   }
+  }
 }).listen(8080);
 
 console.log('[DASHBOARD] http://localhost:8080');
 
-// === SCHEMATIC BUILDER ===
-class SchematicBuilder {
-  constructor(bot, schematicLoader = null) {
 // === SCHEMATIC BUILDER SYSTEM ===
 
 // Block physics and dependency data
