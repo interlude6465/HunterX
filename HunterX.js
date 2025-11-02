@@ -558,6 +558,8 @@ const config = {
       coordinateClusterRadius: 500, // blocks
       minimumClusterSize: 3
     }
+  },
+  
   // Proxy and queue management
   network: {
     proxyEnabled: false,
@@ -627,6 +629,8 @@ const config = {
     maxCPS: 20, // No limit in tier 0
     maxReach: 6.0, // No limit in tier 0
     movementSpeed: 1.0
+  },
+  
   // Maintenance system
   maintenance: {
     autoRepair: {
@@ -1228,88 +1232,6 @@ class AntiCheatDetector {
     this.serverProfile = this.profileManager?.getServerProfile(config.server);
     globalAntiCheatDetector = this;
     
-    switch (message.type) {
-      case 'HEARTBEAT':
-        bot.lastHeartbeat = Date.now();
-        bot.position = message.position;
-        bot.health = message.health;
-        bot.task = message.task;
-        bot.status = message.status;
-        this.sendAck(botId, message.id);
-        break;
-        
-      case 'STASH_ALERT':
-        console.log(`[SWARM] 🎯 ${botId} found stash at ${message.coords}!`);
-        this.broadcast({
-          type: 'STASH_DISCOVERED',
-          coords: message.coords,
-          value: message.value,
-          chestCount: message.chestCount,
-          foundBy: botId,
-          timestamp: Date.now()
-        }, botId);
-        
-        this.coordinateLootOperation(message);
-        break;
-        
-      case 'ATTACK_ALERT':
-        console.log(`[SWARM] ⚔️ ${botId} under attack by ${message.attacker}!`);
-        this.broadcast({
-          type: 'BACKUP_NEEDED',
-          botId,
-          position: message.position,
-          attacker: message.attacker,
-          timestamp: Date.now()
-        }, botId);
-        break;
-        
-      case 'DISTRESS_SIGNAL':
-        console.log(`[SWARM] 🚨 Distress signal from ${botId} (level: ${message.threatLevel || 'unknown'})`);
-        config.swarm.threats.push({
-          type: 'distress',
-          botId,
-          attackers: message.attackers || [],
-          threatLevel: message.threatLevel || 'unknown',
-          position: message.position || null,
-          triggers: message.triggers || [],
-          riskScore: message.riskScore || null,
-          timestamp: message.timestamp || Date.now()
-        });
-        if (config.swarm.threats.length > 100) {
-          config.swarm.threats = config.swarm.threats.slice(-100);
-        }
-        this.broadcast({
-          type: 'DISTRESS_CALL',
-          botId,
-          position: message.position,
-          threatLevel: message.threatLevel,
-          attackers: message.attackers,
-          triggers: message.triggers,
-          timestamp: message.timestamp || Date.now(),
-          riskScore: message.riskScore || null
-        }, botId);
-        break;
-        
-      case 'RALLY':
-        console.log(`[SWARM] 📣 ${botId} calling for rally at ${message.coords}`);
-        this.broadcast({
-          type: 'RALLY_POINT',
-          coords: message.coords,
-          reason: message.reason,
-          caller: botId,
-          timestamp: Date.now()
-        }, botId);
-        break;
-        
-      case 'TASK_COMPLETE':
-        console.log(`[SWARM] ✅ ${botId} completed task: ${message.task}`);
-        bot.task = null;
-        bot.status = 'idle';
-        break;
-        
-      case 'INVENTORY_UPDATE':
-        this.updateSharedInventory(botId, message.inventory);
-        break;
     if (this.serverProfile && this.serverProfile.recommendedTier > 0 && config.anticheat.reactiveMode) {
       console.log(`[ANTICHEAT] Server has known anti-cheat: ${this.serverProfile.anticheat}`);
       console.log(`[ANTICHEAT] Recommended tier: ${this.serverProfile.recommendedTier}`);
@@ -1858,87 +1780,6 @@ class AntiCheatBypassController {
     this.currentTier = 0;
   }
   
-  async scanIntelligenceTargets() {
-    if (!this.bot.intelligenceDB) {
-      console.log('[STASH] Intelligence DB not available, falling back to standard scan');
-      return;
-    }
-    
-    const targets = this.bot.intelligenceDB.getPrioritizedTargets();
-    
-    if (targets.length === 0) {
-      console.log('[STASH] No intelligence targets available yet');
-      return;
-    }
-    
-    console.log(`[STASH] 🎯 Starting intelligence-guided scan - ${targets.length} targets prioritized`);
-    
-    for (const target of targets.slice(0, 20)) { // Top 20 targets
-      console.log(`[STASH] Checking target at (${target.x}, ${target.y}, ${target.z}) - Priority: ${target.priority.toFixed(0)} | Source: ${target.source}`);
-      
-      // Check for nearby players
-      if (config.stashHunt.avoidPlayers && this.detectNearbyPlayers()) {
-        console.log('[STASH] Player detected! Pausing intelligence scan...');
-        await this.evadePlayer();
-        await sleep(5000);
-        continue;
-      }
-      
-      // Navigate to target
-      try {
-        await this.navigateToStash(new Vec3(target.x, target.y, target.z));
-        
-        // Scan area around target
-        const scanRadius = 3; // 3 chunks around target
-        const centerChunkX = Math.floor(target.x / 16);
-        const centerChunkZ = Math.floor(target.z / 16);
-        
-        for (let dx = -scanRadius; dx <= scanRadius; dx++) {
-          for (let dz = -scanRadius; dz <= scanRadius; dz++) {
-            await this.scanChunk(centerChunkX + dx, centerChunkZ + dz);
-          }
-        }
-        
-        console.log(`[STASH] ✅ Target scanned: (${target.x}, ${target.y}, ${target.z})`);
-        await sleep(2000);
-      } catch (err) {
-        console.log(`[STASH] Error scanning target: ${err.message}`);
-      }
-    }
-    
-    console.log(`[STASH] Intelligence-guided scan complete. Found ${this.foundStashes.length} stashes`);
-  }
-  
-  async scanArea(centerCoords, radius) {
-    console.log(`[STASH] Starting scan at ${centerCoords.toString()}, radius ${radius}`);
-    
-    // If intelligence system is available, use it first
-    if (this.bot.intelligenceDB && config.intelligence.enabled) {
-      console.log('[STASH] 🧠 Intelligence system active - prioritizing intel targets');
-      await this.scanIntelligenceTargets();
-    }
-    
-    const chunkRadius = Math.ceil(radius / 16);
-    const centerChunkX = Math.floor(centerCoords.x / 16);
-    const centerChunkZ = Math.floor(centerCoords.z / 16);
-    
-    console.log('[STASH] Starting standard area scan...');
-    for (let dx = -chunkRadius; dx <= chunkRadius; dx++) {
-      for (let dz = -chunkRadius; dz <= chunkRadius; dz++) {
-        const chunkX = centerChunkX + dx;
-        const chunkZ = centerChunkZ + dz;
-        
-        // Check for nearby players
-        if (config.stashHunt.avoidPlayers && this.detectNearbyPlayers()) {
-          console.log('[STASH] Player detected! Retreating...');
-          await this.evadePlayer();
-          continue;
-        }
-        
-        await this.scanChunk(chunkX, chunkZ);
-        await sleep(100);
-      }
-    }
   initialize() {
     console.log('[ANTICHEAT] 🚀 Starting in FULL OVERPOWERED MODE');
     
@@ -4547,9 +4388,63 @@ class StashScanner {
     this.swarm = swarmCoordinator;
   }
   
+  async scanIntelligenceTargets() {
+    if (!this.bot.intelligenceDB) {
+      console.log('[STASH] Intelligence DB not available, falling back to standard scan');
+      return;
+    }
+    
+    const targets = this.bot.intelligenceDB.getPrioritizedTargets();
+    
+    if (targets.length === 0) {
+      console.log('[STASH] No intelligence targets available yet');
+      return;
+    }
+    
+    console.log(`[STASH] 🎯 Starting intelligence-guided scan - ${targets.length} targets prioritized`);
+    
+    for (const target of targets.slice(0, 20)) {
+      console.log(`[STASH] Checking target at (${target.x}, ${target.y}, ${target.z}) - Priority: ${target.priority.toFixed(0)} | Source: ${target.source}`);
+      
+      if (config.stashHunt.avoidPlayers && this.detectNearbyPlayers()) {
+        console.log('[STASH] Player detected! Pausing intelligence scan...');
+        await this.evadePlayer();
+        await sleep(5000);
+        continue;
+      }
+      
+      try {
+        await this.navigateToStash(new Vec3(target.x, target.y, target.z));
+        
+        const scanRadius = 3;
+        const centerChunkX = Math.floor(target.x / 16);
+        const centerChunkZ = Math.floor(target.z / 16);
+        
+        for (let dx = -scanRadius; dx <= scanRadius; dx++) {
+          for (let dz = -scanRadius; dz <= scanRadius; dz++) {
+            await this.scanChunk(centerChunkX + dx, centerChunkZ + dz);
+          }
+        }
+        
+        console.log(`[STASH] ✅ Target scanned: (${target.x}, ${target.y}, ${target.z})`);
+        await sleep(2000);
+      } catch (err) {
+        console.log(`[STASH] Error scanning target: ${err.message}`);
+      }
+    }
+    
+    console.log(`[STASH] Intelligence-guided scan complete. Found ${this.foundStashes.length} stashes`);
+  }
+  
   async scanArea(centerCoords, radius) {
     console.log(`[STASH] Starting scan at ${centerCoords.toString()}, radius ${radius}`);
     
+    if (this.bot.intelligenceDB && config.intelligence.enabled) {
+      console.log('[STASH] 🧠 Intelligence system active - prioritizing intel targets');
+      await this.scanIntelligenceTargets();
+    }
+    
+    console.log('[STASH] Starting standard area scan...');
     const chunkRadius = Math.ceil(radius / 16);
     const centerChunkX = Math.floor(centerCoords.x / 16);
     const centerChunkZ = Math.floor(centerCoords.z / 16);
@@ -4559,7 +4454,6 @@ class StashScanner {
         const chunkX = centerChunkX + dx;
         const chunkZ = centerChunkZ + dz;
         
-        // Check for nearby players
         if (config.stashHunt.avoidPlayers && this.detectNearbyPlayers()) {
           console.log('[STASH] Player detected! Retreating...');
           await this.evadePlayer();
@@ -8231,10 +8125,6 @@ const ITEM_KNOWLEDGE = {
     optimal_strategy: "Find shipwreck/underwater ruins, get map, follow to buried treasure"
   },
   
-  isCommand(message) {
-    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'maintenance', 'repair', 'fix armor', 'swap elytra', 'check elytra', 'set xp farm'];
-    return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
-  }
   "nautilus_shell": {
     sources: [
       { type: "mob_drop", mob: "drowned", drop_rate: 0.03, looting_bonus: 0.01 },
@@ -10026,6 +9916,8 @@ class MobHunter {
             await this.bot.activateItem();
           }
         }
+      }
+    }, 500);
   }
   
   async huntMob(mobType, targetItem, quantity, source = {}) {
@@ -10102,8 +9994,6 @@ class MobHunter {
     this.currentTarget = null;
   }
   
-  async collectNearbyLoot() {
-    console.log('[LOOT] Collecting dropped items...');
   async locateMobSpawn(mobType, source) {
     console.log(`[HUNTER] 🗺️ Locating ${mobType} spawn area...`);
     
@@ -10113,15 +10003,6 @@ class MobHunter {
       if (structureLocation) return structureLocation;
     }
     
-    for (const item of items) {
-      try {
-        this.bot.pathfinder.setGoal(new goals.GoalNear(item.position.x, item.position.y, item.position.z, 1));
-        await sleep(1000);
-        
-        if (config.combat.smartEquip) {
-          await this.evaluateAndEquipLoot();
-        }
-      } catch (err) {}
     // Check if specific biome is required
     if (source.biome) {
       const biomeLocation = await this.findBiome(source.biome);
@@ -10132,18 +10013,6 @@ class MobHunter {
     return this.bot.entity.position;
   }
   
-  async evaluateAndEquipLoot() {
-    const weapons = this.bot.inventory.items().filter(i => i.name.includes('sword') || i.name.includes('axe'));
-    weapons.sort((a, b) => (ITEM_VALUES[b.name] || 0) - (ITEM_VALUES[a.name] || 0));
-    if (weapons[0]) {
-      await this.bot.equip(weapons[0], 'hand');
-    }
-    
-    for (const slot of ['head', 'torso', 'legs', 'feet']) {
-      const armors = this.bot.inventory.items().filter(i => i.name.includes(this.getArmorType(slot)));
-      armors.sort((a, b) => (ITEM_VALUES[b.name] || 0) - (ITEM_VALUES[a.name] || 0));
-      if (armors[0]) {
-        await this.bot.equip(armors[0], slot);
   async findStructure(structureType) {
     console.log(`[HUNTER] 🏛️ Searching for ${structureType}...`);
     
@@ -10199,6 +10068,10 @@ class MobHunter {
   getCrystalPvP() {
     if (!this.crystalPvP) {
       this.crystalPvP = new CrystalPvP(this.bot, this);
+    }
+    return this.crystalPvP;
+  }
+  
   async verifyStructure(position, patterns) {
     // Basic structure verification - check for multiple matching blocks nearby
     let matchCount = 0;
@@ -10629,171 +10502,6 @@ class CombatLogger {
     }
     config.tasks.pausedForSafety = false;
     console.log('[COMBAT LOGGER] Resuming tasks after safe reconnect.');
-  }
-}
-
-// === GOD-TIER CRYSTAL PVP SYSTEM ===
-class CrystalPvP {
-  constructor(bot, combatAI) {
-    this.bot = bot;
-    this.combatAI = combatAI;
-  async findBiome(targetBiomes) {
-    console.log(`[HUNTER] 🌍 Searching for biome: ${targetBiomes}`);
-    
-    const biomeArray = Array.isArray(targetBiomes) ? targetBiomes : [targetBiomes];
-    
-    for (let i = 0; i < 20; i++) {
-      const currentBiome = this.bot.blockAt(this.bot.entity.position)?.biome?.name;
-      if (biomeArray.includes(currentBiome)) {
-        console.log(`[HUNTER] ✅ Found ${currentBiome} biome`);
-        return this.bot.entity.position;
-      }
-      
-      // Move in expanding spiral pattern
-      const angle = (i * 0.5) * Math.PI;
-      const distance = i * 50;
-      const targetX = this.bot.entity.position.x + Math.cos(angle) * distance;
-      const targetZ = this.bot.entity.position.z + Math.sin(angle) * distance;
-      
-      await this.bot.pathfinder.goto(new goals.GoalNear(targetX, 64, targetZ, 5));
-      await this.sleep(2000);
-    }
-    
-    console.log(`[HUNTER] ❌ Could not find target biome`);
-    return null;
-  }
-  
-  async findNearbyMob(mobType, condition) {
-    const mobs = Object.values(this.bot.entities).filter(entity => 
-      entity.name === mobType && 
-      entity.position.distanceTo(this.bot.entity.position) < 64
-    );
-    
-    if (mobs.length === 0) return null;
-    
-    // Find mob matching condition if specified
-    if (condition) {
-      const matchingMob = mobs.find(mob => this.hasSpecialCondition(mob, condition));
-      if (matchingMob) return matchingMob;
-    }
-    
-    // Return closest mob
-    return mobs.sort((a, b) => 
-      a.position.distanceTo(this.bot.entity.position) - b.position.distanceTo(this.bot.entity.position)
-    )[0];
-  }
-  
-  hasSpecialCondition(mob, condition) {
-    // E.g., "drowned holding trident"
-    if (condition === 'holding_trident') {
-      return mob.heldItem?.name === 'trident';
-    }
-    return true;
-  }
-  
-  async killMob(mob) {
-    console.log(`[HUNTER] ⚔️ Killing ${mob.name}...`);
-    
-    try {
-      // Equip best weapon
-      await this.equipBestWeapon();
-      
-      // Move to mob
-      await this.bot.pathfinder.goto(new goals.GoalNear(mob.position.x, mob.position.y, mob.position.z, 2));
-      
-      // Attack mob
-      if (this.bot.pvp) {
-        this.bot.pvp.attack(mob);
-      } else {
-        this.bot.attack(mob);
-      }
-      
-      // Wait for mob to die
-      await this.sleep(2000);
-      
-    } catch (err) {
-      console.log(`[HUNTER] ❌ Error killing mob: ${err.message}`);
-    }
-  }
-  
-  async equipBestWeapon() {
-    const weapons = this.bot.inventory.items().filter(item => 
-      item.name.includes('sword') || item.name.includes('axe')
-    );
-    
-    if (weapons.length > 0) {
-      const bestWeapon = weapons.sort((a, b) => (b.metadata || 0) - (a.metadata || 0))[0];
-      await this.bot.equip(bestWeapon, 'hand');
-    }
-  }
-  
-  async checkForDrop(targetItem, source) {
-    // Check for nearby dropped items
-    const items = Object.values(this.bot.entities).filter(entity => 
-      entity.name === 'item' && 
-      entity.position.distanceTo(this.bot.entity.position) < 8
-    );
-    
-    let collected = 0;
-    for (const item of items) {
-      if (item.metadata?.itemId === targetItem || item.name === targetItem) {
-        await this.bot.pathfinder.goto(new goals.GoalNear(item.position.x, item.position.y, item.position.z, 1));
-        collected += item.metadata?.count || 1;
-        console.log(`[HUNTER] 📦 Collected ${targetItem}`);
-      }
-    }
-    
-    return collected;
-  }
-  
-  async waitForSpawn() {
-    console.log(`[HUNTER] ⏳ Waiting for mob spawn...`);
-    await this.sleep(5000);
-  }
-  
-  async heal() {
-    console.log(`[HUNTER] 💊 Healing...`);
-    
-    // Try to eat food
-    const food = this.bot.inventory.items().find(item => 
-      item.name.includes('bread') || 
-      item.name.includes('cooked') || 
-      item.name.includes('steak') ||
-      item.name.includes('porkchop')
-    );
-    
-    if (food) {
-      await this.bot.equip(food, 'hand');
-      await this.bot.consume();
-      console.log(`[HUNTER] ✅ Ate ${food.name}`);
-    } else {
-      console.log(`[HUNTER] ❌ No food available`);
-    }
-  }
-  
-  needsArena(mobType) {
-    // Return true if we should build a kill arena for this mob type
-    return ['blaze', 'ghast'].includes(mobType);
-  }
-  
-  async buildKillArena(location) {
-    console.log(`[HUNTER] 🏗️ Building kill arena...`);
-    // TODO: Implement arena building logic
-    console.log(`[HUNTER] ⚠️ Arena building not implemented yet`);
-  }
-  
-  async travelTo(position) {
-    try {
-      await safeGoTo(this.bot, position, 120000);
-      return true;
-    } catch (err) {
-      console.log(`[HUNTER] ❌ Failed to travel: ${err.message}`);
-      return false;
-    }
-  }
-  
-  sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
