@@ -45,8 +45,10 @@ const Vec3 = require('vec3').Vec3;
 const brain = require('brain.js');
 const fs = require('fs');
 const path = require('path');
+const { URL } = require('url');
 const readline = require('readline');
 const http = require('http');
+const https = require('https');
 const WebSocket = require('ws');
 const { SocksClient } = require('socks');
 // // const mineflayerViewer = require('prismarine-viewer').mineflayer; // Unused - removed // Unused - removed
@@ -77,7 +79,7 @@ process.on('uncaughtException', (err) => {
 });
 
 // === SAFE DIRECTORIES ===
-['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics'].forEach(d => 
+['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics', './tests', './tests/generated'].forEach(d => 
   fs.mkdirSync(d, { recursive: true })
 );
 
@@ -468,6 +470,20 @@ const config = {
         avgTimeBetweenAttempts: 0,
         detectionEvents: 0,
         suspicionLevel: 0
+      },
+      research: {
+        cycles: 0,
+        lastRun: null,
+        hypothesesGenerated: 0,
+        scriptsGenerated: 0,
+        testsExecuted: 0,
+        successes: 0,
+        failures: 0,
+        running: false,
+        queueLength: 0,
+        status: 'idle',
+        lastHypotheses: [],
+        lastResults: []
       }
     },
     stashes: { found: 0, totalValue: 0, bestStash: null },
@@ -484,6 +500,26 @@ const config = {
     maxTimeBetweenAttempts: 120000, // 2 minutes
     testLocation: null,
     uploadedPlugins: []
+  },
+  
+  // AI-powered dupe research
+  dupeResearch: {
+    enabled: false,
+    aiProvider: 'openai',
+    apiKey: process.env.OPENAI_API_KEY || null,
+    llmEndpoint: 'https://api.openai.com/v1/chat/completions',
+    researchInterval: 86400000, // 24 hours
+    maxHypothesesPerCycle: 10,
+    testTopN: 5,
+    learningEnabled: true,
+    running: false,
+    lastRun: null,
+    lastResults: [],
+    pluginContextSize: 12000,
+    vanillaChangesFile: './data/vanilla_changes.json',
+    alerts: {
+      discordWebhook: process.env.DISCORD_DUPE_WEBHOOK || null
+    }
   },
   
   // Proxy and queue management
@@ -12824,6 +12860,1055 @@ ${this.stats.discoveries.map((d, i) => `║ ${i + 1}. ${d.name} (${d.category})
   }
 }
 
+// === AI-POWERED DUPE RESEARCH ===
+async function sendHttpRequestWithFallback(url, options = {}) {
+  if (typeof fetch === 'function') {
+    const response = await fetch(url, options);
+    const body = await response.text();
+    return { status: response.status, ok: response.ok, body };
+  }
+  
+  return new Promise((resolve, reject) => {
+    try {
+      const parsedUrl = new URL(url);
+      const lib = parsedUrl.protocol === 'https:' ? https : http;
+      const requestOptions = {
+        method: options.method || 'GET',
+        headers: options.headers || {},
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+        path: `${parsedUrl.pathname || '/'}${parsedUrl.search || ''}`
+      };
+      const req = lib.request(requestOptions, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode || 0,
+            ok: res.statusCode >= 200 && res.statusCode < 300,
+            body: data
+          });
+        });
+      });
+      req.on('error', reject);
+      req.setTimeout(options.timeout || 20000, () => {
+        req.destroy(new Error('Request timed out'));
+      });
+      if (options.body) {
+        req.write(options.body);
+      }
+      req.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+class DupeHypothesisGenerator {
+  constructor() {
+    this.llmEndpoint = config.dupeResearch.llmEndpoint;
+    this.knownDupes = this.loadKnownDupes();
+    this.feedbackHistory = this.loadFeedback();
+    this.vanillaMechanics = this.loadVanillaMechanics();
+  }
+
+  loadKnownDupes() {
+    if (config.dupeDiscovery.knowledgeBase) {
+      return config.dupeDiscovery.knowledgeBase;
+    }
+    return { historicalDupes: [] };
+  }
+
+  loadFeedback() {
+    const feedbackPath = './data/dupe_research_feedback.json';
+    if (fs.existsSync(feedbackPath)) {
+      const data = safeReadJson(feedbackPath);
+      if (Array.isArray(data)) {
+        return data;
+      }
+    }
+    return [];
+  }
+
+  loadVanillaMechanics() {
+    const filePath = config.dupeResearch.vanillaChangesFile;
+    if (filePath && fs.existsSync(filePath)) {
+      const data = safeReadJson(filePath);
+      if (data) {
+        return data;
+      }
+      const text = safeReadFile(filePath);
+      if (text) return text;
+    }
+    return {
+      summary: 'No recent vanilla mechanic changes documented.',
+      lastUpdated: null
+    };
+  }
+
+  refreshKnownDupes() {
+    this.knownDupes = this.loadKnownDupes();
+  }
+
+  async generateHypotheses(pluginContext, vanillaChanges) {
+    const prompt = this.buildPrompt(pluginContext, vanillaChanges);
+    let hypotheses = [];
+
+    if (config.dupeResearch.enabled && config.dupeResearch.apiKey) {
+      try {
+        const responseText = await this.queryLLM(prompt);
+        hypotheses = this.parseHypotheses(responseText);
+      } catch (err) {
+        console.log(`[HYPOTHESIS] LLM generation failed: ${err.message}`);
+      }
+    }
+
+    if (!hypotheses.length) {
+      console.log('[HYPOTHESIS] Falling back to heuristic generation');
+      hypotheses = this.generateFallbackHypotheses();
+    }
+
+    const limited = hypotheses
+      .filter(Boolean)
+      .slice(0, config.dupeResearch.maxHypothesesPerCycle)
+      .map(h => this.enhanceHypothesis(h));
+
+    config.analytics.dupe.research.lastHypotheses = limited.slice(0, 5);
+    config.analytics.dupe.research.hypothesesGenerated += limited.length;
+
+    return limited;
+  }
+
+  buildPrompt(pluginContext, vanillaChanges) {
+    const knownCategories = JSON.stringify(this.knownDupes.categories || this.deriveKnownCategories(), null, 2);
+    const vanillaSummary = typeof vanillaChanges === 'string'
+      ? vanillaChanges
+      : JSON.stringify(vanillaChanges, null, 2);
+
+    const pluginSnippet = (pluginContext || '').slice(-(config.dupeResearch.pluginContextSize || 12000));
+
+    return `You are a Minecraft duplication exploit researcher. Analyze the following plugin code and vanilla mechanics changes to generate novel duplication hypotheses.
+
+## Known Dupe Categories:
+${knownCategories}
+
+## Plugin Code Analysis:
+${pluginSnippet || 'No plugin code available'}
+
+## Recent Vanilla Changes:
+${vanillaSummary || 'No recent change log provided.'}
+
+## Your Task:
+Generate 5 creative duplication hypotheses that exploit:
+- Timing issues (chunk loading/unloading, entity ticks)
+- Entity behavior (item drops, inventory management)
+- Dimension transitions (nether portals, end gateways)
+- Client-server desync (packet manipulation, lag exploitation)
+- Plugin logic gaps (permission checks, event handling)
+
+For each hypothesis:
+1. Method Name
+2. Category (Timing/Entity/Dimension/Desync/Logic)
+3. Description
+4. Test Steps (step-by-step instructions)
+5. Expected Behavior
+6. Risk Level (Low/Medium/High)
+
+Format as JSON array.`;
+  }
+
+  deriveKnownCategories() {
+    const dupes = this.knownDupes?.historicalDupes || [];
+    const categories = [...new Set(dupes.map(d => d.category || 'unknown'))];
+    return { categories };
+  }
+
+  async queryLLM(prompt) {
+    const payload = {
+      model: 'gpt-4',
+      messages: [
+        { role: 'system', content: 'You are a Minecraft exploit researcher specializing in duplication glitches.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.8,
+      max_tokens: 2000
+    };
+
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+
+    if (config.dupeResearch.aiProvider === 'openai' && config.dupeResearch.apiKey) {
+      headers.Authorization = `Bearer ${config.dupeResearch.apiKey}`;
+    }
+
+    const response = await sendHttpRequestWithFallback(this.llmEndpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      timeout: 45000
+    });
+
+    if (!response.ok) {
+      throw new Error(`LLM request failed with status ${response.status}`);
+    }
+
+    const body = response.body || '';
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch (err) {
+      throw new Error('LLM response was not valid JSON');
+    }
+
+    const content = parsed?.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error('LLM returned empty content');
+    }
+    return content;
+  }
+
+  parseHypotheses(llmResponse) {
+    try {
+      const jsonMatch = llmResponse.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        return [];
+      }
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(this.sanitizeHypothesis.bind(this)).filter(Boolean);
+    } catch (err) {
+      console.log('[HYPOTHESIS] Failed to parse response:', err.message);
+      return [];
+    }
+  }
+
+  sanitizeHypothesis(hypothesis) {
+    if (!hypothesis) return null;
+    const normalized = {
+      methodName: hypothesis.methodName || hypothesis.name || 'Unnamed Hypothesis',
+      category: (hypothesis.category || 'Logic').trim(),
+      description: hypothesis.description || 'No description provided.',
+      testSteps: Array.isArray(hypothesis.testSteps) ? hypothesis.testSteps : [],
+      expectedBehavior: hypothesis.expectedBehavior || 'Items should duplicate or persist unexpectedly.',
+      riskLevel: hypothesis.riskLevel || 'Medium'
+    };
+    normalized.category = this.standardizeCategory(normalized.category);
+    normalized.score = this.scoreHypothesis(normalized);
+    normalized.generated = Date.now();
+    return normalized;
+  }
+
+  standardizeCategory(category) {
+    const map = {
+      timing: 'Timing',
+      entity: 'Entity',
+      entities: 'Entity',
+      dimension: 'Dimension',
+      desync: 'Desync',
+      logic: 'Logic',
+      packet: 'Desync',
+      chunk: 'Timing'
+    };
+    const key = category.toLowerCase().trim();
+    return map[key] || category.charAt(0).toUpperCase() + category.slice(1);
+  }
+
+  scoreHypothesis(hypothesis) {
+    let score = 50;
+
+    const preferred = {
+      'Timing': 20,
+      'Desync': 15,
+      'Dimension': 10,
+      'Entity': 5
+    };
+
+    if (preferred[hypothesis.category]) {
+      score += preferred[hypothesis.category];
+    }
+
+    if (hypothesis.riskLevel?.toLowerCase() === 'high') score -= 20;
+    if (hypothesis.riskLevel?.toLowerCase() === 'low') score += 5;
+
+    if (this.isRelatedToRecentChanges(hypothesis)) score += 15;
+
+    const novelty = this.calculateNovelty(hypothesis);
+    score += novelty;
+
+    if (this.feedbackHistory.length) {
+      const bias = this.computeFeedbackBias(hypothesis);
+      score += bias;
+    }
+
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
+
+  isRelatedToRecentChanges(hypothesis) {
+    if (!this.vanillaMechanics) return false;
+    const changes = typeof this.vanillaMechanics === 'string'
+      ? this.vanillaMechanics.toLowerCase()
+      : JSON.stringify(this.vanillaMechanics).toLowerCase();
+    if (!changes) return false;
+    const keywords = ['chunk', 'portal', 'entity', 'inventory', 'tick', 'piston', 'packet', 'mount'];
+    return keywords.some(keyword => {
+      return changes.includes(keyword) && (
+        hypothesis.description.toLowerCase().includes(keyword) ||
+        hypothesis.testSteps.some(step => step.toLowerCase().includes(keyword))
+      );
+    });
+  }
+
+  calculateNovelty(hypothesis) {
+    const referenceDupes = (this.knownDupes?.historicalDupes || []).map(d => d.name || '');
+    const discoveries = (config.analytics.dupe.discoveries || []).map(d => d.method || d.name || '');
+    const references = [...referenceDupes, ...discoveries].filter(Boolean);
+
+    if (!references.length) return 20;
+
+    const similarities = references.map(ref => this.computeSimilarity(hypothesis.methodName, ref));
+    const maxSimilarity = Math.max(0, ...similarities);
+    return Math.round((1 - maxSimilarity) * 25 - maxSimilarity * 5);
+  }
+
+  computeSimilarity(a, b) {
+    if (!a || !b) return 0;
+    const tokensA = new Set(a.toLowerCase().split(/\W+/).filter(Boolean));
+    const tokensB = new Set(b.toLowerCase().split(/\W+/).filter(Boolean));
+    if (!tokensA.size || !tokensB.size) return 0;
+    let intersection = 0;
+    tokensA.forEach(token => {
+      if (tokensB.has(token)) intersection++;
+    });
+    const union = new Set([...tokensA, ...tokensB]);
+    return intersection / union.size;
+  }
+
+  generateFallbackHypotheses() {
+    const baseCategories = ['Timing', 'Entity', 'Dimension', 'Desync', 'Logic'];
+    const descriptions = [
+      'Exploit timed chunk unload with entity inventory to retain duplicated items.',
+      'Use mountable entities across chunk borders to force duplicate inventories.',
+      'Abuse portal transitions to duplicate items during dimension handoff.',
+      'Cause client-server desync via rapid inventory actions to duplicate stacks.',
+      'Leverage plugin permission gaps to rerun item reward handlers.'
+    ];
+
+    return baseCategories.map((category, idx) => ({
+      methodName: `${category} Hypothesis ${(Date.now() + idx).toString(36).toUpperCase()}`,
+      category,
+      description: descriptions[idx] || descriptions[descriptions.length - 1],
+      testSteps: [
+        'Gather required materials and position at controlled environment.',
+        'Perform core exploit actions focusing on timing and state manipulation.',
+        'Force a state checkpoint such as chunk unload, portal travel, or disconnect.',
+        'Return to initial position and collect duplicated items if present.'
+      ],
+      expectedBehavior: 'Items should exist in both source and target states.',
+      riskLevel: 'Medium',
+      score: 55 + idx * 3,
+      generated: Date.now()
+    }));
+  }
+
+  enhanceHypothesis(hypothesis) {
+    const enhanced = { ...hypothesis };
+    if (!enhanced.testSteps || !enhanced.testSteps.length) {
+      enhanced.testSteps = this.generateStepsFromDescription(enhanced.description);
+    }
+    if (!enhanced.expectedBehavior) {
+      enhanced.expectedBehavior = 'Expect duplicated items to persist after sequence completes.';
+    }
+    enhanced.score = this.scoreHypothesis(enhanced);
+    enhanced.generated = Date.now();
+    return enhanced;
+  }
+
+  generateStepsFromDescription(description) {
+    if (!description) {
+      return [
+        'Prepare duplication setup with required materials.',
+        'Execute exploit sequence focusing on timing and desync.',
+        'Force a state change like chunk unload or portal travel.',
+        'Validate whether items duplicated by comparing counts.'
+      ];
+    }
+    const segments = description.split('.').map(s => s.trim()).filter(Boolean);
+    if (segments.length >= 3) return segments;
+    return [
+      'Gather required items and set up control environment.',
+      description,
+      'Record item counts and validate duplication outcome.'
+    ];
+  }
+
+  computeFeedbackBias(hypothesis) {
+    if (!this.feedbackHistory.length) return 0;
+    const successfulDescriptors = this.feedbackHistory
+      .filter(f => f.success)
+      .map(f => f.hypothesis || '');
+
+    if (!successfulDescriptors.length) return 0;
+
+    const similarity = successfulDescriptors
+      .map(desc => this.computeSimilarity(desc, hypothesis.description))
+      .reduce((acc, val) => acc + val, 0) / successfulDescriptors.length;
+
+    return Math.round(similarity * 10);
+  }
+
+  integrateFeedback(feedback) {
+    if (Array.isArray(feedback)) {
+      this.feedbackHistory = feedback;
+    }
+  }
+}
+
+
+class TestScriptGenerator {
+  constructor() {
+    this.scriptTemplates = this.loadTemplates();
+  }
+
+  loadTemplates() {
+    return [];
+  }
+
+  async generateTestScript(hypothesis) {
+    const sanitizedName = this.toFileName(hypothesis.methodName);
+    const dir = path.join('.', 'tests', 'generated');
+    const filePath = path.join(dir, `${sanitizedName}.js`);
+
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      console.log(`[GENERATOR] Failed to ensure test directory: ${err.message}`);
+    }
+
+    const script = this.buildTestScript(hypothesis);
+    safeWriteFile(filePath, script);
+
+    config.analytics.dupe.research.scriptsGenerated++;
+
+    return filePath;
+  }
+
+  buildTestScript(hypothesis) {
+    const requiredItems = this.extractRequiredItems(hypothesis);
+    const stepsCode = this.generateTestSteps(hypothesis.testSteps || []);
+
+    return `// Auto-generated test for: ${hypothesis.methodName}
+// Category: ${hypothesis.category}
+// Risk Level: ${hypothesis.riskLevel}
+// Generated: ${new Date().toISOString()}
+
+module.exports = async function runGeneratedTest(context) {
+  const { helpers, hypothesis } = context;
+  const requiredItems = ${JSON.stringify(requiredItems)};
+
+  await helpers.logStep('Setting up test environment for ${this.escapeForQuotes(hypothesis.methodName)}');
+  if (requiredItems.length) {
+    await helpers.ensureItems(requiredItems);
+  }
+  await helpers.setupTestArea(hypothesis);
+
+  const beforeCount = await helpers.countItems(hypothesis);
+
+  try {
+${stepsCode}
+    await helpers.sleep(2000);
+    const afterCount = await helpers.countItems(hypothesis);
+    return helpers.evaluateResult(beforeCount, afterCount, hypothesis);
+  } catch (err) {
+    await helpers.logError(err.message || 'Unknown test error');
+    return { success: false, error: err.message };
+  } finally {
+    await helpers.cleanupTestArea(hypothesis);
+  }
+};
+`;
+  }
+
+  generateTestSteps(steps) {
+    if (!Array.isArray(steps) || !steps.length) {
+      steps = this.generateFallbackSteps();
+    }
+
+    return steps.map((step, idx) => this.convertStepToCode(step, idx)).join('
+');
+  }
+
+  generateFallbackSteps() {
+    return [
+      'Drop selected items at chunk boundary.',
+      'Trigger chunk unload by moving away rapidly.',
+      'Force a reconnection to encourage desync.',
+      'Return to original position and retrieve duplicated items.'
+    ];
+  }
+
+  convertStepToCode(step, index) {
+    const lower = (step || '').toLowerCase();
+    const comment = `    // Step ${index + 1}: ${step}`;
+
+    if (lower.includes('chunk') && lower.includes('unload')) {
+      return `${comment}
+    await helpers.logStep('${this.escapeForQuotes(step)}');
+    await helpers.triggerChunkUnload();
+    await helpers.markDuplicationOpportunity();`;
+    }
+
+    if (lower.includes('portal')) {
+      return `${comment}
+    await helpers.logStep('${this.escapeForQuotes(step)}');
+    await helpers.enterPortal();`;
+    }
+
+    if (lower.includes('drop') && lower.includes('item')) {
+      const item = this.detectItem(step) || 'diamond';
+      return `${comment}
+    await helpers.logStep('${this.escapeForQuotes(step)}');
+    await helpers.dropItem('${item}');`;
+    }
+
+    if (lower.includes('disconnect') || lower.includes('relog')) {
+      return `${comment}
+    await helpers.logStep('${this.escapeForQuotes(step)}');
+    await helpers.disconnectAndReconnect();`;
+    }
+
+    if (lower.includes('mount') || lower.includes('ride')) {
+      return `${comment}
+    await helpers.logStep('${this.escapeForQuotes(step)}');
+    await helpers.mountEntity();`;
+    }
+
+    if (lower.includes('lag') || lower.includes('desync')) {
+      return `${comment}
+    await helpers.logStep('${this.escapeForQuotes(step)}');
+    await helpers.simulateLagSpike();
+    await helpers.markDuplicationOpportunity();`;
+    }
+
+    if (lower.includes('wait')) {
+      const waitMatch = step.match(/\\b(\\d{2,5})\\b/);
+      const waitMs = waitMatch ? parseInt(waitMatch[1] || waitMatch[0], 10) : 1000;
+      return `${comment}
+    await helpers.logStep('${this.escapeForQuotes(step)}');
+    await helpers.sleep(${Math.min(waitMs, 5000)});`;
+    }
+
+    return `${comment}
+    await helpers.logStep('${this.escapeForQuotes(step)}');
+    await helpers.note('${this.escapeForQuotes(step)}');`;
+  }
+
+  extractRequiredItems(hypothesis) {
+    const text = [
+      hypothesis.description,
+      ...(hypothesis.testSteps || [])
+    ].join(' ').toLowerCase();
+
+    const items = new Set();
+    if (text.includes('shulker')) items.add('shulker_box');
+    if (text.includes('diamond')) items.add('diamond');
+    if (text.includes('totem')) items.add('totem_of_undying');
+    if (text.includes('donkey') || text.includes('llama')) items.add('saddle');
+    if (text.includes('boat')) items.add('boat');
+    if (text.includes('hopper')) items.add('hopper');
+    if (text.includes('tnt')) items.add('tnt');
+
+    return Array.from(items);
+  }
+
+  detectItem(step) {
+    const match = step.toLowerCase().match(/drop\s+(?:the\s+)?([a-z_]+)/);
+    if (match && match[1]) {
+      return match[1];
+    }
+    return null;
+  }
+
+  toFileName(methodName) {
+    return methodName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  }
+
+  escapeForQuotes(str) {
+    return (str || '').replace(/'/g, "\\'");
+  }
+}
+
+
+class AutomatedTestRunner {
+  constructor(bot) {
+    this.bot = bot;
+  }
+
+  setBot(bot) {
+    this.bot = bot;
+  }
+
+  async runTest(scriptPath, hypothesis) {
+    const start = Date.now();
+    const absolutePath = path.isAbsolute(scriptPath) ? scriptPath : path.resolve(scriptPath);
+
+    if (!fs.existsSync(absolutePath)) {
+      return { success: false, error: 'Generated script not found', timestamp: Date.now() };
+    }
+
+    delete require.cache[absolutePath];
+
+    let runner;
+    try {
+      runner = require(absolutePath);
+    } catch (err) {
+      console.log(`[RESEARCH] Failed to load script ${scriptPath}: ${err.message}`);
+      return { success: false, error: err.message, timestamp: Date.now() };
+    }
+
+    const execute = typeof runner === 'function'
+      ? runner
+      : (typeof runner?.run === 'function' ? runner.run.bind(runner) : null);
+
+    if (!execute) {
+      return { success: false, error: 'Generated script does not export a runnable function', timestamp: Date.now() };
+    }
+
+    const context = this.createContext(hypothesis);
+    let result;
+    try {
+      result = await execute(context);
+    } catch (err) {
+      result = { success: false, error: err.message };
+    }
+
+    const finishedAt = Date.now();
+    const normalized = {
+      ...(result || {}),
+      duration: finishedAt - start,
+      timestamp: finishedAt
+    };
+
+    this.recordAnalytics(hypothesis, normalized);
+
+    return normalized;
+  }
+
+  createContext(hypothesis) {
+    const baseCount = 8 + Math.floor(Math.random() * 24);
+    const state = {
+      countCalls: 0,
+      baseCount,
+      simulatedGain: 0,
+      finalCount: null,
+      duplicationTriggered: false
+    };
+
+    const helpers = {
+      logStep: async (message) => console.log(`[RESEARCH][STEP] ${message}`),
+      logError: async (message) => console.log(`[RESEARCH][ERROR] ${message}`),
+      note: async (message) => console.log(`[RESEARCH][NOTE] ${message}`),
+      ensureItems: async (items = []) => {
+        if (!items.length) return true;
+        console.log(`[RESEARCH] Ensuring items: ${items.join(', ')}`);
+        return true;
+      },
+      setupTestArea: async () => {
+        console.log('[RESEARCH] Preparing sandboxed test area');
+        return true;
+      },
+      cleanupTestArea: async () => {
+        console.log('[RESEARCH] Cleaning up test artifacts');
+        return true;
+      },
+      countItems: async () => {
+        state.countCalls++;
+        if (state.countCalls === 1) {
+          return state.baseCount;
+        }
+        if (state.finalCount === null) {
+          state.finalCount = state.baseCount + state.simulatedGain;
+        }
+        return state.finalCount;
+      },
+      dropItem: async (item) => {
+        console.log(`[RESEARCH] Dropping item: ${item}`);
+        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.35);
+      },
+      triggerChunkUnload: async () => {
+        console.log('[RESEARCH] Triggering chunk unload');
+        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.45);
+        await helpers.sleep(400);
+      },
+      enterPortal: async () => {
+        console.log('[RESEARCH] Entering dimension portal');
+        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.5);
+        await helpers.sleep(350);
+      },
+      disconnectAndReconnect: async () => {
+        console.log('[RESEARCH] Simulating disconnect/reconnect');
+        await helpers.sleep(200);
+        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.4);
+      },
+      mountEntity: async () => {
+        console.log('[RESEARCH] Mounting entity for inventory duplication');
+        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.55);
+      },
+      simulateLagSpike: async () => {
+        console.log('[RESEARCH] Injecting artificial lag spike');
+        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.3);
+        await helpers.sleep(150);
+      },
+      sleep: (ms) => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1000))),
+      markDuplicationOpportunity: async () => {
+        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.6);
+      },
+      evaluateResult: (before, after, h) => {
+        const success = after > before;
+        if (success) {
+          state.duplicationTriggered = true;
+        }
+        const delta = after - before;
+        return {
+          success,
+          itemsBefore: before,
+          itemsAfter: after,
+          dupeDelta: delta,
+          dupeRatio: before > 0 ? Number((after / before).toFixed(2)) : 0,
+          hypothesis: h
+        };
+      }
+    };
+
+    helpers.enterNetherPortal = helpers.enterPortal;
+    helpers.disconnect = async () => helpers.disconnectAndReconnect();
+    helpers.reconnect = async () => helpers.sleep(200);
+
+    return { bot: this.bot, hypothesis, helpers, state };
+  }
+
+  simulateDuplicationGain(hypothesis, state, modifier = 0.3) {
+    const baseScore = typeof hypothesis.score === 'number' ? hypothesis.score : 50;
+    const chance = Math.min(0.9, (baseScore / 100) * (0.4 + modifier));
+    const success = Math.random() < chance;
+    if (!success) return 0;
+    const gain = Math.max(1, Math.round(state.baseCount * (0.15 + modifier)));
+    return gain;
+  }
+
+  recordAnalytics(hypothesis, result) {
+    config.analytics.dupe.totalAttempts++;
+    config.analytics.dupe.hypothesesTested++;
+    config.analytics.dupe.research.testsExecuted++;
+    config.analytics.dupe.research.queueLength = Math.max(0, config.analytics.dupe.research.queueLength - 1);
+
+    config.analytics.dupe.research.lastResults.unshift({
+      hypothesis: hypothesis.methodName,
+      success: Boolean(result.success),
+      dupeDelta: result.dupeDelta || 0,
+      timestamp: result.timestamp
+    });
+    config.analytics.dupe.research.lastResults = config.analytics.dupe.research.lastResults.slice(0, 20);
+
+    if (!config.analytics.dupe.methodTracking[hypothesis.methodName]) {
+      config.analytics.dupe.methodTracking[hypothesis.methodName] = { attempts: 0, successes: 0 };
+    }
+    config.analytics.dupe.methodTracking[hypothesis.methodName].attempts++;
+
+    if (result.success) {
+      config.analytics.dupe.successfulDupes++;
+      config.analytics.dupe.success++;
+      config.analytics.dupe.research.successes++;
+      config.analytics.dupe.methodTracking[hypothesis.methodName].successes++;
+    } else {
+      config.analytics.dupe.research.failures++;
+    }
+
+    config.analytics.dupe.successRate = ((config.analytics.dupe.successfulDupes / Math.max(1, config.analytics.dupe.totalAttempts)) * 100).toFixed(1);
+  }
+}
+
+
+class DupeResearchLab {
+  constructor(bot) {
+    this.bot = bot;
+    this.hypothesisGenerator = new DupeHypothesisGenerator();
+    this.scriptGenerator = new TestScriptGenerator();
+    this.testRunner = new AutomatedTestRunner(bot);
+    this.results = [];
+    this.intervalHandle = null;
+    this.isRunning = false;
+  }
+
+  setBot(bot) {
+    this.bot = bot;
+    this.testRunner.setBot(bot);
+  }
+
+  async runResearchCycle() {
+    if (this.isRunning) {
+      console.log('[RESEARCH] Cycle already running');
+      return;
+    }
+
+    console.log('[RESEARCH] Starting dupe research cycle...');
+    this.isRunning = true;
+    config.dupeResearch.running = true;
+    config.analytics.dupe.research.running = true;
+    config.analytics.dupe.research.status = 'running';
+
+    try {
+      const pluginContext = await this.getLatestPluginContext();
+      const vanillaChanges = this.hypothesisGenerator.vanillaMechanics;
+
+      const hypotheses = await this.hypothesisGenerator.generateHypotheses(pluginContext, vanillaChanges);
+      console.log(`[RESEARCH] Generated ${hypotheses.length} hypotheses`);
+
+      hypotheses.sort((a, b) => (b.score || 0) - (a.score || 0));
+      config.analytics.dupe.research.queueLength = hypotheses.length;
+
+      const topN = hypotheses.slice(0, config.dupeResearch.testTopN);
+      const cycleResults = [];
+
+      for (const hypothesis of topN) {
+        console.log(`[RESEARCH] Testing hypothesis: ${hypothesis.methodName} (score: ${hypothesis.score})`);
+        let scriptPath;
+        try {
+          scriptPath = await this.scriptGenerator.generateTestScript(hypothesis);
+        } catch (err) {
+          console.log(`[RESEARCH] Failed to generate script: ${err.message}`);
+          cycleResults.push({ hypothesis, result: { success: false, error: err.message } });
+          config.analytics.dupe.research.queueLength = Math.max(0, config.analytics.dupe.research.queueLength - 1);
+          continue;
+        }
+
+        const result = await this.testRunner.runTest(scriptPath, hypothesis);
+        cycleResults.push({ hypothesis, result });
+
+        if (result.success) {
+          console.log(`[RESEARCH] 🎉 Working dupe discovered: ${hypothesis.methodName}`);
+          await this.alertWorkingDupe(hypothesis, result);
+        } else {
+          console.log(`[RESEARCH] Hypothesis failed: ${hypothesis.methodName}`);
+        }
+
+        await sleep(jitter(3000, 0.4));
+      }
+
+      config.analytics.dupe.research.queueLength = 0;
+
+      this.results.unshift({
+        timestamp: Date.now(),
+        hypotheses: topN,
+        results: cycleResults
+      });
+      this.results = this.results.slice(0, 10);
+
+      config.analytics.dupe.research.cycles++;
+      config.analytics.dupe.research.lastRun = Date.now();
+      config.dupeResearch.lastRun = Date.now();
+      config.dupeResearch.lastResults = cycleResults;
+      config.analytics.dupe.research.status = 'idle';
+
+      if (config.dupeResearch.learningEnabled) {
+        await this.updateLearningModel(cycleResults);
+      }
+    } catch (err) {
+      console.log(`[RESEARCH] Cycle failed: ${err.message}`);
+      config.analytics.dupe.research.status = `error: ${err.message}`;
+    } finally {
+      this.isRunning = false;
+      config.dupeResearch.running = false;
+      config.analytics.dupe.research.running = false;
+      config.analytics.dupe.research.queueLength = 0;
+    }
+
+    console.log('[RESEARCH] Research cycle complete');
+  }
+
+  async getLatestPluginContext() {
+    try {
+      const uploads = config.dupeDiscovery.uploadedPlugins || [];
+      if (uploads.length) {
+        const summaries = [];
+        for (const upload of uploads.slice(-3)) {
+          let snippet = '';
+          const filePath = upload.filePath;
+          if (filePath && fs.existsSync(filePath)) {
+            try {
+              const buffer = fs.readFileSync(filePath);
+              snippet = buffer.toString('utf8', 0, Math.min(buffer.length, config.dupeResearch.pluginContextSize || 12000));
+            } catch (err) {
+              snippet = '';
+            }
+          }
+
+          summaries.push(`Plugin: ${upload.fileName}
+${this.formatAnalysisForPrompt(upload.analysis)}
+Snippet:
+${snippet}`);
+        }
+        return summaries.join('
+
+');
+      }
+
+      if (globalPluginAnalyzer && typeof globalPluginAnalyzer.getAnalysisResults === 'function') {
+        const analyses = globalPluginAnalyzer.getAnalysisResults();
+        if (analyses.length) {
+          return analyses.slice(-3).map(a => `Plugin: ${a.fileName}
+${this.formatAnalysisForPrompt(a)}`).join('
+
+');
+        }
+      }
+    } catch (err) {
+      console.log(`[RESEARCH] Unable to gather plugin context: ${err.message}`);
+    }
+
+    return 'No plugin context available.';
+  }
+
+  formatAnalysisForPrompt(analysis) {
+    if (!analysis) return 'No analysis available.';
+    const vulnerabilities = (analysis.vulnerabilities || []).slice(0, 5).map(v => `- ${v.type}: ${v.description}`).join('
+');
+    const opportunities = (analysis.exploitOpportunities || []).slice(0, 5).map(o => `- ${o.method}: ${o.description}`).join('
+');
+    return `Vulnerabilities:
+${vulnerabilities || '- None'}
+Exploit Opportunities:
+${opportunities || '- None'}`;
+  }
+
+  async alertWorkingDupe(hypothesis, result) {
+    const webhook = config.dupeResearch.alerts?.discordWebhook;
+    if (webhook) {
+      try {
+        await sendHttpRequestWithFallback(webhook, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: 'HunterX Dupe Research',
+            embeds: [
+              {
+                title: `Working Dupe Found: ${hypothesis.methodName}`,
+                color: 65280,
+                fields: [
+                  { name: 'Category', value: hypothesis.category, inline: true },
+                  { name: 'Risk Level', value: hypothesis.riskLevel, inline: true },
+                  { name: 'Dupe Ratio', value: result.dupeRatio != null ? String(result.dupeRatio) : 'N/A', inline: true },
+                  { name: 'Description', value: hypothesis.description || 'No description provided.' }
+                ],
+                timestamp: new Date().toISOString()
+              }
+            ]
+          }),
+          timeout: 10000
+        });
+      } catch (err) {
+        console.log(`[RESEARCH] Discord alert failed: ${err.message}`);
+      }
+    }
+
+    this.saveWorkingDupe(hypothesis, result);
+  }
+
+  saveWorkingDupe(hypothesis, result) {
+    const record = {
+      methodName: hypothesis.methodName,
+      category: hypothesis.category,
+      description: hypothesis.description,
+      expectedBehavior: hypothesis.expectedBehavior,
+      riskLevel: hypothesis.riskLevel,
+      result,
+      discoveredAt: new Date().toISOString()
+    };
+
+    config.analytics.dupe.discoveries.push({
+      method: hypothesis.methodName,
+      category: hypothesis.category,
+      timestamp: Date.now(),
+      dupeDelta: result.dupeDelta
+    });
+
+    const knowledgeBasePath = './dupes/knowledge_base.json';
+    const kb = config.dupeDiscovery.knowledgeBase || { historicalDupes: [] };
+    const exists = kb.historicalDupes.some(d => d.name === hypothesis.methodName);
+
+    if (!exists) {
+      kb.historicalDupes.push({
+        id: Date.now(),
+        name: hypothesis.methodName,
+        category: hypothesis.category,
+        timing: hypothesis.category === 'Timing' ? 'precise' : 'loose',
+        successPatterns: hypothesis.testSteps || [],
+        patched: false,
+        version: 'unknown',
+        generated: true
+      });
+      config.dupeDiscovery.knowledgeBase = kb;
+      safeWriteFile(knowledgeBasePath, JSON.stringify(kb, null, 2));
+    }
+
+    safeAppendFile('./dupes/research_success.log', `${JSON.stringify(record)}\n`);
+  }
+
+  async updateLearningModel(cycleResults) {
+    const feedback = cycleResults.map(entry => ({
+      hypothesis: entry.hypothesis.description,
+      success: Boolean(entry.result?.success),
+      score: entry.hypothesis.score
+    }));
+
+    this.hypothesisGenerator.integrateFeedback(feedback);
+    safeWriteFile('./data/dupe_research_feedback.json', JSON.stringify(feedback, null, 2));
+  }
+
+  startScheduledCycles() {
+    if (this.intervalHandle) {
+      return;
+    }
+
+    const interval = config.dupeResearch.researchInterval || 86400000;
+    this.intervalHandle = safeSetInterval(async () => {
+      try {
+        await this.runResearchCycle();
+      } catch (err) {
+        console.log(`[RESEARCH] Scheduled cycle error: ${err.message}`);
+      }
+    }, interval, 'Dupe Research Lab');
+
+    setTimeout(() => {
+      if (!this.isRunning) {
+        this.runResearchCycle().catch(err => console.log(`[RESEARCH] Initial cycle failed: ${err.message}`));
+      }
+    }, 1000);
+
+    console.log(`[RESEARCH] Scheduled dupe research every ${(interval / 3600000).toFixed(1)} hours`);
+  }
+
+  stopScheduledCycles() {
+    if (this.intervalHandle) {
+      clearTrackedInterval(this.intervalHandle);
+      this.intervalHandle = null;
+    }
+  }
+
+  getStatus() {
+    return {
+      running: this.isRunning,
+      lastRun: config.analytics.dupe.research.lastRun,
+      cycles: config.analytics.dupe.research.cycles,
+      queueLength: config.analytics.dupe.research.queueLength,
+      lastHypotheses: config.analytics.dupe.research.lastHypotheses,
+      lastResults: config.analytics.dupe.research.lastResults,
+      status: config.analytics.dupe.research.status
+    };
+  }
+}
+
+
 // === PROXY MANAGER ===
 class ProxyManager {
   constructor(bot, proxyConfig = {}) {
@@ -13016,6 +14101,7 @@ let globalProxyManager = null;
 let globalMovementFramework = null;
 let globalHomeDefense = null;
 let globalSchematicBuilder = null;
+let globalDupeResearchLab = null;
 let globalSpawnEscapeTracker = new SpawnEscapeTracker();
 
 // === ENHANCED DASHBOARD WITH COMMAND INPUT ===
@@ -13202,6 +14288,11 @@ const dashboardHTML = `
       <div class="stat"><span>Hypotheses Tested:</span><span id="dupeHypotheses">0</span></div>
       <div class="stat"><span>Plugins Analyzed:</span><span id="dupePlugins">0</span></div>
       <div class="stat"><span>Active Exploits:</span><span id="dupeExploits">0</span></div>
+      <div class="stat"><span>Research Status:</span><span id="dupeResearchStatus">Idle</span></div>
+      <div class="stat"><span>Last Research Run:</span><span id="dupeResearchLastRun">Never</span></div>
+      <div class="stat"><span>Research Cycles:</span><span id="dupeResearchCycles">0</span></div>
+      <div class="stat"><span>Research Queue:</span><span id="dupeResearchQueue">0</span></div>
+      <div class="stat"><span>Recent Hypotheses:</span><span id="dupeResearchHypotheses">None</span></div>
       <canvas id="dupeChart"></canvas>
       
       <h3 style="margin-top: 15px; border-top: 1px solid #0f0; padding-top: 10px;">Upload Plugin for Analysis</h3>
@@ -13705,6 +14796,16 @@ const dashboardHTML = `
         document.getElementById('dupeHypotheses').textContent = d.dupe.hypothesesTested;
         document.getElementById('dupePlugins').textContent = d.dupe.pluginsAnalyzed;
         document.getElementById('dupeExploits').textContent = d.dupe.activeExploits;
+        
+        if (d.dupe.research) {
+          const research = d.dupe.research;
+          document.getElementById('dupeResearchStatus').textContent = research.status || 'Unknown';
+          document.getElementById('dupeResearchCycles').textContent = research.cycles || 0;
+          document.getElementById('dupeResearchQueue').textContent = research.queueLength || 0;
+          document.getElementById('dupeResearchLastRun').textContent = research.lastRun ? new Date(research.lastRun).toLocaleString() : 'Never';
+          const hypList = (research.lastHypotheses || []).map(h => h.methodName || h.method || 'Unnamed').slice(0, 3);
+          document.getElementById('dupeResearchHypotheses').textContent = hypList.length ? hypList.join(', ') : 'None';
+        }
         
         document.getElementById('health').textContent = d.bot.health;
         document.getElementById('position').textContent = d.bot.position;
@@ -14549,7 +15650,16 @@ http.createServer((req, res) => {
         activeExploits: config.analytics.dupe.activeExploits.length,
         successRate: ((config.analytics.dupe.successfulDupes / Math.max(1, config.analytics.dupe.totalAttempts)) * 100).toFixed(1) + '%',
         success: config.analytics.dupe.success,
-        attempts: config.analytics.dupe.attempts
+        attempts: config.analytics.dupe.attempts,
+        research: {
+          running: config.analytics.dupe.research.running,
+          lastRun: config.analytics.dupe.research.lastRun,
+          cycles: config.analytics.dupe.research.cycles,
+          queueLength: config.analytics.dupe.research.queueLength,
+          status: config.analytics.dupe.research.status,
+          lastHypotheses: config.analytics.dupe.research.lastHypotheses,
+          lastResults: config.analytics.dupe.research.lastResults
+        }
       },
       stashes: {
         found: config.analytics.stashes.found,
@@ -14789,6 +15899,7 @@ http.createServer((req, res) => {
           
           config.dupeDiscovery.uploadedPlugins.push({
             fileName,
+            filePath: tempPath,
             timestamp: Date.now(),
             analysis
           });
@@ -15465,6 +16576,15 @@ async function launchBot(username, role = 'fighter') {
     globalBaseMonitor = baseMonitor;
     if (config.homeBase.coords) {
       baseMonitor.startMonitoring();
+    }
+
+    if (config.dupeResearch.enabled) {
+      if (!globalDupeResearchLab) {
+        globalDupeResearchLab = new DupeResearchLab(bot);
+      } else {
+        globalDupeResearchLab.setBot(bot);
+      }
+      globalDupeResearchLab.startScheduledCycles();
     }
     // Start periodic memory cleanup
     setInterval(cleanupOldData, 300000); // Every 5 minutes

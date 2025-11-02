@@ -1,0 +1,1207 @@
+[1mdiff --git a/HunterX.js b/HunterX.js[m
+[1mindex fce1b2d..67b1dc9 100644[m
+[1m--- a/HunterX.js[m
+[1m+++ b/HunterX.js[m
+[36m@@ -45,8 +45,10 @@[m [mconst Vec3 = require('vec3').Vec3;[m
+ const brain = require('brain.js');[m
+ const fs = require('fs');[m
+ const path = require('path');[m
+[32m+[m[32mconst { URL } = require('url');[m
+ const readline = require('readline');[m
+ const http = require('http');[m
+[32m+[m[32mconst https = require('https');[m
+ const WebSocket = require('ws');[m
+ const { SocksClient } = require('socks');[m
+ // // const mineflayerViewer = require('prismarine-viewer').mineflayer; // Unused - removed // Unused - removed[m
+[36m@@ -77,7 +79,7 @@[m [mprocess.on('uncaughtException', (err) => {[m
+ });[m
+ [m
+ // === SAFE DIRECTORIES ===[m
+[31m-['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics'].forEach(d => [m
+[32m+[m[32m['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics', './tests', './tests/generated'].forEach(d =>[m[41m [m
+   fs.mkdirSync(d, { recursive: true })[m
+ );[m
+ [m
+[36m@@ -468,6 +470,20 @@[m [mconst config = {[m
+         avgTimeBetweenAttempts: 0,[m
+         detectionEvents: 0,[m
+         suspicionLevel: 0[m
+[32m+[m[32m      },[m
+[32m+[m[32m      research: {[m
+[32m+[m[32m        cycles: 0,[m
+[32m+[m[32m        lastRun: null,[m
+[32m+[m[32m        hypothesesGenerated: 0,[m
+[32m+[m[32m        scriptsGenerated: 0,[m
+[32m+[m[32m        testsExecuted: 0,[m
+[32m+[m[32m        successes: 0,[m
+[32m+[m[32m        failures: 0,[m
+[32m+[m[32m        running: false,[m
+[32m+[m[32m        queueLength: 0,[m
+[32m+[m[32m        status: 'idle',[m
+[32m+[m[32m        lastHypotheses: [],[m
+[32m+[m[32m        lastResults: [][m
+       }[m
+     },[m
+     stashes: { found: 0, totalValue: 0, bestStash: null },[m
+[36m@@ -486,6 +502,26 @@[m [mconst config = {[m
+     uploadedPlugins: [][m
+   },[m
+   [m
+[32m+[m[32m  // AI-powered dupe research[m
+[32m+[m[32m  dupeResearch: {[m
+[32m+[m[32m    enabled: false,[m
+[32m+[m[32m    aiProvider: 'openai',[m
+[32m+[m[32m    apiKey: process.env.OPENAI_API_KEY || null,[m
+[32m+[m[32m    llmEndpoint: 'https://api.openai.com/v1/chat/completions',[m
+[32m+[m[32m    researchInterval: 86400000, // 24 hours[m
+[32m+[m[32m    maxHypothesesPerCycle: 10,[m
+[32m+[m[32m    testTopN: 5,[m
+[32m+[m[32m    learningEnabled: true,[m
+[32m+[m[32m    running: false,[m
+[32m+[m[32m    lastRun: null,[m
+[32m+[m[32m    lastResults: [],[m
+[32m+[m[32m    pluginContextSize: 12000,[m
+[32m+[m[32m    vanillaChangesFile: './data/vanilla_changes.json',[m
+[32m+[m[32m    alerts: {[m
+[32m+[m[32m      discordWebhook: process.env.DISCORD_DUPE_WEBHOOK || null[m
+[32m+[m[32m    }[m
+[32m+[m[32m  },[m
+[32m+[m[41m  [m
+   // Proxy and queue management[m
+   network: {[m
+     proxyEnabled: false,[m
+[36m@@ -12824,6 +12860,1055 @@[m [m${this.stats.discoveries.map((d, i) => `║ ${i + 1}. ${d.name} (${d.category})[m
+   }[m
+ }[m
+ [m
+[32m+[m[32m// === AI-POWERED DUPE RESEARCH ===[m
+[32m+[m[32masync function sendHttpRequestWithFallback(url, options = {}) {[m
+[32m+[m[32m  if (typeof fetch === 'function') {[m
+[32m+[m[32m    const response = await fetch(url, options);[m
+[32m+[m[32m    const body = await response.text();[m
+[32m+[m[32m    return { status: response.status, ok: response.ok, body };[m
+[32m+[m[32m  }[m
+[32m+[m[41m  [m
+[32m+[m[32m  return new Promise((resolve, reject) => {[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      const parsedUrl = new URL(url);[m
+[32m+[m[32m      const lib = parsedUrl.protocol === 'https:' ? https : http;[m
+[32m+[m[32m      const requestOptions = {[m
+[32m+[m[32m        method: options.method || 'GET',[m
+[32m+[m[32m        headers: options.headers || {},[m
+[32m+[m[32m        hostname: parsedUrl.hostname,[m
+[32m+[m[32m        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),[m
+[32m+[m[32m        path: `${parsedUrl.pathname || '/'}${parsedUrl.search || ''}`[m
+[32m+[m[32m      };[m
+[32m+[m[32m      const req = lib.request(requestOptions, (res) => {[m
+[32m+[m[32m        let data = '';[m
+[32m+[m[32m        res.on('data', chunk => { data += chunk; });[m
+[32m+[m[32m        res.on('end', () => {[m
+[32m+[m[32m          resolve({[m
+[32m+[m[32m            status: res.statusCode || 0,[m
+[32m+[m[32m            ok: res.statusCode >= 200 && res.statusCode < 300,[m
+[32m+[m[32m            body: data[m
+[32m+[m[32m          });[m
+[32m+[m[32m        });[m
+[32m+[m[32m      });[m
+[32m+[m[32m      req.on('error', reject);[m
+[32m+[m[32m      req.setTimeout(options.timeout || 20000, () => {[m
+[32m+[m[32m        req.destroy(new Error('Request timed out'));[m
+[32m+[m[32m      });[m
+[32m+[m[32m      if (options.body) {[m
+[32m+[m[32m        req.write(options.body);[m
+[32m+[m[32m      }[m
+[32m+[m[32m      req.end();[m
+[32m+[m[32m    } catch (err) {[m
+[32m+[m[32m      reject(err);[m
+[32m+[m[32m    }[m
+[32m+[m[32m  });[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mclass DupeHypothesisGenerator {[m
+[32m+[m[32m  constructor() {[m
+[32m+[m[32m    this.llmEndpoint = config.dupeResearch.llmEndpoint;[m
+[32m+[m[32m    this.knownDupes = this.loadKnownDupes();[m
+[32m+[m[32m    this.feedbackHistory = this.loadFeedback();[m
+[32m+[m[32m    this.vanillaMechanics = this.loadVanillaMechanics();[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  loadKnownDupes() {[m
+[32m+[m[32m    if (config.dupeDiscovery.knowledgeBase) {[m
+[32m+[m[32m      return config.dupeDiscovery.knowledgeBase;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return { historicalDupes: [] };[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  loadFeedback() {[m
+[32m+[m[32m    const feedbackPath = './data/dupe_research_feedback.json';[m
+[32m+[m[32m    if (fs.existsSync(feedbackPath)) {[m
+[32m+[m[32m      const data = safeReadJson(feedbackPath);[m
+[32m+[m[32m      if (Array.isArray(data)) {[m
+[32m+[m[32m        return data;[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return [];[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  loadVanillaMechanics() {[m
+[32m+[m[32m    const filePath = config.dupeResearch.vanillaChangesFile;[m
+[32m+[m[32m    if (filePath && fs.existsSync(filePath)) {[m
+[32m+[m[32m      const data = safeReadJson(filePath);[m
+[32m+[m[32m      if (data) {[m
+[32m+[m[32m        return data;[m
+[32m+[m[32m      }[m
+[32m+[m[32m      const text = safeReadFile(filePath);[m
+[32m+[m[32m      if (text) return text;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return {[m
+[32m+[m[32m      summary: 'No recent vanilla mechanic changes documented.',[m
+[32m+[m[32m      lastUpdated: null[m
+[32m+[m[32m    };[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  refreshKnownDupes() {[m
+[32m+[m[32m    this.knownDupes = this.loadKnownDupes();[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  async generateHypotheses(pluginContext, vanillaChanges) {[m
+[32m+[m[32m    const prompt = this.buildPrompt(pluginContext, vanillaChanges);[m
+[32m+[m[32m    let hypotheses = [];[m
+[32m+[m
+[32m+[m[32m    if (config.dupeResearch.enabled && config.dupeResearch.apiKey) {[m
+[32m+[m[32m      try {[m
+[32m+[m[32m        const responseText = await this.queryLLM(prompt);[m
+[32m+[m[32m        hypotheses = this.parseHypotheses(responseText);[m
+[32m+[m[32m      } catch (err) {[m
+[32m+[m[32m        console.log(`[HYPOTHESIS] LLM generation failed: ${err.message}`);[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    if (!hypotheses.length) {[m
+[32m+[m[32m      console.log('[HYPOTHESIS] Falling back to heuristic generation');[m
+[32m+[m[32m      hypotheses = this.generateFallbackHypotheses();[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    const limited = hypotheses[m
+[32m+[m[32m      .filter(Boolean)[m
+[32m+[m[32m      .slice(0, config.dupeResearch.maxHypothesesPerCycle)[m
+[32m+[m[32m      .map(h => this.enhanceHypothesis(h));[m
+[32m+[m
+[32m+[m[32m    config.analytics.dupe.research.lastHypotheses = limited.slice(0, 5);[m
+[32m+[m[32m    config.analytics.dupe.research.hypothesesGenerated += limited.length;[m
+[32m+[m
+[32m+[m[32m    return limited;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  buildPrompt(pluginContext, vanillaChanges) {[m
+[32m+[m[32m    const knownCategories = JSON.stringify(this.knownDupes.categories || this.deriveKnownCategories(), null, 2);[m
+[32m+[m[32m    const vanillaSummary = typeof vanillaChanges === 'string'[m
+[32m+[m[32m      ? vanillaChanges[m
+[32m+[m[32m      : JSON.stringify(vanillaChanges, null, 2);[m
+[32m+[m
+[32m+[m[32m    const pluginSnippet = (pluginContext || '').slice(-(config.dupeResearch.pluginContextSize || 12000));[m
+[32m+[m
+[32m+[m[32m    return `You are a Minecraft duplication exploit researcher. Analyze the following plugin code and vanilla mechanics changes to generate novel duplication hypotheses.[m
+[32m+[m
+[32m+[m[32m## Known Dupe Categories:[m
+[32m+[m[32m${knownCategories}[m
+[32m+[m
+[32m+[m[32m## Plugin Code Analysis:[m
+[32m+[m[32m${pluginSnippet || 'No plugin code available'}[m
+[32m+[m
+[32m+[m[32m## Recent Vanilla Changes:[m
+[32m+[m[32m${vanillaSummary || 'No recent change log provided.'}[m
+[32m+[m
+[32m+[m[32m## Your Task:[m
+[32m+[m[32mGenerate 5 creative duplication hypotheses that exploit:[m
+[32m+[m[32m- Timing issues (chunk loading/unloading, entity ticks)[m
+[32m+[m[32m- Entity behavior (item drops, inventory management)[m
+[32m+[m[32m- Dimension transitions (nether portals, end gateways)[m
+[32m+[m[32m- Client-server desync (packet manipulation, lag exploitation)[m
+[32m+[m[32m- Plugin logic gaps (permission checks, event handling)[m
+[32m+[m
+[32m+[m[32mFor each hypothesis:[m
+[32m+[m[32m1. Method Name[m
+[32m+[m[32m2. Category (Timing/Entity/Dimension/Desync/Logic)[m
+[32m+[m[32m3. Description[m
+[32m+[m[32m4. Test Steps (step-by-step instructions)[m
+[32m+[m[32m5. Expected Behavior[m
+[32m+[m[32m6. Risk Level (Low/Medium/High)[m
+[32m+[m
+[32m+[m[32mFormat as JSON array.`;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  deriveKnownCategories() {[m
+[32m+[m[32m    const dupes = this.knownDupes?.historicalDupes || [];[m
+[32m+[m[32m    const categories = [...new Set(dupes.map(d => d.category || 'unknown'))];[m
+[32m+[m[32m    return { categories };[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  async queryLLM(prompt) {[m
+[32m+[m[32m    const payload = {[m
+[32m+[m[32m      model: 'gpt-4',[m
+[32m+[m[32m      messages: [[m
+[32m+[m[32m        { role: 'system', content: 'You are a Minecraft exploit researcher specializing in duplication glitches.' },[m
+[32m+[m[32m        { role: 'user', content: prompt }[m
+[32m+[m[32m      ],[m
+[32m+[m[32m      temperature: 0.8,[m
+[32m+[m[32m      max_tokens: 2000[m
+[32m+[m[32m    };[m
+[32m+[m
+[32m+[m[32m    const headers = {[m
+[32m+[m[32m      'Content-Type': 'application/json'[m
+[32m+[m[32m    };[m
+[32m+[m
+[32m+[m[32m    if (config.dupeResearch.aiProvider === 'openai' && config.dupeResearch.apiKey) {[m
+[32m+[m[32m      headers.Authorization = `Bearer ${config.dupeResearch.apiKey}`;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    const response = await sendHttpRequestWithFallback(this.llmEndpoint, {[m
+[32m+[m[32m      method: 'POST',[m
+[32m+[m[32m      headers,[m
+[32m+[m[32m      body: JSON.stringify(payload),[m
+[32m+[m[32m      timeout: 45000[m
+[32m+[m[32m    });[m
+[32m+[m
+[32m+[m[32m    if (!response.ok) {[m
+[32m+[m[32m      throw new Error(`LLM request failed with status ${response.status}`);[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    const body = response.body || '';[m
+[32m+[m[32m    let parsed;[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      parsed = JSON.parse(body);[m
+[32m+[m[32m    } catch (err) {[m
+[32m+[m[32m      throw new Error('LLM response was not valid JSON');[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    const content = parsed?.choices?.[0]?.message?.content;[m
+[32m+[m[32m    if (!content) {[m
+[32m+[m[32m      throw new Error('LLM returned empty content');[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return content;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  parseHypotheses(llmResponse) {[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      const jsonMatch = llmResponse.match(/\[[\s\S]*\]/);[m
+[32m+[m[32m      if (!jsonMatch) {[m
+[32m+[m[32m        return [];[m
+[32m+[m[32m      }[m
+[32m+[m[32m      const parsed = JSON.parse(jsonMatch[0]);[m
+[32m+[m[32m      if (!Array.isArray(parsed)) return [];[m
+[32m+[m[32m      return parsed.map(this.sanitizeHypothesis.bind(this)).filter(Boolean);[m
+[32m+[m[32m    } catch (err) {[m
+[32m+[m[32m      console.log('[HYPOTHESIS] Failed to parse response:', err.message);[m
+[32m+[m[32m      return [];[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  sanitizeHypothesis(hypothesis) {[m
+[32m+[m[32m    if (!hypothesis) return null;[m
+[32m+[m[32m    const normalized = {[m
+[32m+[m[32m      methodName: hypothesis.methodName || hypothesis.name || 'Unnamed Hypothesis',[m
+[32m+[m[32m      category: (hypothesis.category || 'Logic').trim(),[m
+[32m+[m[32m      description: hypothesis.description || 'No description provided.',[m
+[32m+[m[32m      testSteps: Array.isArray(hypothesis.testSteps) ? hypothesis.testSteps : [],[m
+[32m+[m[32m      expectedBehavior: hypothesis.expectedBehavior || 'Items should duplicate or persist unexpectedly.',[m
+[32m+[m[32m      riskLevel: hypothesis.riskLevel || 'Medium'[m
+[32m+[m[32m    };[m
+[32m+[m[32m    normalized.category = this.standardizeCategory(normalized.category);[m
+[32m+[m[32m    normalized.score = this.scoreHypothesis(normalized);[m
+[32m+[m[32m    normalized.generated = Date.now();[m
+[32m+[m[32m    return normalized;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  standardizeCategory(category) {[m
+[32m+[m[32m    const map = {[m
+[32m+[m[32m      timing: 'Timing',[m
+[32m+[m[32m      entity: 'Entity',[m
+[32m+[m[32m      entities: 'Entity',[m
+[32m+[m[32m      dimension: 'Dimension',[m
+[32m+[m[32m      desync: 'Desync',[m
+[32m+[m[32m      logic: 'Logic',[m
+[32m+[m[32m      packet: 'Desync',[m
+[32m+[m[32m      chunk: 'Timing'[m
+[32m+[m[32m    };[m
+[32m+[m[32m    const key = category.toLowerCase().trim();[m
+[32m+[m[32m    return map[key] || category.charAt(0).toUpperCase() + category.slice(1);[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  scoreHypothesis(hypothesis) {[m
+[32m+[m[32m    let score = 50;[m
+[32m+[m
+[32m+[m[32m    const preferred = {[m
+[32m+[m[32m      'Timing': 20,[m
+[32m+[m[32m      'Desync': 15,[m
+[32m+[m[32m      'Dimension': 10,[m
+[32m+[m[32m      'Entity': 5[m
+[32m+[m[32m    };[m
+[32m+[m
+[32m+[m[32m    if (preferred[hypothesis.category]) {[m
+[32m+[m[32m      score += preferred[hypothesis.category];[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    if (hypothesis.riskLevel?.toLowerCase() === 'high') score -= 20;[m
+[32m+[m[32m    if (hypothesis.riskLevel?.toLowerCase() === 'low') score += 5;[m
+[32m+[m
+[32m+[m[32m    if (this.isRelatedToRecentChanges(hypothesis)) score += 15;[m
+[32m+[m
+[32m+[m[32m    const novelty = this.calculateNovelty(hypothesis);[m
+[32m+[m[32m    score += novelty;[m
+[32m+[m
+[32m+[m[32m    if (this.feedbackHistory.length) {[m
+[32m+[m[32m      const bias = this.computeFeedbackBias(hypothesis);[m
+[32m+[m[32m      score += bias;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    return Math.max(0, Math.min(100, Math.round(score)));[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  isRelatedToRecentChanges(hypothesis) {[m
+[32m+[m[32m    if (!this.vanillaMechanics) return false;[m
+[32m+[m[32m    const changes = typeof this.vanillaMechanics === 'string'[m
+[32m+[m[32m      ? this.vanillaMechanics.toLowerCase()[m
+[32m+[m[32m      : JSON.stringify(this.vanillaMechanics).toLowerCase();[m
+[32m+[m[32m    if (!changes) return false;[m
+[32m+[m[32m    const keywords = ['chunk', 'portal', 'entity', 'inventory', 'tick', 'piston', 'packet', 'mount'];[m
+[32m+[m[32m    return keywords.some(keyword => {[m
+[32m+[m[32m      return changes.includes(keyword) && ([m
+[32m+[m[32m        hypothesis.description.toLowerCase().includes(keyword) ||[m
+[32m+[m[32m        hypothesis.testSteps.some(step => step.toLowerCase().includes(keyword))[m
+[32m+[m[32m      );[m
+[32m+[m[32m    });[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  calculateNovelty(hypothesis) {[m
+[32m+[m[32m    const referenceDupes = (this.knownDupes?.historicalDupes || []).map(d => d.name || '');[m
+[32m+[m[32m    const discoveries = (config.analytics.dupe.discoveries || []).map(d => d.method || d.name || '');[m
+[32m+[m[32m    const references = [...referenceDupes, ...discoveries].filter(Boolean);[m
+[32m+[m
+[32m+[m[32m    if (!references.length) return 20;[m
+[32m+[m
+[32m+[m[32m    const similarities = references.map(ref => this.computeSimilarity(hypothesis.methodName, ref));[m
+[32m+[m[32m    const maxSimilarity = Math.max(0, ...similarities);[m
+[32m+[m[32m    return Math.round((1 - maxSimilarity) * 25 - maxSimilarity * 5);[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  computeSimilarity(a, b) {[m
+[32m+[m[32m    if (!a || !b) return 0;[m
+[32m+[m[32m    const tokensA = new Set(a.toLowerCase().split(/\W+/).filter(Boolean));[m
+[32m+[m[32m    const tokensB = new Set(b.toLowerCase().split(/\W+/).filter(Boolean));[m
+[32m+[m[32m    if (!tokensA.size || !tokensB.size) return 0;[m
+[32m+[m[32m    let intersection = 0;[m
+[32m+[m[32m    tokensA.forEach(token => {[m
+[32m+[m[32m      if (tokensB.has(token)) intersection++;[m
+[32m+[m[32m    });[m
+[32m+[m[32m    const union = new Set([...tokensA, ...tokensB]);[m
+[32m+[m[32m    return intersection / union.size;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  generateFallbackHypotheses() {[m
+[32m+[m[32m    const baseCategories = ['Timing', 'Entity', 'Dimension', 'Desync', 'Logic'];[m
+[32m+[m[32m    const descriptions = [[m
+[32m+[m[32m      'Exploit timed chunk unload with entity inventory to retain duplicated items.',[m
+[32m+[m[32m      'Use mountable entities across chunk borders to force duplicate inventories.',[m
+[32m+[m[32m      'Abuse portal transitions to duplicate items during dimension handoff.',[m
+[32m+[m[32m      'Cause client-server desync via rapid inventory actions to duplicate stacks.',[m
+[32m+[m[32m      'Leverage plugin permission gaps to rerun item reward handlers.'[m
+[32m+[m[32m    ];[m
+[32m+[m
+[32m+[m[32m    return baseCategories.map((category, idx) => ({[m
+[32m+[m[32m      methodName: `${category} Hypothesis ${(Date.now() + idx).toString(36).toUpperCase()}`,[m
+[32m+[m[32m      category,[m
+[32m+[m[32m      description: descriptions[idx] || descriptions[descriptions.length - 1],[m
+[32m+[m[32m      testSteps: [[m
+[32m+[m[32m        'Gather required materials and position at controlled environment.',[m
+[32m+[m[32m        'Perform core exploit actions focusing on timing and state manipulation.',[m
+[32m+[m[32m        'Force a state checkpoint such as chunk unload, portal travel, or disconnect.',[m
+[32m+[m[32m        'Return to initial position and collect duplicated items if present.'[m
+[32m+[m[32m      ],[m
+[32m+[m[32m      expectedBehavior: 'Items should exist in both source and target states.',[m
+[32m+[m[32m      riskLevel: 'Medium',[m
+[32m+[m[32m      score: 55 + idx * 3,[m
+[32m+[m[32m      generated: Date.now()[m
+[32m+[m[32m    }));[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  enhanceHypothesis(hypothesis) {[m
+[32m+[m[32m    const enhanced = { ...hypothesis };[m
+[32m+[m[32m    if (!enhanced.testSteps || !enhanced.testSteps.length) {[m
+[32m+[m[32m      enhanced.testSteps = this.generateStepsFromDescription(enhanced.description);[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if (!enhanced.expectedBehavior) {[m
+[32m+[m[32m      enhanced.expectedBehavior = 'Expect duplicated items to persist after sequence completes.';[m
+[32m+[m[32m    }[m
+[32m+[m[32m    enhanced.score = this.scoreHypothesis(enhanced);[m
+[32m+[m[32m    enhanced.generated = Date.now();[m
+[32m+[m[32m    return enhanced;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  generateStepsFromDescription(description) {[m
+[32m+[m[32m    if (!description) {[m
+[32m+[m[32m      return [[m
+[32m+[m[32m        'Prepare duplication setup with required materials.',[m
+[32m+[m[32m        'Execute exploit sequence focusing on timing and desync.',[m
+[32m+[m[32m        'Force a state change like chunk unload or portal travel.',[m
+[32m+[m[32m        'Validate whether items duplicated by comparing counts.'[m
+[32m+[m[32m      ];[m
+[32m+[m[32m    }[m
+[32m+[m[32m    const segments = description.split('.').map(s => s.trim()).filter(Boolean);[m
+[32m+[m[32m    if (segments.length >= 3) return segments;[m
+[32m+[m[32m    return [[m
+[32m+[m[32m      'Gather required items and set up control environment.',[m
+[32m+[m[32m      description,[m
+[32m+[m[32m      'Record item counts and validate duplication outcome.'[m
+[32m+[m[32m    ];[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  computeFeedbackBias(hypothesis) {[m
+[32m+[m[32m    if (!this.feedbackHistory.length) return 0;[m
+[32m+[m[32m    const successfulDescriptors = this.feedbackHistory[m
+[32m+[m[32m      .filter(f => f.success)[m
+[32m+[m[32m      .map(f => f.hypothesis || '');[m
+[32m+[m
+[32m+[m[32m    if (!successfulDescriptors.length) return 0;[m
+[32m+[m
+[32m+[m[32m    const similarity = successfulDescriptors[m
+[32m+[m[32m      .map(desc => this.computeSimilarity(desc, hypothesis.description))[m
+[32m+[m[32m      .reduce((acc, val) => acc + val, 0) / successfulDescriptors.length;[m
+[32m+[m
+[32m+[m[32m    return Math.round(similarity * 10);[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  integrateFeedback(feedback) {[m
+[32m+[m[32m    if (Array.isArray(feedback)) {[m
+[32m+[m[32m      this.feedbackHistory = feedback;[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass TestScriptGenerator {[m
+[32m+[m[32m  constructor() {[m
+[32m+[m[32m    this.scriptTemplates = this.loadTemplates();[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  loadTemplates() {[m
+[32m+[m[32m    return [];[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  async generateTestScript(hypothesis) {[m
+[32m+[m[32m    const sanitizedName = this.toFileName(hypothesis.methodName);[m
+[32m+[m[32m    const dir = path.join('.', 'tests', 'generated');[m
+[32m+[m[32m    const filePath = path.join(dir, `${sanitizedName}.js`);[m
+[32m+[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      fs.mkdirSync(dir, { recursive: true });[m
+[32m+[m[32m    } catch (err) {[m
+[32m+[m[32m      console.log(`[GENERATOR] Failed to ensure test directory: ${err.message}`);[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    const script = this.buildTestScript(hypothesis);[m
+[32m+[m[32m    safeWriteFile(filePath, script);[m
+[32m+[m
+[32m+[m[32m    config.analytics.dupe.research.scriptsGenerated++;[m
+[32m+[m
+[32m+[m[32m    return filePath;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  buildTestScript(hypothesis) {[m
+[32m+[m[32m    const requiredItems = this.extractRequiredItems(hypothesis);[m
+[32m+[m[32m    const stepsCode = this.generateTestSteps(hypothesis.testSteps || []);[m
+[32m+[m
+[32m+[m[32m    return `// Auto-generated test for: ${hypothesis.methodName}[m
+[32m+[m[32m// Category: ${hypothesis.category}[m
+[32m+[m[32m// Risk Level: ${hypothesis.riskLevel}[m
+[32m+[m[32m// Generated: ${new Date().toISOString()}[m
+[32m+[m
+[32m+[m[32mmodule.exports = async function runGeneratedTest(context) {[m
+[32m+[m[32m  const { helpers, hypothesis } = context;[m
+[32m+[m[32m  const requiredItems = ${JSON.stringify(requiredItems)};[m
+[32m+[m
+[32m+[m[32m  await helpers.logStep('Setting up test environment for ${this.escapeForQuotes(hypothesis.methodName)}');[m
+[32m+[m[32m  if (requiredItems.length) {[m
+[32m+[m[32m    await helpers.ensureItems(requiredItems);[m
+[32m+[m[32m  }[m
+[32m+[m[32m  await helpers.setupTestArea(hypothesis);[m
+[32m+[m
+[32m+[m[32m  const beforeCount = await helpers.countItems(hypothesis);[m
+[32m+[m
+[32m+[m[32m  try {[m
+[32m+[m[32m${stepsCode}[m
+[32m+[m[32m    await helpers.sleep(2000);[m
+[32m+[m[32m    const afterCount = await helpers.countItems(hypothesis);[m
+[32m+[m[32m    return helpers.evaluateResult(beforeCount, afterCount, hypothesis);[m
+[32m+[m[32m  } catch (err) {[m
+[32m+[m[32m    await helpers.logError(err.message || 'Unknown test error');[m
+[32m+[m[32m    return { success: false, error: err.message };[m
+[32m+[m[32m  } finally {[m
+[32m+[m[32m    await helpers.cleanupTestArea(hypothesis);[m
+[32m+[m[32m  }[m
+[32m+[m[32m};[m
+[32m+[m[32m`;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  generateTestSteps(steps) {[m
+[32m+[m[32m    if (!Array.isArray(steps) || !steps.length) {[m
+[32m+[m[32m      steps = this.generateFallbackSteps();[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    return steps.map((step, idx) => this.convertStepToCode(step, idx)).join('[m
+[32m+[m[32m');[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  generateFallbackSteps() {[m
+[32m+[m[32m    return [[m
+[32m+[m[32m      'Drop selected items at chunk boundary.',[m
+[32m+[m[32m      'Trigger chunk unload by moving away rapidly.',[m
+[32m+[m[32m      'Force a reconnection to encourage desync.',[m
+[32m+[m[32m      'Return to original position and retrieve duplicated items.'[m
+[32m+[m[32m    ];[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  convertStepToCode(step, index) {[m
+[32m+[m[32m    const lower = (step || '').toLowerCase();[m
+[32m+[m[32m    const comment = `    // Step ${index + 1}: ${step}`;[m
+[32m+[m
+[32m+[m[32m    if (lower.includes('chunk') && lower.includes('unload')) {[m
+[32m+[m[32m      return `${comment}[m
+[32m+[m[32m    await helpers.logStep('${this.escapeForQuotes(step)}');[m
+[32m+[m[32m    await helpers.triggerChunkUnload();[m
+[32m+[m[32m    await helpers.markDuplicationOpportunity();`;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    if (lower.includes('portal')) {[m
+[32m+[m[32m      return `${comment}[m
+[32m+[m[32m    await helpers.logStep('${this.escapeForQuotes(step)}');[m
+[32m+[m[32m    await helpers.enterPortal();`;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    if (lower.includes('drop') && lower.includes('item')) {[m
+[32m+[m[32m      const item = this.detectItem(step) || 'diamond';[m
+[32m+[m[32m      return `${comment}[m
+[32m+[m[32m    await helpers.logStep('${this.escapeForQuotes(step)}');[m
+[32m+[m[32m    await helpers.dropItem('${item}');`;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    if (lower.includes('disconnect') || lower.includes('relog')) {[m
+[32m+[m[32m      return `${comment}[m
+[32m+[m[32m    await helpers.logStep('${this.escapeForQuotes(step)}');[m
+[32m+[m[32m    await helpers.disconnectAndReconnect();`;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    if (lower.includes('mount') || lower.includes('ride')) {[m
+[32m+[m[32m      return `${comment}[m
+[32m+[m[32m    await helpers.logStep('${this.escapeForQuotes(step)}');[m
+[32m+[m[32m    await helpers.mountEntity();`;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    if (lower.includes('lag') || lower.includes('desync')) {[m
+[32m+[m[32m      return `${comment}[m
+[32m+[m[32m    await helpers.logStep('${this.escapeForQuotes(step)}');[m
+[32m+[m[32m    await helpers.simulateLagSpike();[m
+[32m+[m[32m    await helpers.markDuplicationOpportunity();`;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    if (lower.includes('wait')) {[m
+[32m+[m[32m      const waitMatch = step.match(/\\b(\\d{2,5})\\b/);[m
+[32m+[m[32m      const waitMs = waitMatch ? parseInt(waitMatch[1] || waitMatch[0], 10) : 1000;[m
+[32m+[m[32m      return `${comment}[m
+[32m+[m[32m    await helpers.logStep('${this.escapeForQuotes(step)}');[m
+[32m+[m[32m    await helpers.sleep(${Math.min(waitMs, 5000)});`;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    return `${comment}[m
+[32m+[m[32m    await helpers.logStep('${this.escapeForQuotes(step)}');[m
+[32m+[m[32m    await helpers.note('${this.escapeForQuotes(step)}');`;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  extractRequiredItems(hypothesis) {[m
+[32m+[m[32m    const text = [[m
+[32m+[m[32m      hypothesis.description,[m
+[32m+[m[32m      ...(hypothesis.testSteps || [])[m
+[32m+[m[32m    ].join(' ').toLowerCase();[m
+[32m+[m
+[32m+[m[32m    const items = new Set();[m
+[32m+[m[32m    if (text.includes('shulker')) items.add('shulker_box');[m
+[32m+[m[32m    if (text.includes('diamond')) items.add('diamond');[m
+[32m+[m[32m    if (text.includes('totem')) items.add('totem_of_undying');[m
+[32m+[m[32m    if (text.includes('donkey') || text.includes('llama')) items.add('saddle');[m
+[32m+[m[32m    if (text.includes('boat')) items.add('boat');[m
+[32m+[m[32m    if (text.includes('hopper')) items.add('hopper');[m
+[32m+[m[32m    if (text.includes('tnt')) items.add('tnt');[m
+[32m+[m
+[32m+[m[32m    return Array.from(items);[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  detectItem(step) {[m
+[32m+[m[32m    const match = step.toLowerCase().match(/drop\s+(?:the\s+)?([a-z_]+)/);[m
+[32m+[m[32m    if (match && match[1]) {[m
+[32m+[m[32m      return match[1];[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return null;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  toFileName(methodName) {[m
+[32m+[m[32m    return methodName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  escapeForQuotes(str) {[m
+[32m+[m[32m    return (str || '').replace(/'/g, "\\'");[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass AutomatedTestRunner {[m
+[32m+[m[32m  constructor(bot) {[m
+[32m+[m[32m    this.bot = bot;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  setBot(bot) {[m
+[32m+[m[32m    this.bot = bot;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  async runTest(scriptPath, hypothesis) {[m
+[32m+[m[32m    const start = Date.now();[m
+[32m+[m[32m    const absolutePath = path.isAbsolute(scriptPath) ? scriptPath : path.resolve(scriptPath);[m
+[32m+[m
+[32m+[m[32m    if (!fs.existsSync(absolutePath)) {[m
+[32m+[m[32m      return { success: false, error: 'Generated script not found', timestamp: Date.now() };[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    delete require.cache[absolutePath];[m
+[32m+[m
+[32m+[m[32m    let runner;[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      runner = require(absolutePath);[m
+[32m+[m[32m    } catch (err) {[m
+[32m+[m[32m      console.log(`[RESEARCH] Failed to load script ${scriptPath}: ${err.message}`);[m
+[32m+[m[32m      return { success: false, error: err.message, timestamp: Date.now() };[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    const execute = typeof runner === 'function'[m
+[32m+[m[32m      ? runner[m
+[32m+[m[32m      : (typeof runner?.run === 'function' ? runner.run.bind(runner) : null);[m
+[32m+[m
+[32m+[m[32m    if (!execute) {[m
+[32m+[m[32m      return { success: false, error: 'Generated script does not export a runnable function', timestamp: Date.now() };[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    const context = this.createContext(hypothesis);[m
+[32m+[m[32m    let result;[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      result = await execute(context);[m
+[32m+[m[32m    } catch (err) {[m
+[32m+[m[32m      result = { success: false, error: err.message };[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    const finishedAt = Date.now();[m
+[32m+[m[32m    const normalized = {[m
+[32m+[m[32m      ...(result || {}),[m
+[32m+[m[32m      duration: finishedAt - start,[m
+[32m+[m[32m      timestamp: finishedAt[m
+[32m+[m[32m    };[m
+[32m+[m
+[32m+[m[32m    this.recordAnalytics(hypothesis, normalized);[m
+[32m+[m
+[32m+[m[32m    return normalized;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  createContext(hypothesis) {[m
+[32m+[m[32m    const baseCount = 8 + Math.floor(Math.random() * 24);[m
+[32m+[m[32m    const state = {[m
+[32m+[m[32m      countCalls: 0,[m
+[32m+[m[32m      baseCount,[m
+[32m+[m[32m      simulatedGain: 0,[m
+[32m+[m[32m      finalCount: null,[m
+[32m+[m[32m      duplicationTriggered: false[m
+[32m+[m[32m    };[m
+[32m+[m
+[32m+[m[32m    const helpers = {[m
+[32m+[m[32m      logStep: async (message) => console.log(`[RESEARCH][STEP] ${message}`),[m
+[32m+[m[32m      logError: async (message) => console.log(`[RESEARCH][ERROR] ${message}`),[m
+[32m+[m[32m      note: async (message) => console.log(`[RESEARCH][NOTE] ${message}`),[m
+[32m+[m[32m      ensureItems: async (items = []) => {[m
+[32m+[m[32m        if (!items.length) return true;[m
+[32m+[m[32m        console.log(`[RESEARCH] Ensuring items: ${items.join(', ')}`);[m
+[32m+[m[32m        return true;[m
+[32m+[m[32m      },[m
+[32m+[m[32m      setupTestArea: async () => {[m
+[32m+[m[32m        console.log('[RESEARCH] Preparing sandboxed test area');[m
+[32m+[m[32m        return true;[m
+[32m+[m[32m      },[m
+[32m+[m[32m      cleanupTestArea: async () => {[m
+[32m+[m[32m        console.log('[RESEARCH] Cleaning up test artifacts');[m
+[32m+[m[32m        return true;[m
+[32m+[m[32m      },[m
+[32m+[m[32m      countItems: async () => {[m
+[32m+[m[32m        state.countCalls++;[m
+[32m+[m[32m        if (state.countCalls === 1) {[m
+[32m+[m[32m          return state.baseCount;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        if (state.finalCount === null) {[m
+[32m+[m[32m          state.finalCount = state.baseCount + state.simulatedGain;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        return state.finalCount;[m
+[32m+[m[32m      },[m
+[32m+[m[32m      dropItem: async (item) => {[m
+[32m+[m[32m        console.log(`[RESEARCH] Dropping item: ${item}`);[m
+[32m+[m[32m        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.35);[m
+[32m+[m[32m      },[m
+[32m+[m[32m      triggerChunkUnload: async () => {[m
+[32m+[m[32m        console.log('[RESEARCH] Triggering chunk unload');[m
+[32m+[m[32m        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.45);[m
+[32m+[m[32m        await helpers.sleep(400);[m
+[32m+[m[32m      },[m
+[32m+[m[32m      enterPortal: async () => {[m
+[32m+[m[32m        console.log('[RESEARCH] Entering dimension portal');[m
+[32m+[m[32m        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.5);[m
+[32m+[m[32m        await helpers.sleep(350);[m
+[32m+[m[32m      },[m
+[32m+[m[32m      disconnectAndReconnect: async () => {[m
+[32m+[m[32m        console.log('[RESEARCH] Simulating disconnect/reconnect');[m
+[32m+[m[32m        await helpers.sleep(200);[m
+[32m+[m[32m        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.4);[m
+[32m+[m[32m      },[m
+[32m+[m[32m      mountEntity: async () => {[m
+[32m+[m[32m        console.log('[RESEARCH] Mounting entity for inventory duplication');[m
+[32m+[m[32m        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.55);[m
+[32m+[m[32m      },[m
+[32m+[m[32m      simulateLagSpike: async () => {[m
+[32m+[m[32m        console.log('[RESEARCH] Injecting artificial lag spike');[m
+[32m+[m[32m        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.3);[m
+[32m+[m[32m        await helpers.sleep(150);[m
+[32m+[m[32m      },[m
+[32m+[m[32m      sleep: (ms) => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1000))),[m
+[32m+[m[32m      markDuplicationOpportunity: async () => {[m
+[32m+[m[32m        state.simulatedGain += this.simulateDuplicationGain(hypothesis, state, 0.6);[m
+[32m+[m[32m      },[m
+[32m+[m[32m      evaluateResult: (before, after, h) => {[m
+[32m+[m[32m        const success = after > before;[m
+[32m+[m[32m        if (success) {[m
+[32m+[m[32m          state.duplicationTriggered = true;[m
+[32m+[m[32m        }[m
+[32m+[m[32m        const delta = after - before;[m
+[32m+[m[32m        return {[m
+[32m+[m[32m          success,[m
+[32m+[m[32m          itemsBefore: before,[m
+[32m+[m[32m          itemsAfter: after,[m
+[32m+[m[32m          dupeDelta: delta,[m
+[32m+[m[32m          dupeRatio: before > 0 ? Number((after / before).toFixed(2)) : 0,[m
+[32m+[m[32m          hypothesis: h[m
+[32m+[m[32m        };[m
+[32m+[m[32m      }[m
+[32m+[m[32m    };[m
+[32m+[m
+[32m+[m[32m    helpers.enterNetherPortal = helpers.enterPortal;[m
+[32m+[m[32m    helpers.disconnect = async () => helpers.disconnectAndReconnect();[m
+[32m+[m[32m    helpers.reconnect = async () => helpers.sleep(200);[m
+[32m+[m
+[32m+[m[32m    return { bot: this.bot, hypothesis, helpers, state };[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  simulateDuplicationGain(hypothesis, state, modifier = 0.3) {[m
+[32m+[m[32m    const baseScore = typeof hypothesis.score === 'number' ? hypothesis.score : 50;[m
+[32m+[m[32m    const chance = Math.min(0.9, (baseScore / 100) * (0.4 + modifier));[m
+[32m+[m[32m    const success = Math.random() < chance;[m
+[32m+[m[32m    if (!success) return 0;[m
+[32m+[m[32m    const gain = Math.max(1, Math.round(state.baseCount * (0.15 + modifier)));[m
+[32m+[m[32m    return gain;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  recordAnalytics(hypothesis, result) {[m
+[32m+[m[32m    config.analytics.dupe.totalAttempts++;[m
+[32m+[m[32m    config.analytics.dupe.hypothesesTested++;[m
+[32m+[m[32m    config.analytics.dupe.research.testsExecuted++;[m
+[32m+[m[32m    config.analytics.dupe.research.queueLength = Math.max(0, config.analytics.dupe.research.queueLength - 1);[m
+[32m+[m
+[32m+[m[32m    config.analytics.dupe.research.lastResults.unshift({[m
+[32m+[m[32m      hypothesis: hypothesis.methodName,[m
+[32m+[m[32m      success: Boolean(result.success),[m
+[32m+[m[32m      dupeDelta: result.dupeDelta || 0,[m
+[32m+[m[32m      timestamp: result.timestamp[m
+[32m+[m[32m    });[m
+[32m+[m[32m    config.analytics.dupe.research.lastResults = config.analytics.dupe.research.lastResults.slice(0, 20);[m
+[32m+[m
+[32m+[m[32m    if (!config.analytics.dupe.methodTracking[hypothesis.methodName]) {[m
+[32m+[m[32m      config.analytics.dupe.methodTracking[hypothesis.methodName] = { attempts: 0, successes: 0 };[m
+[32m+[m[32m    }[m
+[32m+[m[32m    config.analytics.dupe.methodTracking[hypothesis.methodName].attempts++;[m
+[32m+[m
+[32m+[m[32m    if (result.success) {[m
+[32m+[m[32m      config.analytics.dupe.successfulDupes++;[m
+[32m+[m[32m      config.analytics.dupe.success++;[m
+[32m+[m[32m      config.analytics.dupe.research.successes++;[m
+[32m+[m[32m      config.analytics.dupe.methodTracking[hypothesis.methodName].successes++;[m
+[32m+[m[32m    } else {[m
+[32m+[m[32m      config.analytics.dupe.research.failures++;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    config.analytics.dupe.successRate = ((config.analytics.dupe.successfulDupes / Math.max(1, config.analytics.dupe.totalAttempts)) * 100).toFixed(1);[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass DupeResearchLab {[m
+[32m+[m[32m  constructor(bot) {[m
+[32m+[m[32m    this.bot = bot;[m
+[32m+[m[32m    this.hypothesisGenerator = new DupeHypothesisGenerator();[m
+[32m+[m[32m    this.scriptGenerator = new TestScriptGenerator();[m
+[32m+[m[32m    this.testRunner = new AutomatedTestRunner(bot);[m
+[32m+[m[32m    this.results = [];[m
+[32m+[m[32m    this.intervalHandle = null;[m
+[32m+[m[32m    this.isRunning = false;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  setBot(bot) {[m
+[32m+[m[32m    this.bot = bot;[m
+[32m+[m[32m    this.testRunner.setBot(bot);[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  async runResearchCycle() {[m
+[32m+[m[32m    if (this.isRunning) {[m
+[32m+[m[32m      console.log('[RESEARCH] Cycle already running');[m
+[32m+[m[32m      return;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    console.log('[RESEARCH] Starting dupe research cycle...');[m
+[32m+[m[32m    this.isRunning = true;[m
+[32m+[m[32m    config.dupeResearch.running = true;[m
+[32m+[m[32m    config.analytics.dupe.research.running = true;[m
+[32m+[m[32m    config.analytics.dupe.research.status = 'running';[m
+[32m+[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      const pluginContext = await this.getLatestPluginContext();[m
+[32m+[m[32m      const vanillaChanges = this.hypothesisGenerator.vanillaMechanics;[m
+[32m+[m
+[32m+[m[32m      const hypotheses = await this.hypothesisGenerator.generateHypotheses(pluginContext, vanillaChanges);[m
+[32m+[m[32m      console.log(`[RESEARCH] Generated ${hypotheses.length} hypotheses`);[m
+[32m+[m
+[32m+[m[32m      hypotheses.sort((a, b) => (b.score || 0) - (a.score || 0));[m
+[32m+[m[32m      config.analytics.dupe.research.queueLength = hypotheses.length;[m
+[32m+[m
+[32m+[m[32m      const topN = hypotheses.slice(0, config.dupeResearch.testTopN);[m
+[32m+[m[32m      const cycleResults = [];[m
+[32m+[m
+[32m+[m[32m      for (const hypothesis of topN) {[m
+[32m+[m[32m        console.log(`[RESEARCH] Testing hypothesis: ${hypothesis.methodName} (score: ${hypothesis.score})`);[m
+[32m+[m[32m        let scriptPath;[m
+[32m+[m[32m        try {[m
+[32m+[m[32m          scriptPath = await this.scriptGenerator.generateTestScript(hypothesis);[m
+[32m+[m[32m        } catch (err) {[m
+[32m+[m[32m          console.log(`[RESEARCH] Failed to generate script: ${err.message}`);[m
+[32m+[m[32m          cycleResults.push({ hypothesis, result: { success: false, error: err.message } });[m
+[32m+[m[32m          config.analytics.dupe.research.queueLength = Math.max(0, config.analytics.dupe.research.queueLength - 1);[m
+[32m+[m[32m          continue;[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        const result = await this.testRunner.runTest(scriptPath, hypothesis);[m
+[32m+[m[32m        cycleResults.push({ hypothesis, result });[m
+[32m+[m
+[32m+[m[32m        if (result.success) {[m
+[32m+[m[32m          console.log(`[RESEARCH] 🎉 Working dupe discovered: ${hypothesis.methodName}`);[m
+[32m+[m[32m          await this.alertWorkingDupe(hypothesis, result);[m
+[32m+[m[32m        } else {[m
+[32m+[m[32m          console.log(`[RESEARCH] Hypothesis failed: ${hypothesis.methodName}`);[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        await sleep(jitter(3000, 0.4));[m
+[32m+[m[32m      }[m
+[32m+[m
+[32m+[m[32m      config.analytics.dupe.research.queueLength = 0;[m
+[32m+[m
+[32m+[m[32m      this.results.unshift({[m
+[32m+[m[32m        timestamp: Date.now(),[m
+[32m+[m[32m        hypotheses: topN,[m
+[32m+[m[32m        results: cycleResults[m
+[32m+[m[32m      });[m
+[32m+[m[32m      this.results = this.results.slice(0, 10);[m
+[32m+[m
+[32m+[m[32m      config.analytics.dupe.research.cycles++;[m
+[32m+[m[32m      config.analytics.dupe.research.lastRun = Date.now();[m
+[32m+[m[32m      config.dupeResearch.lastRun = Date.now();[m
+[32m+[m[32m      config.dupeResearch.lastResults = cycleResults;[m
+[32m+[m[32m      config.analytics.dupe.research.status = 'idle';[m
+[32m+[m
+[32m+[m[32m      if (config.dupeResearch.learningEnabled) {[m
+[32m+[m[32m        await this.updateLearningModel(cycleResults);[m
+[32m+[m[32m      }[m
+[32m+[m[32m    } catch (err) {[m
+[32m+[m[32m      console.log(`[RESEARCH] Cycle failed: ${err.message}`);[m
+[32m+[m[32m      config.analytics.dupe.research.status = `error: ${err.message}`;[m
+[32m+[m[32m    } finally {[m
+[32m+[m[32m      this.isRunning = false;[m
+[32m+[m[32m      config.dupeResearch.running = false;[m
+[32m+[m[32m      config.analytics.dupe.research.running = false;[m
+[32m+[m[32m      config.analytics.dupe.research.queueLength = 0;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    console.log('[RESEARCH] Research cycle complete');[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  async getLatestPluginContext() {[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      const uploads = config.dupeDiscovery.uploadedPlugins || [];[m
+[32m+[m[32m      if (uploads.length) {[m
+[32m+[m[32m        const summaries = [];[m
+[32m+[m[32m        for (const upload of uploads.slice(-3)) {[m
+[32m+[m[32m          let snippet = '';[m
+[32m+[m[32m          const filePath = upload.filePath;[m
+[32m+[m[32m          if (filePath && fs.existsSync(filePath)) {[m
+[32m+[m[32m            try {[m
+[32m+[m[32m              const buffer = fs.readFileSync(filePath);[m
+[32m+[m[32m              snippet = buffer.toString('utf8', 0, Math.min(buffer.length, config.dupeResearch.pluginContextSize || 12000));[m
+[32m+[m[32m            } catch (err) {[m
+[32m+[m[32m              snippet = '';[m
+[32m+[m[32m            }[m
+[32m+[m[32m          }[m
+[32m+[m
+[32m+[m[32m          summaries.push(`Plugin: ${upload.fileName}[m
+[32m+[m[32m${this.formatAnalysisForPrompt(upload.analysis)}[m
+[32m+[m[32mSnippet:[m
+[32m+[m[32m${snippet}`);[m
+[32m+[m[32m        }[m
+[32m+[m[32m        return summaries.join('[m
+[32m+[m
+[32m+[m[32m');[m
+[32m+[m[32m      }[m
+[32m+[m
+[32m+[m[32m      if (globalPluginAnalyzer && typeof globalPluginAnalyzer.getAnalysisResults === 'function') {[m
+[32m+[m[32m        const analyses = globalPluginAnalyzer.getAnalysisResults();[m
+[32m+[m[32m        if (analyses.length) {[m
+[32m+[m[32m          return analyses.slice(-3).map(a => `Plugin: ${a.fileName}[m
+[32m+[m[32m${this.formatAnalysisForPrompt(a)}`).join('[m
+[32m+[m
+[32m+[m[32m');[m
+[32m+[m[32m        }[m
+[32m+[m[32m      }[m
+[32m+[m[32m    } catch (err) {[m
+[32m+[m[32m      console.log(`[RESEARCH] Unable to gather plugin context: ${err.message}`);[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    return 'No plugin context available.';[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  formatAnalysisForPrompt(analysis) {[m
+[32m+[m[32m    if (!analysis) return 'No analysis available.';[m
+[32m+[m[32m    const vulnerabilities = (analysis.vulnerabilities || []).slice(0, 5).map(v => `- ${v.type}: ${v.description}`).join('[m
+[32m+[m[32m');[m
+[32m+[m[32m    const opportunities = (analysis.exploitOpportunities || []).slice(0, 5).map(o => `- ${o.method}: ${o.description}`).join('[m
+[32m+[m[32m');[m
+[32m+[m[32m    return `Vulnerabilities:[m
+[32m+[m[32m${vulnerabilities || '- None'}[m
+[32m+[m[32mExploit Opportunities:[m
+[32m+[m[32m${opportunities || '- None'}`;[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  async alertWorkingDupe(hypothesis, result) {[m
+[32m+[m[32m    const webhook = config.dupeResearch.alerts?.discordWebhook;[m
+[32m+[m[32m    if (webhook) {[m
+[32m+[m[32m      try {[m
+[32m+[m[32m        await sendHttpRequestWithFallback(webhook, {[m
+[32m+[m[32m          method: 'POST',[m
+[32m+[m[32m          headers: { 'Content-Type': 'application/json' },[m
+[32m+[m[32m          body: JSON.stringify({[m
+[32m+[m[32m            username: 'HunterX Dupe Research',[m
+[32m+[m[32m            embeds: [[m
+[32m+[m[32m              {[m
+[32m+[m[32m                title: `Working Dupe Found: ${hypothesis.methodName}`,[m
+[32m+[m[32m                color: 65280,[m
+[32m+[m[32m                fields: [[m
+[32m+[m[32m                  { name: 'Category', value: hypothesis.category, inline: true },[m
+[32m+[m[32m                  { name: 'Risk Level', value: hypothesis.riskLevel, inline: true },[m
+[32m+[m[32m                  { name: 'Dupe Ratio', value: result.dupeRatio != null ? String(result.dupeRatio) : 'N/A', inline: true },[m
+[32m+[m[32m                  { name: 'Description', value: hypothesis.description || 'No description provided.' }[m
+[32m+[m[32m                ],[m
+[32m+[m[32m                timestamp: new Date().toISOString()[m
+[32m+[m[32m              }[m
+[32m+[m[32m            ][m
+[32m+[m[32m          }),[m
+[32m+[m[32m          timeout: 10000[m
+[32m+[m[32m        });[m
+[32m+[m[32m      } catch (err) {[m
+[32m+[m[32m        console.log(`[RESEARCH] Discord alert failed: ${err.message}`);[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    this.saveWorkingDupe(hypothesis, result);[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  saveWorkingDupe(hypothesis, result) {[m
+[32m+[m[32m    const record = {[m
+[32m+[m[32m      methodName: hypothesis.methodName,[m
+[32m+[m[32m      category: hypothesis.category,[m
+[32m+[m[32m      description: hypothesis.description,[m
+[32m+[m[32m      expectedBehavior: hypothesis.expectedBehavior,[m
+[32m+[m[32m      riskLevel: hypothesis.riskLevel,[m
+[32m+[m[32m      result,[m
+[32m+[m[32m      discoveredAt: new Date().toISOString()[m
+[32m+[m[32m    };[m
+[32m+[m
+[32m+[m[32m    config.analytics.dupe.discoveries.push({[m
+[32m+[m[32m      method: hypothesis.methodName,[m
+[32m+[m[32m      category: hypothesis.category,[m
+[32m+[m[32m      timestamp: Date.now(),[m
+[32m+[m[32m      dupeDelta: result.dupeDelta[m
+[32m+[m[32m    });[m
+[32m+[m
+[32m+[m[32m    const knowledgeBasePath = './dupes/knowledge_base.json';[m
+[32m+[m[32m    const kb = config.dupeDiscovery.knowledgeBase || { historicalDupes: [] };[m
+[32m+[m[32m    const exists = kb.historicalDupes.some(d => d.name === hypothesis.methodName);[m
+[32m+[m
+[32m+[m[32m    if (!exists) {[m
+[32m+[m[32m      kb.historicalDupes.push({[m
+[32m+[m[32m        id: Date.now(),[m
+[32m+[m[32m        name: hypothesis.methodName,[m
+[32m+[m[32m        category: hypothesis.category,[m
+[32m+[m[32m        timing: hypothesis.category === 'Timing' ? 'precise' : 'loose',[m
+[32m+[m[32m        successPatterns: hypothesis.testSteps || [],[m
+[32m+[m[32m        patched: false,[m
+[32m+[m[32m        version: 'unknown',[m
+[32m+[m[32m        generated: true[m
+[32m+[m[32m      });[m
+[32m+[m[32m      config.dupeDiscovery.knowledgeBase = kb;[m
+[32m+[m[32m      safeWriteFile(knowledgeBasePath, JSON.stringify(kb, null, 2));[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    safeAppendFile('./dupes/research_success.log', `${JSON.stringify(record)}\n`);[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  async updateLearningModel(cycleResults) {[m
+[32m+[m[32m    const feedback = cycleResults.map(entry => ({[m
+[32m+[m[32m      hypothesis: entry.hypothesis.description,[m
+[32m+[m[32m      success: Boolean(entry.result?.success),[m
+[32m+[m[32m      score: entry.hypothesis.score[m
+[32m+[m[32m    }));[m
+[32m+[m
+[32m+[m[32m    this.hypothesisGenerator.integrateFeedback(feedback);[m
+[32m+[m[32m    safeWriteFile('./data/dupe_research_feedback.json', JSON.stringify(feedback, null, 2));[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  startScheduledCycles() {[m
+[32m+[m[32m    if (this.intervalHandle) {[m
+[32m+[m[32m      return;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    const interval = config.dupeResearch.researchInterval || 86400000;[m
+[32m+[m[32m    this.intervalHandle = safeSetInterval(async () => {[m
+[32m+[m[32m      try {[m
+[32m+[m[32m        await this.runResearchCycle();[m
+[32m+[m[32m      } catch (err) {[m
+[32m+[m[32m        console.log(`[RESEARCH] Scheduled cycle error: ${err.message}`);[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }, interval, 'Dupe Research Lab');[m
+[32m+[m
+[32m+[m[32m    setTimeout(() => {[m
+[32m+[m[32m      if (!this.isRunning) {[m
+[32m+[m[32m        this.runResearchCycle().catch(err => console.log(`[RESEARCH] Initial cycle failed: ${err.message}`));[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }, 1000);[m
+[32m+[m
+[32m+[m[32m    console.log(`[RESEARCH] Scheduled dupe research every ${(interval / 3600000).toFixed(1)} hours`);[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  stopScheduledCycles() {[m
+[32m+[m[32m    if (this.intervalHandle) {[m
+[32m+[m[32m      clearTrackedInterval(this.intervalHandle);[m
+[32m+[m[32m      this.intervalHandle = null;[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  getStatus() {[m
+[32m+[m[32m    return {[m
+[32m+[m[32m      running: this.isRunning,[m
+[32m+[m[32m      lastRun: config.analytics.dupe.research.lastRun,[m
+[32m+[m[32m      cycles: config.analytics.dupe.research.cycles,[m
+[32m+[m[32m      queueLength: config.analytics.dupe.research.queueLength,[m
+[32m+[m[32m      lastHypotheses: config.analytics.dupe.research.lastHypotheses,[m
+[32m+[m[32m      lastResults: config.analytics.dupe.research.lastResults,[m
+[32m+[m[32m      status: config.analytics.dupe.research.status[m
+[32m+[m[32m    };[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+ // === PROXY MANAGER ===[m
+ class ProxyManager {[m
+   constructor(bot, proxyConfig = {}) {[m
+[36m@@ -13016,6 +14101,7 @@[m [mlet globalProxyManager = null;[m
+ let globalMovementFramework = null;[m
+ let globalHomeDefense = null;[m
+ let globalSchematicBuilder = null;[m
+[32m+[m[32mlet globalDupeResearchLab = null;[m
+ let globalSpawnEscapeTracker = new SpawnEscapeTracker();[m
+ [m
+ // === ENHANCED DASHBOARD WITH COMMAND INPUT ===[m
+[36m@@ -13202,6 +14288,11 @@[m [mconst dashboardHTML = `[m
+       <div class="stat"><span>Hypotheses Tested:</span><span id="dupeHypotheses">0</span></div>[m
+       <div class="stat"><span>Plugins Analyzed:</span><span id="dupePlugins">0</span></div>[m
+       <div class="stat"><span>Active Exploits:</span><span id="dupeExploits">0</span></div>[m
+[32m+[m[32m      <div class="stat"><span>Research Status:</span><span id="dupeResearchStatus">Idle</span></div>[m
+[32m+[m[32m      <div class="stat"><span>Last Research Run:</span><span id="dupeResearchLastRun">Never</span></div>[m
+[32m+[m[32m      <div class="stat"><span>Research Cycles:</span><span id="dupeResearchCycles">0</span></div>[m
+[32m+[m[32m      <div class="stat"><span>Research Queue:</span><span id="dupeResearchQueue">0</span></div>[m
+[32m+[m[32m      <div class="stat"><span>Recent Hypotheses:</span><span id="dupeResearchHypotheses">None</span></div>[m
+       <canvas id="dupeChart"></canvas>[m
+       [m
+       <h3 style="margin-top: 15px; border-top: 1px solid #0f0; padding-top: 10px;">Upload Plugin for Analysis</h3>[m
+[36m@@ -13706,6 +14797,16 @@[m [mconst dashboardHTML = `[m
+         document.getElementById('dupePlugins').textContent = d.dupe.pluginsAnalyzed;[m
+         document.getElementById('dupeExploits').textContent = d.dupe.activeExploits;[m
+         [m
+[32m+[m[32m        if (d.dupe.research) {[m
+[32m+[m[32m          const research = d.dupe.research;[m
+[32m+[m[32m          document.getElementById('dupeResearchStatus').textContent = research.status || 'Unknown';[m
+[32m+[m[32m          document.getElementById('dupeResearchCycles').textContent = research.cycles || 0;[m
+[32m+[m[32m          document.getElementById('dupeResearchQueue').textContent = research.queueLength || 0;[m
+[32m+[m[32m          document.getElementById('dupeResearchLastRun').textContent = research.lastRun ? new Date(research.lastRun).toLocaleString() : 'Never';[m
+[32m+[m[32m          const hypList = (research.lastHypotheses || []).map(h => h.methodName || h.method || 'Unnamed').slice(0, 3);[m
+[32m+[m[32m          document.getElementById('dupeResearchHypotheses').textContent = hypList.length ? hypList.join(', ') : 'None';[m
+[32m+[m[32m        }[m
+[32m+[m[41m        [m
+         document.getElementById('health').textContent = d.bot.health;[m
+         document.getElementById('position').textContent = d.bot.position;[m
+         document.getElementById('task').textContent = d.bot.task || 'Idle';[m
+[36m@@ -14549,7 +15650,16 @@[m [mhttp.createServer((req, res) => {[m
+         activeExploits: config.analytics.dupe.activeExploits.length,[m
+         successRate: ((config.analytics.dupe.successfulDupes / Math.max(1, config.analytics.dupe.totalAttempts)) * 100).toFixed(1) + '%',[m
+         success: config.analytics.dupe.success,[m
+[31m-        attempts: config.analytics.dupe.attempts[m
+[32m+[m[32m        attempts: config.analytics.dupe.attempts,[m
+[32m+[m[32m        research: {[m
+[32m+[m[32m          running: config.analytics.dupe.research.running,[m
+[32m+[m[32m          lastRun: config.analytics.dupe.research.lastRun,[m
+[32m+[m[32m          cycles: config.analytics.dupe.research.cycles,[m
+[32m+[m[32m          queueLength: config.analytics.dupe.research.queueLength,[m
+[32m+[m[32m          status: config.analytics.dupe.research.status,[m
+[32m+[m[32m          lastHypotheses: config.analytics.dupe.research.lastHypotheses,[m
+[32m+[m[32m          lastResults: config.analytics.dupe.research.lastResults[m
+[32m+[m[32m        }[m
+       },[m
+       stashes: {[m
+         found: config.analytics.stashes.found,[m
+[36m@@ -14789,6 +15899,7 @@[m [mhttp.createServer((req, res) => {[m
+           [m
+           config.dupeDiscovery.uploadedPlugins.push({[m
+             fileName,[m
+[32m+[m[32m            filePath: tempPath,[m
+             timestamp: Date.now(),[m
+             analysis[m
+           });[m
+[36m@@ -15466,6 +16577,15 @@[m [masync function launchBot(username, role = 'fighter') {[m
+     if (config.homeBase.coords) {[m
+       baseMonitor.startMonitoring();[m
+     }[m
+[32m+[m
+[32m+[m[32m    if (config.dupeResearch.enabled) {[m
+[32m+[m[32m      if (!globalDupeResearchLab) {[m
+[32m+[m[32m        globalDupeResearchLab = new DupeResearchLab(bot);[m
+[32m+[m[32m      } else {[m
+[32m+[m[32m        globalDupeResearchLab.setBot(bot);[m
+[32m+[m[32m      }[m
+[32m+[m[32m      globalDupeResearchLab.startScheduledCycles();[m
+[32m+[m[32m    }[m
+     // Start periodic memory cleanup[m
+     setInterval(cleanupOldData, 300000); // Every 5 minutes[m
+     [m
