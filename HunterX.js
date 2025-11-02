@@ -49,6 +49,7 @@ const readline = require('readline');
 const http = require('http');
 const WebSocket = require('ws');
 const { SocksClient } = require('socks');
+const Discord = require('discord.js');
 // // const mineflayerViewer = require('prismarine-viewer').mineflayer; // Unused - removed // Unused - removed
 const nbt = require('prismarine-nbt');
 const { createFarmSystem } = require('./resource_farming');
@@ -496,6 +497,23 @@ const config = {
     queueETA: null,
     connectionStatus: 'direct',
     reconnectAttempts: 0
+  },
+
+  discord: {
+    enabled: true,
+    token: 'YOUR_DISCORD_BOT_TOKEN',
+    alertChannelId: 'ALERT_CHANNEL_ID',
+    controlChannelId: 'CONTROL_CHANNEL_ID',
+    authorizedUsers: ['USER_ID_1', 'USER_ID_2'],
+    adminUsers: ['ADMIN_USER_ID'],
+    alerts: {
+      stashFound: true,
+      combatAlert: true,
+      dupeDiscovered: true,
+      botDeath: true,
+      lowHealth: true,
+      taskComplete: true
+    }
   },
   
   // Movement framework
@@ -13650,6 +13668,362 @@ class DeathRecovery {
           }
       }
   }
+}
+
+// === DISCORD BRIDGE ===
+class DiscordBridge {
+  constructor() {
+    this.client = new Discord.Client({
+      intents: [
+        Discord.GatewayIntentBits.Guilds,
+        Discord.GatewayIntentBits.GuildMessages,
+        Discord.GatewayIntentBits.MessageContent
+      ]
+    });
+    
+    this.commandPrefix = '!hx'; // !hx command
+    this.alertChannel = null;
+    this.controlChannel = null;
+  }
+  
+  async start() {
+    this.client.on('ready', () => {
+      console.log(`[DISCORD] Logged in as ${this.client.user.tag}`);
+      this.setupChannels();
+    });
+    
+    this.client.on('messageCreate', msg => this.handleCommand(msg));
+    
+    await this.client.login(config.discord.token);
+  }
+  
+  setupChannels() {
+    this.alertChannel = this.client.channels.cache.get(config.discord.alertChannelId);
+    this.controlChannel = this.client.channels.cache.get(config.discord.controlChannelId);
+    
+    this.sendAlert('🟢 HunterX Discord Bridge Online');
+  }
+
+  isAuthorized(userId) {
+    return config.discord.authorizedUsers.includes(userId) ||
+           config.discord.adminUsers.includes(userId);
+  }
+
+  isAdmin(userId) {
+    return config.discord.adminUsers.includes(userId);
+  }
+
+  formatUptime() {
+    const uptime = process.uptime();
+    const days = Math.floor(uptime / 86400);
+    const hours = Math.floor(uptime / 3600) % 24;
+    const minutes = Math.floor(uptime / 60) % 60;
+    const seconds = Math.floor(uptime % 60);
+    return `${days}d ${hours}h ${minutes}m ${seconds}s`;
+  }
+
+  async handleCommand(msg) {
+    if (msg.author.bot) return;
+    if (!msg.content.startsWith(this.commandPrefix)) return;
+    
+    if (!this.isAuthorized(msg.author.id)) {
+      msg.reply('❌ Unauthorized');
+      return;
+    }
+    
+    const args = msg.content.slice(this.commandPrefix.length).trim().split(/ +/);
+    const command = args.shift().toLowerCase();
+    
+    switch (command) {
+      case 'status':
+        await this.cmdStatus(msg);
+        break;
+      
+      case 'goto':
+        await this.cmdGoto(msg, args);
+        break;
+      
+      case 'find':
+        await this.cmdFindItem(msg, args);
+        break;
+      
+      case 'stash':
+        await this.cmdStashHunt(msg);
+        break;
+      
+      case 'combat':
+        await this.cmdToggleCombat(msg, args);
+        break;
+      
+      case 'disconnect':
+        await this.cmdDisconnect(msg);
+        break;
+      
+      case 'swarm':
+        await this.cmdSwarmControl(msg, args);
+        break;
+      
+      case 'stats':
+        await this.cmdStats(msg);
+        break;
+      
+      case 'inventory':
+        await this.cmdInventory(msg);
+        break;
+      
+      case 'task':
+        await this.cmdTaskQueue(msg, args);
+        break;
+      
+      default:
+        msg.reply('❓ Unknown command. Type `!hx help` for commands.');
+    }
+  }
+
+  async cmdStatus(msg) {
+    const bot = globalBot;
+    if (!bot) {
+        msg.reply('❌ Bot not online');
+        return;
+    }
+    const embed = new Discord.EmbedBuilder()
+      .setColor('#00ff00')
+      .setTitle('🤖 HunterX Status')
+      .addFields(
+        { name: '🌍 Position', value: `X: ${bot.entity.position.x.toFixed(0)}, Y: ${bot.entity.position.y.toFixed(0)}, Z: ${bot.entity.position.z.toFixed(0)}`, inline: true },
+        { name: '❤️ Health', value: `${bot.health}/20`, inline: true },
+        { name: '🍖 Food', value: `${bot.food}/20`, inline: true },
+        { name: '⚙️ Mode', value: config.mode, inline: true },
+        { name: '🎯 Task', value: config.tasks.current || 'Idle', inline: true },
+        { name: '⏱️ Uptime', value: this.formatUptime(), inline: true }
+      )
+      .setTimestamp();
+    
+    msg.reply({ embeds: [embed] });
+  }
+
+  async cmdGoto(msg, args) {
+    const bot = globalBot;
+    if (!bot) {
+        msg.reply('❌ Bot not online');
+        return;
+    }
+    if (args.length < 3) {
+      msg.reply('Usage: `!hx goto <x> <y> <z>`');
+      return;
+    }
+    
+    const [x, y, z] = args.map(Number);
+    msg.reply(`🚶 Traveling to ${x}, ${y}, ${z}...`);
+    
+    await bot.pathfinder.goto(new goals.GoalBlock(x, y, z));
+    msg.reply(`✅ Arrived at destination`);
+  }
+
+  async cmdFindItem(msg, args) {
+    const bot = globalBot;
+    if (!bot) {
+        msg.reply('❌ Bot not online');
+        return;
+    }
+    if (args.length === 0) {
+      msg.reply('Usage: `!hx find <item> [quantity]`');
+      return;
+    }
+    
+    const item = args[0];
+    const quantity = parseInt(args[1]) || 1;
+    
+    msg.reply(`🔍 Searching for ${quantity}x ${item}...`);
+    
+    const hunter = new ItemHunter(bot);
+    try {
+      await hunter.findItem(item, quantity);
+      msg.reply(`✅ Found ${quantity}x ${item}!`);
+    } catch (err) {
+      msg.reply(`❌ Failed: ${err.message}`);
+    }
+  }
+
+  async cmdStashHunt(msg) {
+    if (!stashScanner) {
+      msg.reply('❌ Stash scanner not initialized');
+      return;
+    }
+    
+    msg.reply('🔍 Starting stash hunt...');
+    await stashScanner.scanForStashes();
+  }
+
+  async cmdToggleCombat(msg, args) {
+    const mode = args[0];
+    
+    if (mode === 'on') {
+      config.combat.enabled = true;
+      msg.reply('⚔️ Combat mode enabled');
+    } else if (mode === 'off') {
+      config.combat.enabled = false;
+      msg.reply('🛡️ Combat mode disabled (peaceful)');
+    } else {
+      msg.reply(`Combat mode: ${config.combat.enabled ? 'ON' : 'OFF'}`);
+    }
+  }
+
+  async cmdDisconnect(msg) {
+    const bot = globalBot;
+    if (!bot) {
+        msg.reply('❌ Bot not online');
+        return;
+    }
+    msg.reply('👋 Disconnecting...');
+    bot.quit();
+  }
+
+  async cmdSwarmControl(msg, args) {
+    const subCmd = args[0];
+    
+    switch (subCmd) {
+      case 'status':
+        const swarmStatus = globalSwarmCoordinator.getStatus();
+        msg.reply(`🐝 Swarm: ${swarmStatus.activeBots} bots online`);
+        break;
+      
+      case 'rally':
+        const [x, y, z] = args.slice(1).map(Number);
+        globalSwarmCoordinator.broadcast('RALLY_POINT', { x, y, z });
+        msg.reply(`📍 Rally point set to ${x}, ${y}, ${z}`);
+        break;
+      
+      case 'attack':
+        const target = args[1];
+        globalSwarmCoordinator.broadcast('ATTACK_TARGET', { target });
+        msg.reply(`⚔️ Swarm attacking ${target}`);
+        break;
+    }
+  }
+
+  async cmdStats(msg) {
+    const stats = globalAnalytics.getReport();
+    
+    const embed = new Discord.EmbedBuilder()
+      .setColor('#0099ff')
+      .setTitle('📊 HunterX Statistics')
+      .addFields(
+        { name: '💎 Stashes Found', value: stats.stashesFound.toString(), inline: true },
+        { name: '⚔️ Kills', value: stats.kills.toString(), inline: true },
+        { name: '💀 Deaths', value: stats.deaths.toString(), inline: true },
+        { name: '🔧 Dupes Tested', value: stats.dupesTested.toString(), inline: true },
+        { name: '✅ Working Dupes', value: stats.workingDupes.toString(), inline: true }
+      )
+      .setTimestamp();
+    
+    msg.reply({ embeds: [embed] });
+  }
+
+  async cmdInventory(msg) {
+    const bot = globalBot;
+    if (!bot) {
+        msg.reply('❌ Bot not online');
+        return;
+    }
+    const items = bot.inventory.items();
+    const itemList = items.slice(0, 20).map(item => 
+      `${item.count}x ${item.name}`
+    ).join('\n');
+    
+    msg.reply(`📦 **Inventory (${items.length} items)**\n\`\`\`${itemList}\`\`\``);
+  }
+
+  async cmdTaskQueue(msg, args) {
+    const action = args[0];
+    
+    if (action === 'add') {
+      const [type, item, quantity] = args.slice(1);
+      globalTaskQueue.addTask({ type, item, quantity: parseInt(quantity), priority: 'normal' });
+      msg.reply(`✅ Task added: ${type} ${quantity}x ${item}`);
+    } else if (action === 'list') {
+      const tasks = globalTaskQueue.queue;
+      const taskList = tasks.slice(0, 10).map((t, i) => 
+        `${i+1}. [${t.priority}] ${t.type}: ${t.quantity}x ${t.item}`
+      ).join('\n');
+      msg.reply(`📋 **Task Queue (${tasks.length})**\n\`\`\`${taskList}\`\`\``);
+    }
+  }
+
+  sendAlert(message) {
+    if (this.alertChannel) {
+      this.alertChannel.send(message);
+    }
+  }
+}
+
+class AlertSystem {
+  sendAlert(type, data) {
+    if (!discordBridge.alertChannel) return;
+    
+    const embed = new Discord.EmbedBuilder()
+      .setTimestamp();
+    
+    switch (type) {
+      case 'STASH_FOUND':
+        embed.setColor('#FFD700')
+          .setTitle('💎 Stash Discovered!')
+          .setDescription(`Found stash at ${data.x}, ${data.y}, ${data.z}`)
+          .addFields(
+            { name: 'Value', value: `${data.estimatedValue}`, inline: true },
+            { name: 'Items', value: data.itemCount.toString(), inline: true }
+          );
+        break;
+      
+      case 'COMBAT_ALERT':
+        embed.setColor('#FF0000')
+          .setTitle('⚔️ Combat Engaged!')
+          .setDescription(`Fighting ${data.target}`)
+          .addFields(
+            { name: 'Health', value: `${globalBot.health}/20`, inline: true },
+            { name: 'Location', value: `${data.x}, ${data.y}, ${data.z}`, inline: true }
+          );
+        break;
+      
+      case 'DUPE_FOUND':
+        embed.setColor('#00FF00')
+          .setTitle('🔧 Working Dupe Discovered!')
+          .setDescription(`Dupe method: ${data.method}`)
+          .addFields(
+            { name: 'Item', value: data.item, inline: true },
+            { name: 'Success Rate', value: `${data.successRate}%`, inline: true }
+          );
+        break;
+      
+      case 'BOT_DEATH':
+        embed.setColor('#000000')
+          .setTitle('💀 Bot Died')
+          .setDescription(`Killed by ${data.killer}`)
+          .addFields(
+            { name: 'Location', value: `${data.x}, ${data.y}, ${data.z}`, inline: true },
+            { name: 'Respawning', value: 'Yes', inline: true }
+          );
+        break;
+      
+      case 'LOW_HEALTH':
+        embed.setColor('#FFA500')
+          .setTitle('⚠️ Low Health Warning')
+          .setDescription(`Health: ${globalBot.health}/20`)
+          .addFields(
+            { name: 'Action', value: 'Retreating to safety', inline: true }
+          );
+        break;
+    }
+    
+    discordBridge.alertChannel.send({ embeds: [embed] });
+  }
+}
+
+const discordBridge = new DiscordBridge();
+const alertSystem = new AlertSystem();
+
+if (config.discord.enabled) {
+  discordBridge.start();
 }
 
 setTimeout(showMenu, 1000);
