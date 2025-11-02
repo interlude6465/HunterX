@@ -3615,6 +3615,10 @@ class ConversationAI {
       if (status.recentScans && status.recentScans.length > 0) {
         const recent = status.recentScans[status.recentScans.length - 1];
         this.bot.chat(`Latest: ${recent.fileName} (Risk: ${recent.riskScore}, Vulns: ${recent.vulnerabilities})`);
+      }
+      return;
+    }
+    
     // Player tracking commands (admin+ only for privacy/security)
     if (lower.includes('track') && (lower.includes('player') || lower.includes('start tracking'))) {
       if (!this.hasTrustLevel(username, 'admin')) {
@@ -9433,153 +9437,6 @@ http.createServer((req, res) => {
 }).listen(8080);
 
 console.log('[DASHBOARD] http://localhost:8080');
-
-// === SCHEMATIC LOADER ===
-class SchematicLoader {
-  constructor() {
-    this.schematics = new Map();
-  }
-
-  async loadSchematic(filePath) {
-    try {
-      if (!fs.existsSync(filePath)) {
-        throw new Error(`Schematic file not found: ${filePath}`);
-      }
-
-      const data = fs.readFileSync(filePath);
-      
-      // Support different schematic formats
-      if (filePath.endsWith('.schem')) {
-        return this.parseSchemFile(data);
-      } else if (filePath.endsWith('.schematic')) {
-        return this.parseLegacySchematic(data);
-      } else if (filePath.endsWith('.nbt')) {
-        return this.parseNbtFile(data);
-      } else {
-        throw new Error(`Unsupported schematic format: ${filePath}`);
-      }
-    } catch (err) {
-      console.log(`[SCHEMATIC] Failed to load ${filePath}: ${err.message}`);
-      throw err;
-    }
-  }
-
-  parseSchemFile(data) {
-    // Simplified Sponge schematic format parser
-    const schematic = {
-      width: 0,
-      height: 0,
-      length: 0,
-      offset: { x: 0, y: 0, z: 0 },
-      palette: {},
-      blocks: []
-    };
-
-    // This is a simplified implementation - full implementation would need NBT parsing
-    // For now, we'll return a basic structure that can be extended
-    console.log('[SCHEMATIC] Loading .schem format (simplified parser)');
-    
-    return schematic;
-  }
-
-  parseLegacySchematic(data) {
-    // Legacy WorldEdit schematic format
-    const schematic = {
-      width: 0,
-      height: 0,
-      length: 0,
-      offset: { x: 0, y: 0, z: 0 },
-      palette: {},
-      blocks: []
-    };
-
-    console.log('[SCHEMATIC] Loading legacy .schematic format');
-    
-    return schematic;
-  }
-
-  parseNbtFile(data) {
-    // Generic NBT file parser
-    console.log('[SCHEMATIC] Loading NBT format');
-    
-    return {
-      width: 0,
-      height: 0,
-      length: 0,
-      offset: { x: 0, y: 0, z: 0 },
-      palette: {},
-      blocks: []
-    };
-  }
-
-  normalizeStructure(rawSchematic) {
-    // Convert any schematic format to normalized structure
-    const normalized = {
-      name: rawSchematic.name || 'unnamed',
-      dimensions: {
-        width: rawSchematic.width,
-        height: rawSchematic.height,
-        length: rawSchematic.length
-      },
-      offset: rawSchematic.offset || { x: 0, y: 0, z: 0 },
-      palette: this.normalizePalette(rawSchematic.palette || {}),
-      blocks: this.normalizeBlocks(rawSchematic.blocks || [], rawSchematic.palette || {}),
-      metadata: rawSchematic.metadata || {}
-    };
-
-    console.log(`[SCHEMATIC] Normalized: ${normalized.dimensions.width}x${normalized.dimensions.height}x${normalized.dimensions.length}`);
-    return normalized;
-  }
-
-  normalizePalette(palette) {
-    const normalized = {};
-    
-    // Convert block IDs to names if needed
-    for (const [id, blockData] of Object.entries(palette)) {
-      if (typeof blockData === 'string') {
-        normalized[id] = { name: blockData, properties: {} };
-      } else if (typeof blockData === 'object' && blockData.Name) {
-        normalized[id] = {
-          name: blockData.Name.replace('minecraft:', ''),
-          properties: blockData.Properties || {}
-        };
-      } else {
-        normalized[id] = { name: 'stone', properties: {} }; // fallback
-      }
-    }
-
-    return normalized;
-  }
-
-  normalizeBlocks(blocks, palette) {
-    const normalized = [];
-
-    for (const block of blocks) {
-      let normalizedBlock = {
-        position: { x: 0, y: 0, z: 0 },
-        type: 'air',
-        properties: {}
-      };
-
-      if (Array.isArray(block)) {
-        // Legacy format: [x, y, z, blockId]
-        normalizedBlock.position = { x: block[0], y: block[1], z: block[2] };
-        const blockData = palette[block[3]] || { name: 'stone' };
-        normalizedBlock.type = blockData.name || 'stone';
-        normalizedBlock.properties = blockData.properties || {};
-      } else if (typeof block === 'object') {
-        // Modern format
-        normalizedBlock.position = block.position || { x: 0, y: 0, z: 0 };
-        normalizedBlock.type = block.type || 'air';
-        normalizedBlock.properties = block.properties || {};
-      }
-
-      normalized.push(normalizedBlock);
-    }
-
-    return normalized;
-  }
-}
 
 // === SCHEMATIC BUILDER ===
 class SchematicBuilder {
