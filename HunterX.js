@@ -504,6 +504,39 @@ const config = {
     uploadedPlugins: []
   },
   
+  // Player tracking settings
+  tracking: {
+    targetPlayer: null,
+    shadowDistance: 15, // blocks to maintain from target
+    minShadowDistance: 10,
+    maxShadowDistance: 30,
+    stealthMode: true,
+    crouchWhenClose: true,
+    crouchDistance: 20,
+    updateInterval: 5000, // 5 seconds
+    afkDetectionTime: 120000, // 2 minutes of no movement
+    repeatedLocationThreshold: 3, // visits before marking as base
+    locationProximityRadius: 20, // blocks to consider "same location"
+    intelligenceReporting: true,
+    activityLogging: true
+  },
+  
+  // Intelligence Gathering System
+  intelligence: {
+    enabled: true,
+    coordinates: [], // Scraped coordinates from chat
+    privateMessages: [], // Intercepted private messages
+    playerAssociations: {}, // Player relationships
+    suspiciousLocations: [], // Flagged locations
+    confirmedBases: [], // Verified bases
+    travelRoutes: [], // Player travel patterns
+    logoutLocations: [], // Player logout intel
+    behaviorProfiles: {}, // Player behavior data
+    alertThresholds: {
+      highValueKeywords: ['stash', 'base', 'vault', 'storage', 'chest', 'shulker', 'dupe', 'exploit'],
+      coordinateClusterRadius: 500, // blocks
+      minimumClusterSize: 3
+    }
   // Proxy and queue management
   network: {
     proxyEnabled: false,
@@ -858,6 +891,15 @@ function cleanupOldData() {
   // Limit training episodes
   if (config.training.episodes.length > 1000) {
     config.training.episodes = config.training.episodes.slice(-1000);
+  }
+  
+  // Limit intelligence data
+  if (config.intelligence.coordinates.length > 1000) {
+    config.intelligence.coordinates = config.intelligence.coordinates.slice(-1000);
+  }
+  
+  if (config.intelligence.suspiciousLocations.length > 200) {
+    config.intelligence.suspiciousLocations = config.intelligence.suspiciousLocations.slice(-200);
   }
   
   console.log('[CLEANUP] Old data cleaned up');
@@ -1566,6 +1608,87 @@ class AntiCheatBypassController {
     this.currentTier = 0;
   }
   
+  async scanIntelligenceTargets() {
+    if (!this.bot.intelligenceDB) {
+      console.log('[STASH] Intelligence DB not available, falling back to standard scan');
+      return;
+    }
+    
+    const targets = this.bot.intelligenceDB.getPrioritizedTargets();
+    
+    if (targets.length === 0) {
+      console.log('[STASH] No intelligence targets available yet');
+      return;
+    }
+    
+    console.log(`[STASH] 🎯 Starting intelligence-guided scan - ${targets.length} targets prioritized`);
+    
+    for (const target of targets.slice(0, 20)) { // Top 20 targets
+      console.log(`[STASH] Checking target at (${target.x}, ${target.y}, ${target.z}) - Priority: ${target.priority.toFixed(0)} | Source: ${target.source}`);
+      
+      // Check for nearby players
+      if (config.stashHunt.avoidPlayers && this.detectNearbyPlayers()) {
+        console.log('[STASH] Player detected! Pausing intelligence scan...');
+        await this.evadePlayer();
+        await sleep(5000);
+        continue;
+      }
+      
+      // Navigate to target
+      try {
+        await this.navigateToStash(new Vec3(target.x, target.y, target.z));
+        
+        // Scan area around target
+        const scanRadius = 3; // 3 chunks around target
+        const centerChunkX = Math.floor(target.x / 16);
+        const centerChunkZ = Math.floor(target.z / 16);
+        
+        for (let dx = -scanRadius; dx <= scanRadius; dx++) {
+          for (let dz = -scanRadius; dz <= scanRadius; dz++) {
+            await this.scanChunk(centerChunkX + dx, centerChunkZ + dz);
+          }
+        }
+        
+        console.log(`[STASH] ✅ Target scanned: (${target.x}, ${target.y}, ${target.z})`);
+        await sleep(2000);
+      } catch (err) {
+        console.log(`[STASH] Error scanning target: ${err.message}`);
+      }
+    }
+    
+    console.log(`[STASH] Intelligence-guided scan complete. Found ${this.foundStashes.length} stashes`);
+  }
+  
+  async scanArea(centerCoords, radius) {
+    console.log(`[STASH] Starting scan at ${centerCoords.toString()}, radius ${radius}`);
+    
+    // If intelligence system is available, use it first
+    if (this.bot.intelligenceDB && config.intelligence.enabled) {
+      console.log('[STASH] 🧠 Intelligence system active - prioritizing intel targets');
+      await this.scanIntelligenceTargets();
+    }
+    
+    const chunkRadius = Math.ceil(radius / 16);
+    const centerChunkX = Math.floor(centerCoords.x / 16);
+    const centerChunkZ = Math.floor(centerCoords.z / 16);
+    
+    console.log('[STASH] Starting standard area scan...');
+    for (let dx = -chunkRadius; dx <= chunkRadius; dx++) {
+      for (let dz = -chunkRadius; dz <= chunkRadius; dz++) {
+        const chunkX = centerChunkX + dx;
+        const chunkZ = centerChunkZ + dz;
+        
+        // Check for nearby players
+        if (config.stashHunt.avoidPlayers && this.detectNearbyPlayers()) {
+          console.log('[STASH] Player detected! Retreating...');
+          await this.evadePlayer();
+          continue;
+        }
+        
+        await this.scanChunk(chunkX, chunkZ);
+        await sleep(100);
+      }
+    }
   initialize() {
     console.log('[ANTICHEAT] 🚀 Starting in FULL OVERPOWERED MODE');
     
@@ -10781,6 +10904,25 @@ class ConversationAI {
       return;
     }
     
+    if (lower.includes('scanner status') || lower.includes('scanner report')) {
+      const status = globalPluginAnalyzer.getContinuousScanStatus();
+      this.bot.chat(`🔄 Scanner: ${status.active ? '✅ Running' : '⏹️ Stopped'} | Queue: ${status.queueSize} | Plugins: ${status.totalPlugins} | Scans: ${status.totalScans}`);
+      
+      if (status.recentScans && status.recentScans.length > 0) {
+        const recent = status.recentScans[status.recentScans.length - 1];
+        this.bot.chat(`Latest: ${recent.fileName} (Risk: ${recent.riskScore}, Vulns: ${recent.vulnerabilities})`);
+      }
+      return;
+    }
+    
+    // Player tracking commands (admin+ only for privacy/security)
+    if (lower.includes('track') && (lower.includes('player') || lower.includes('start tracking'))) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can initiate player tracking!");
+        return;
+      }
+      
+      const targetName = this.extractPlayerName(message);
     // Show trust level of a player
     if (lower.includes('trust level') || lower.includes('check trust')) {
       const targetName = message.match(/(?:trust level|check trust)\s+(\w+)/i);
@@ -11610,6 +11752,1008 @@ class ConversationAI {
   }
 }
 
+// === COORDINATE SCRAPER ===
+class CoordinateScraper {
+  constructor() {
+    this.coordPatterns = [
+      /(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+)/g, // Standard: x, y, z or x y z
+      /x:\s*(-?\d+).*?y:\s*(-?\d+).*?z:\s*(-?\d+)/gi, // x: 100 y: 64 z: 200
+      /\[(-?\d+),\s*(-?\d+),\s*(-?\d+)\]/g, // [x, y, z]
+      /\((-?\d+),\s*(-?\d+),\s*(-?\d+)\)/g // (x, y, z)
+    ];
+    this.highValueKeywords = config.intelligence.alertThresholds.highValueKeywords || [];
+  }
+  
+  scrapeMessage(username, message, channel = 'public') {
+    const results = [];
+    if (!message) return results;
+    
+    const lowerMessage = message.toLowerCase();
+    const keywords = this.highValueKeywords.filter(keyword => lowerMessage.includes(keyword));
+    const uniqueKeywords = Array.from(new Set(keywords));
+    const baseName = this.extractBaseName(message);
+    const dimension = this.detectDimension(lowerMessage);
+    const timestamp = Date.now();
+    
+    for (const pattern of this.coordPatterns) {
+      pattern.lastIndex = 0; // Reset regex state
+      let match;
+      
+      while ((match = pattern.exec(message)) !== null) {
+        const x = parseInt(match[1], 10);
+        const y = parseInt(match[2], 10);
+        const z = parseInt(match[3], 10);
+        
+        if (!this.isValidCoordinate(x, y, z)) {
+          continue;
+        }
+        
+        const overworldEquivalent = dimension === 'nether'
+          ? { x: x * 8, y, z: z * 8 }
+          : { x, y, z };
+        const netherEquivalent = dimension === 'nether'
+          ? { x, y, z }
+          : { x: Math.round(x / 8), y, z: Math.round(z / 8) };
+        
+        const confidence = this.calculateConfidence({
+          keywordCount: uniqueKeywords.length,
+          hasBaseName: !!baseName,
+          dimensionKnown: dimension !== 'unknown',
+          channel,
+          message: lowerMessage
+        });
+        
+        results.push({
+          id: `${username || 'unknown'}-${timestamp}-${x}-${z}-${pattern.lastIndex}`,
+          source: 'chat',
+          channel,
+          username,
+          message,
+          coordinates: { x, y, z },
+          dimension,
+          overworldEquivalent,
+          netherEquivalent,
+          keywords: uniqueKeywords,
+          baseName,
+          highValue: uniqueKeywords.length > 0,
+          confidence,
+          timestamp,
+          context: {
+            raw: message,
+            baseName,
+            dimension,
+            channel
+          }
+        });
+      }
+    }
+    
+    return results;
+  }
+  
+  isValidCoordinate(x, y, z) {
+    return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) &&
+      Math.abs(x) <= 30000000 && Math.abs(z) <= 30000000 && y >= -64 && y <= 320;
+  }
+  
+  detectDimension(lowerMessage) {
+    if (lowerMessage.includes('nether')) return 'nether';
+    if (lowerMessage.includes('overworld')) return 'overworld';
+    if (lowerMessage.includes('end')) return 'end';
+    return 'unknown';
+  }
+  
+  extractBaseName(message) {
+    const baseMatch = message.match(/([A-Za-z0-9_]{3,})\s+(?:base|stash|vault|bunker|city)/i);
+    return baseMatch ? baseMatch[1] : null;
+  }
+  
+  calculateConfidence({ keywordCount, hasBaseName, dimensionKnown, channel, message }) {
+    let confidence = 0.45;
+    confidence += Math.min(keywordCount, 3) * 0.12;
+    if (hasBaseName) confidence += 0.1;
+    if (dimensionKnown) confidence += 0.05;
+    if (channel === 'private') confidence += 0.1;
+    if (message.includes(' my ') || message.includes(' our ') || message.includes(' at ')) {
+      confidence += 0.05;
+    }
+    return clamp(confidence, 0.25, 0.95);
+  }
+}
+
+// === MESSAGE INTERCEPTOR ===
+class MessageInterceptor {
+  constructor(bot) {
+    this.bot = bot;
+    this.messageLog = [];
+    this.conversationThreads = new Map();
+    this.recentHashes = [];
+    this.recentHashSet = new Set();
+    this.keywordList = config.intelligence.alertThresholds.highValueKeywords || [];
+    this.privatePatterns = [
+      { regex: /(\w+)\s+whispers to you:\s*(.+)/i, senderIndex: 1, receiver: () => this.bot.username, contentIndex: 2 },
+      { regex: /From\s+(\w+):\s*(.+)/i, senderIndex: 1, receiver: () => this.bot.username, contentIndex: 2 },
+      { regex: /\[(\w+)\s*->\s*me\]\s*(.+)/i, senderIndex: 1, receiver: () => this.bot.username, contentIndex: 2 },
+      { regex: /\[me\s*->\s*(\w+)\]\s*(.+)/i, sender: () => this.bot.username, receiverIndex: 1, contentIndex: 2 },
+      { regex: /To\s+(\w+):\s*(.+)/i, sender: () => this.bot.username, receiverIndex: 1, contentIndex: 2 },
+      { regex: /(\w+)\s*->\s*(\w+):\s*(.+)/i, senderIndex: 1, receiverIndex: 2, contentIndex: 3 }
+    ];
+  }
+  
+  interceptMessage(message, username = null, channel = 'public', metadata = {}) {
+    if (!message) return null;
+    const normalizedMessage = message.trim();
+    const hash = `${channel}:${username || 'unknown'}:${normalizedMessage}`;
+    if (this.recentHashSet.has(hash)) {
+      return {
+        duplicate: true,
+        hash,
+        timestamp: Date.now(),
+        channel,
+        message: normalizedMessage,
+        username,
+        origin: metadata.origin || 'event'
+      };
+    }
+    
+    this.recentHashSet.add(hash);
+    this.recentHashes.push(hash);
+    if (this.recentHashes.length > 250) {
+      const oldHash = this.recentHashes.shift();
+      this.recentHashSet.delete(oldHash);
+    }
+    
+    const lower = normalizedMessage.toLowerCase();
+    const keywords = this.keywordList.filter(keyword => lower.includes(keyword));
+    const logEntry = {
+      timestamp: Date.now(),
+      message: normalizedMessage,
+      username,
+      channel,
+      type: channel === 'private' ? 'private' : 'public',
+      keywords,
+      origin: metadata.origin || 'event'
+    };
+    
+    const privateData = this.extractPrivateMessage(username, normalizedMessage, channel);
+    if (privateData) {
+      logEntry.type = 'private';
+      logEntry.sender = privateData.sender;
+      logEntry.receiver = privateData.receiver;
+      logEntry.content = privateData.content;
+      logEntry.direction = privateData.direction;
+    } else if (channel === 'private') {
+      logEntry.sender = this.sanitizeName(username || metadata.sender || this.bot.username);
+      logEntry.receiver = this.sanitizeName(metadata.receiver || this.bot.username);
+      logEntry.content = normalizedMessage;
+      logEntry.direction = logEntry.sender === this.bot.username ? 'outgoing' : 'incoming';
+    }
+    
+    this.messageLog.push(logEntry);
+    if (this.messageLog.length > 10000) {
+      this.messageLog = this.messageLog.slice(-5000);
+    }
+    
+    if (logEntry.type === 'private') {
+      const threadKey = [logEntry.sender || this.bot.username, logEntry.receiver || this.bot.username]
+        .map(name => name || 'unknown')
+        .sort()
+        .join('_');
+      if (!this.conversationThreads.has(threadKey)) {
+        this.conversationThreads.set(threadKey, []);
+      }
+      this.conversationThreads.get(threadKey).push(logEntry);
+      console.log(`[INTEL] 📨 Private message intercepted: ${logEntry.sender} -> ${logEntry.receiver}`);
+    }
+    
+    return logEntry;
+  }
+  
+  extractPrivateMessage(username, message, channel) {
+    for (const pattern of this.privatePatterns) {
+      const match = message.match(pattern.regex);
+      if (match) {
+        const sender = this.sanitizeName(
+          pattern.sender ? pattern.sender() : (pattern.senderIndex ? match[pattern.senderIndex] : username || this.bot.username)
+        );
+        const receiver = this.sanitizeName(
+          pattern.receiver ? pattern.receiver() : (pattern.receiverIndex ? match[pattern.receiverIndex] : this.bot.username)
+        );
+        const content = match[pattern.contentIndex] ? match[pattern.contentIndex].trim() : message;
+        return {
+          sender,
+          receiver,
+          content,
+          direction: sender === this.bot.username ? 'outgoing' : 'incoming',
+          channel
+        };
+      }
+    }
+    return null;
+  }
+  
+  sanitizeName(name) {
+    if (!name) return null;
+    return String(name).replace(/[^A-Za-z0-9_]/g, '');
+  }
+  
+  getConversationThread(player1, player2) {
+    const threadKey = [player1, player2].sort().join('_');
+    return this.conversationThreads.get(threadKey) || [];
+  }
+  
+  saveMessageLog() {
+    try {
+      const data = {
+        messages: this.messageLog.slice(-1000),
+        conversations: Array.from(this.conversationThreads.entries()),
+        lastUpdate: Date.now()
+      };
+      fs.writeFileSync('./data/message_intercepts.json', JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.log(`[INTEL] Error saving message log: ${err.message}`);
+    }
+  }
+}
+
+// === BEHAVIOR ANALYZER ===
+class BehaviorAnalyzer {
+  constructor(bot) {
+    this.bot = bot;
+    this.playerProfiles = new Map();
+    this.logoutLocations = [];
+    this.travelRoutes = [];
+    this.chunkLoadEvents = [];
+  }
+  
+  trackPlayerMovement(username, position) {
+    if (!this.playerProfiles.has(username)) {
+      this.playerProfiles.set(username, {
+        username,
+        firstSeen: Date.now(),
+        lastSeen: Date.now(),
+        positions: [],
+        frequentLocations: [],
+        travelSpeed: 0,
+        suspicionLevel: 0
+      });
+    }
+    
+    const profile = this.playerProfiles.get(username);
+    
+    // Add position to history
+    profile.positions.push({
+      x: Math.floor(position.x),
+      y: Math.floor(position.y),
+      z: Math.floor(position.z),
+      timestamp: Date.now()
+    });
+    
+    profile.lastSeen = Date.now();
+    
+    // Keep last 100 positions
+    if (profile.positions.length > 100) {
+      profile.positions = profile.positions.slice(-100);
+    }
+    
+    // Calculate travel speed (blocks per second)
+    if (profile.positions.length >= 2) {
+      const prev = profile.positions[profile.positions.length - 2];
+      const curr = profile.positions[profile.positions.length - 1];
+      const distance = Math.sqrt(
+        Math.pow(curr.x - prev.x, 2) + 
+        Math.pow(curr.z - prev.z, 2)
+      );
+      const timeDiff = (curr.timestamp - prev.timestamp) / 1000;
+      if (timeDiff > 0) {
+        profile.travelSpeed = distance / timeDiff;
+        if (distance >= 256 && timeDiff <= 3600) {
+          const route = {
+            username,
+            from: { x: prev.x, y: prev.y, z: prev.z },
+            to: { x: curr.x, y: curr.y, z: curr.z },
+            distance: Math.round(distance),
+            duration: Math.round(timeDiff),
+            speed: Number((distance / timeDiff).toFixed(2)),
+            timestamp: curr.timestamp
+          };
+          this.travelRoutes.push(route);
+          if (this.travelRoutes.length > 500) {
+            this.travelRoutes = this.travelRoutes.slice(-500);
+          }
+          if (Array.isArray(config.intelligence.travelRoutes)) {
+            config.intelligence.travelRoutes.push(route);
+            if (config.intelligence.travelRoutes.length > 200) {
+              config.intelligence.travelRoutes = config.intelligence.travelRoutes.slice(-200);
+            }
+          }
+        }
+      }
+    }
+    
+    // Detect frequent locations
+    this.detectFrequentLocations(profile);
+    
+    if (config.intelligence.behaviorProfiles) {
+      config.intelligence.behaviorProfiles[username] = {
+        username,
+        lastSeen: profile.lastSeen,
+        travelSpeed: Number((profile.travelSpeed || 0).toFixed(2)),
+        frequentLocations: profile.frequentLocations.slice(0, 5)
+      };
+    }
+  }
+  
+  detectFrequentLocations(profile) {
+    const locationClusters = new Map();
+    const clusterRadius = 50; // blocks
+    
+    for (const pos of profile.positions) {
+      const key = `${Math.floor(pos.x / clusterRadius)}_${Math.floor(pos.z / clusterRadius)}`;
+      if (!locationClusters.has(key)) {
+        locationClusters.set(key, {
+          count: 0,
+          avgX: 0,
+          avgY: 0,
+          avgZ: 0,
+          positions: []
+        });
+      }
+      
+      const cluster = locationClusters.get(key);
+      cluster.count++;
+      cluster.positions.push(pos);
+    }
+    
+    // Find clusters with high visit count (potential bases)
+    profile.frequentLocations = Array.from(locationClusters.values())
+      .filter(c => c.count >= 5)
+      .map(c => {
+        const avgX = Math.floor(c.positions.reduce((sum, p) => sum + p.x, 0) / c.count);
+        const avgY = Math.floor(c.positions.reduce((sum, p) => sum + p.y, 0) / c.count);
+        const avgZ = Math.floor(c.positions.reduce((sum, p) => sum + p.z, 0) / c.count);
+        
+        return {
+          x: avgX,
+          y: avgY,
+          z: avgZ,
+          visitCount: c.count,
+          suspectedBase: c.count >= 10
+        };
+      })
+      .sort((a, b) => b.visitCount - a.visitCount);
+  }
+  
+  logPlayerLogout(username, position) {
+    const logoutEvent = {
+      username,
+      position: {
+        x: Math.floor(position.x),
+        y: Math.floor(position.y),
+        z: Math.floor(position.z)
+      },
+      timestamp: Date.now()
+    };
+    
+    this.logoutLocations.push(logoutEvent);
+    
+    if (Array.isArray(config.intelligence.logoutLocations)) {
+      config.intelligence.logoutLocations.push(logoutEvent);
+      if (config.intelligence.logoutLocations.length > 200) {
+        config.intelligence.logoutLocations = config.intelligence.logoutLocations.slice(-200);
+      }
+    }
+    
+    // Keep last 500 logout events
+    if (this.logoutLocations.length > 500) {
+      this.logoutLocations = this.logoutLocations.slice(-500);
+    }
+    
+    console.log(`[INTEL] 🚪 ${username} logged out at (${logoutEvent.position.x}, ${logoutEvent.position.y}, ${logoutEvent.position.z})`);
+  }
+  
+  logChunkLoad(chunkX, chunkZ) {
+    const event = {
+      chunkX,
+      chunkZ,
+      world: this.bot.game?.dimension || 'unknown',
+      timestamp: Date.now()
+    };
+    
+    const centerX = chunkX * 16 + 8;
+    const centerZ = chunkZ * 16 + 8;
+    const hasRecentPlayer = Array.from(this.playerProfiles.values()).some(profile => {
+      const lastPos = profile.positions[profile.positions.length - 1];
+      return lastPos && Math.abs(lastPos.x - centerX) <= 128 && Math.abs(lastPos.z - centerZ) <= 128 && (Date.now() - lastPos.timestamp) < 600000;
+    });
+    
+    event.abandoned = !hasRecentPlayer;
+    this.chunkLoadEvents.push(event);
+    if (this.chunkLoadEvents.length > 1000) {
+      this.chunkLoadEvents = this.chunkLoadEvents.slice(-500);
+    }
+    
+    return event;
+  }
+  
+  analyzePlayerAssociations() {
+    const associations = {};
+    const playerPositions = new Map();
+    this.playerProfiles.forEach((profile, username) => {
+      playerPositions.set(username, profile.positions);
+    });
+    
+    const players = Array.from(this.playerProfiles.keys());
+    for (let i = 0; i < players.length; i++) {
+      for (let j = i + 1; j < players.length; j++) {
+        const player1 = players[i];
+        const player2 = players[j];
+        const proximityCount = this.countProximityEvents(
+          playerPositions.get(player1),
+          playerPositions.get(player2),
+          100
+        );
+        
+        if (proximityCount >= 3) {
+          const key = [player1, player2].sort().join('_');
+          associations[key] = {
+            players: [player1, player2],
+            proximityEvents: proximityCount,
+            likelihood: proximityCount >= 10 ? 'high' : 'medium',
+            timestamp: Date.now()
+          };
+        }
+      }
+    }
+    
+    if (config.intelligence.playerAssociations) {
+      Object.assign(config.intelligence.playerAssociations, associations);
+    }
+    
+    return associations;
+  }
+  
+  countProximityEvents(positions1, positions2, maxDistance) {
+    let count = 0;
+    if (!positions1 || !positions2) return 0;
+    for (const pos1 of positions1) {
+      for (const pos2 of positions2) {
+        const distance = Math.sqrt(
+          Math.pow(pos1.x - pos2.x, 2) + 
+          Math.pow(pos1.z - pos2.z, 2)
+        );
+        if (distance <= maxDistance && Math.abs(pos1.timestamp - pos2.timestamp) < 30000) {
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+  
+  saveBehaviorData() {
+    try {
+      const data = {
+        playerProfiles: Array.from(this.playerProfiles.entries()).map(([username, profile]) => ({
+          username,
+          ...profile
+        })),
+        logoutLocations: this.logoutLocations.slice(-200),
+        chunkLoadEvents: this.chunkLoadEvents.slice(-100),
+        travelRoutes: this.travelRoutes.slice(-100),
+        playerAssociations: this.analyzePlayerAssociations(),
+        lastUpdate: Date.now()
+      };
+      fs.writeFileSync('./data/behavior_analysis.json', JSON.stringify(data, null, 2));
+      console.log(`[INTEL] Behavior data saved: ${Array.from(this.playerProfiles.keys()).length} players tracked`);
+    } catch (err) {
+      console.log(`[INTEL] Error saving behavior data: ${err.message}`);
+    }
+  }
+}
+
+// === INTELLIGENCE DATABASE ===
+class IntelligenceDatabase {
+  constructor(bot) {
+    this.bot = bot;
+    this.coordinateScraper = new CoordinateScraper();
+    this.messageInterceptor = new MessageInterceptor(bot);
+    this.behaviorAnalyzer = new BehaviorAnalyzer(bot);
+    this.coordinateIndex = new Map();
+    
+    this.loadIntelligence();
+    this.attachPacketListeners();
+  }
+  
+  loadIntelligence() {
+    try {
+      if (fs.existsSync('./data/intelligence.json')) {
+        const data = JSON.parse(fs.readFileSync('./data/intelligence.json'));
+        config.intelligence.coordinates = (data.coordinates || []).map(entry => {
+          if (!entry.coordinates && entry.x !== undefined) {
+            entry.coordinates = { x: entry.x, y: entry.y ?? 64, z: entry.z };
+          }
+          entry.mentions = entry.mentions || 1;
+          entry.lastSeen = entry.lastSeen || entry.timestamp || Date.now();
+          return entry;
+        });
+        config.intelligence.suspiciousLocations = data.suspiciousLocations || config.intelligence.suspiciousLocations;
+        config.intelligence.confirmedBases = data.confirmedBases || config.intelligence.confirmedBases;
+        config.intelligence.privateMessages = data.privateMessages || config.intelligence.privateMessages;
+        config.intelligence.travelRoutes = data.travelRoutes || config.intelligence.travelRoutes;
+        config.intelligence.logoutLocations = data.logoutLocations || config.intelligence.logoutLocations;
+        config.intelligence.playerAssociations = data.playerAssociations || config.intelligence.playerAssociations;
+        
+        for (const lead of config.intelligence.coordinates) {
+          const key = this.getCoordinateKey(lead.coordinates);
+          this.coordinateIndex.set(key, lead);
+        }
+        
+        console.log(`[INTEL] Loaded ${config.intelligence.coordinates.length} coordinate leads`);
+      }
+    } catch (err) {
+      console.log(`[INTEL] Error loading intelligence: ${err.message}`);
+    }
+  }
+  
+  attachPacketListeners() {
+    if (!this.bot || !this.bot._client) return;
+    this.bot._client.on('chat_message', (packet) => {
+      if (!config.intelligence.enabled) return;
+      try {
+        const raw = JSON.parse(packet.message);
+        const text = this.flattenChatMessage(raw).trim();
+        if (!text) return;
+        const channel = packet.position === 1 ? 'system' : 'public';
+        this.processMessage(null, text, channel, { origin: 'packet', senderUUID: packet.sender });
+      } catch (err) {}
+    });
+  }
+  
+  flattenChatMessage(component) {
+    if (component === null || component === undefined) return '';
+    if (typeof component === 'string') return component;
+    let text = component.text || '';
+    if (Array.isArray(component.extra)) {
+      text += component.extra.map(part => this.flattenChatMessage(part)).join('');
+    }
+    return text;
+  }
+  
+  getCoordinateKey(coords) {
+    const x = Math.round(coords.x);
+    const y = Math.round(coords.y || 0);
+    const z = Math.round(coords.z);
+    return `${x}_${y}_${z}`;
+  }
+  
+  trimArray(arr, max) {
+    if (!Array.isArray(arr)) return;
+    if (arr.length > max) {
+      arr.splice(0, arr.length - max);
+    }
+  }
+  
+  processMessage(username, message, channel = 'public', metadata = {}) {
+    if (!config.intelligence.enabled) return { interceptedMsg: null, coordLeads: [] };
+    
+    const interceptedMsg = this.messageInterceptor.interceptMessage(message, username, channel, metadata);
+    if (interceptedMsg && interceptedMsg.type === 'private' && !interceptedMsg.duplicate) {
+      const privateEntry = this.formatPrivateMessage(interceptedMsg);
+      this.recordPrivateMessage(privateEntry);
+    }
+    
+    const coordLeads = this.coordinateScraper.scrapeMessage(username, message, channel);
+    coordLeads.forEach(lead => {
+      lead.username = username;
+      lead.source = lead.source || (channel === 'private' ? 'private_message' : 'chat');
+      lead.channel = channel;
+      lead.timestamp = Date.now();
+      lead.lastSeen = lead.timestamp;
+      lead.mentions = lead.mentions || 1;
+      this.recordCoordinateLead(lead);
+    });
+    
+    if (coordLeads.length > 0) {
+      this.analyzeCoordinateClusters();
+    }
+    
+    return { interceptedMsg, coordLeads };
+  }
+  
+  formatPrivateMessage(msg) {
+    const entry = {
+      sender: msg.sender || msg.username || 'unknown',
+      receiver: msg.receiver || this.bot.username,
+      content: msg.content || msg.message,
+      keywords: msg.keywords || [],
+      timestamp: msg.timestamp || Date.now(),
+      origin: msg.origin || 'chat'
+    };
+    entry.confidence = this.calculateMessageConfidence(entry);
+    return entry;
+  }
+  
+  calculateMessageConfidence(entry) {
+    let confidence = 0.5;
+    confidence += Math.min(entry.keywords?.length || 0, 3) * 0.12;
+    if (entry.content) {
+      const lower = entry.content.toLowerCase();
+      if (lower.includes('coords') || lower.includes('coordinates')) confidence += 0.1;
+      if (lower.includes('stash') || lower.includes('base') || lower.includes('vault')) confidence += 0.15;
+      if (lower.includes('trap')) confidence -= 0.1;
+    }
+    if (entry.origin === 'packet') confidence += 0.05;
+    return clamp(confidence, 0.2, 0.95);
+  }
+  
+  recordPrivateMessage(entry) {
+    config.intelligence.privateMessages.push(entry);
+    this.trimArray(config.intelligence.privateMessages, 500);
+    
+    if (entry.keywords?.length && entry.content) {
+      const leads = this.coordinateScraper.scrapeMessage(entry.sender, entry.content, 'private');
+      leads.forEach(lead => {
+        lead.username = entry.sender;
+        lead.source = 'private_message';
+        lead.channel = 'private';
+        lead.timestamp = entry.timestamp;
+        lead.lastSeen = entry.timestamp;
+        lead.mentions = 1;
+        this.recordCoordinateLead(lead);
+      });
+    }
+  }
+  
+  recordCoordinateLead(lead) {
+    const key = this.getCoordinateKey(lead.coordinates);
+    const existing = this.coordinateIndex.get(key);
+    if (existing) {
+      existing.mentions = (existing.mentions || 1) + 1;
+      existing.lastSeen = Date.now();
+      existing.confidence = Math.max(existing.confidence || 0.4, lead.confidence || 0.4);
+      existing.keywords = Array.from(new Set([...(existing.keywords || []), ...(lead.keywords || [])]));
+      existing.highValue = existing.highValue || lead.highValue;
+      existing.baseName = existing.baseName || lead.baseName || null;
+      existing.username = existing.username || lead.username;
+      return existing;
+    }
+    
+    const storedLead = {
+      ...lead,
+      mentions: lead.mentions || 1,
+      lastSeen: lead.lastSeen || lead.timestamp || Date.now()
+    };
+    
+    this.coordinateIndex.set(key, storedLead);
+    config.intelligence.coordinates.push(storedLead);
+    this.trimArray(config.intelligence.coordinates, 1000);
+    
+    if (storedLead.highValue) {
+      this.addSuspiciousLocation(storedLead, 'chat_highvalue');
+    }
+    if (storedLead.baseName) {
+      this.addSuspiciousLocation(storedLead, 'named_lead');
+    }
+    
+    return storedLead;
+  }
+  
+  addSuspiciousLocation(data, source = 'analysis') {
+    const coords = data.coordinates || { x: data.x, y: data.y, z: data.z };
+    if (!coords) return;
+    const x = Math.round(coords.x);
+    const y = Math.round(coords.y ?? this.bot.entity?.position?.y ?? 64);
+    const z = Math.round(coords.z);
+    const existing = config.intelligence.suspiciousLocations.find(loc => Math.abs(loc.x - x) <= 64 && Math.abs(loc.z - z) <= 64);
+    if (existing) {
+      existing.confidence = Math.max(existing.confidence || 0.5, data.confidence || 0.5);
+      existing.mentionCount = (existing.mentionCount || 1) + (data.mentionCount || data.mentions || 1);
+      existing.timestamp = Date.now();
+      if (data.keywords?.length) {
+        existing.keywords = Array.from(new Set([...(existing.keywords || []), ...data.keywords]));
+      }
+      if (data.baseName && !existing.baseName) {
+        existing.baseName = data.baseName;
+      }
+      return existing;
+    }
+    
+    const location = {
+      x,
+      y,
+      z,
+      source: data.source || source,
+      confidence: clamp(data.confidence || 0.6, 0.1, 0.99),
+      mentionCount: data.mentionCount || data.mentions || 1,
+      username: data.username || null,
+      baseName: data.baseName || null,
+      keywords: data.keywords || [],
+      timestamp: Date.now(),
+      investigated: data.investigated || false
+    };
+    
+    config.intelligence.suspiciousLocations.push(location);
+    this.trimArray(config.intelligence.suspiciousLocations, 300);
+    return location;
+  }
+  
+  analyzeCoordinateClusters() {
+    const clusters = new Map();
+    const clusterRadius = config.intelligence.alertThresholds.coordinateClusterRadius || 500;
+    this.coordinateIndex.forEach(lead => {
+      const key = `${Math.floor(lead.coordinates.x / clusterRadius)}_${Math.floor(lead.coordinates.z / clusterRadius)}`;
+      if (!clusters.has(key)) clusters.set(key, []);
+      clusters.get(key).push(lead);
+    });
+    
+    clusters.forEach(list => {
+      if (list.length >= config.intelligence.alertThresholds.minimumClusterSize) {
+        const avgX = Math.round(list.reduce((sum, c) => sum + c.coordinates.x, 0) / list.length);
+        const avgY = Math.round(list.reduce((sum, c) => sum + c.coordinates.y, 0) / list.length);
+        const avgZ = Math.round(list.reduce((sum, c) => sum + c.coordinates.z, 0) / list.length);
+        const confidence = clamp(0.5 + list.length * 0.08, 0.6, 0.95);
+        this.addSuspiciousLocation({
+          coordinates: { x: avgX, y: avgY, z: avgZ },
+          confidence,
+          mentionCount: list.length,
+          keywords: list.flatMap(item => item.keywords || [])
+        }, 'cluster_analysis');
+      }
+    });
+  }
+  
+  trackPlayerMovement(username, position) {
+    this.behaviorAnalyzer.trackPlayerMovement(username, position);
+  }
+  
+  logPlayerLogout(username, position) {
+    if (!position) return;
+    const pos = {
+      x: Math.round(position.x),
+      y: Math.round(position.y || this.bot.entity?.position?.y || 64),
+      z: Math.round(position.z)
+    };
+    this.behaviorAnalyzer.logPlayerLogout(username, pos);
+    const nearbyLogouts = (config.intelligence.logoutLocations || []).filter(event =>
+      Math.abs(event.position.x - pos.x) <= 80 &&
+      Math.abs(event.position.z - pos.z) <= 80
+    );
+    if (nearbyLogouts.length >= 3) {
+      this.addSuspiciousLocation({
+        coordinates: pos,
+        confidence: clamp(0.55 + nearbyLogouts.length * 0.05, 0.55, 0.9),
+        mentionCount: nearbyLogouts.length,
+        username,
+        keywords: ['logout']
+      }, 'logout_cluster');
+    }
+  }
+  
+  logChunkLoad(chunkX, chunkZ) {
+    const event = this.behaviorAnalyzer.logChunkLoad(chunkX, chunkZ);
+    if (event?.abandoned) {
+      const coords = {
+        x: chunkX * 16 + 8,
+        y: this.bot.entity?.position?.y || 64,
+        z: chunkZ * 16 + 8
+      };
+      this.addSuspiciousLocation({
+        coordinates: coords,
+        confidence: 0.55,
+        keywords: ['chunk'],
+        mentionCount: 1
+      }, 'chunk_anomaly');
+    }
+  }
+  
+  recordConfirmedBase(stash) {
+    if (!stash || !stash.coords) return;
+    const key = this.getCoordinateKey(stash.coords);
+    const baseData = {
+      coords: {
+        x: stash.coords.x,
+        y: stash.coords.y,
+        z: stash.coords.z
+      },
+      totalValue: stash.totalValue || 0,
+      chestCount: stash.chestCount || 0,
+      timestamp: stash.timestamp || Date.now(),
+      contents: stash.contents || []
+    };
+    const existing = config.intelligence.confirmedBases.find(base => this.getCoordinateKey(base.coords || base) === key);
+    if (existing) {
+      Object.assign(existing, baseData);
+    } else {
+      config.intelligence.confirmedBases.push(baseData);
+      this.trimArray(config.intelligence.confirmedBases, 50);
+    }
+    this.addSuspiciousLocation({
+      coordinates: baseData.coords,
+      confidence: 0.95,
+      mentionCount: baseData.chestCount || 1,
+      keywords: ['confirmed']
+    }, 'confirmed_base');
+  }
+  
+  markLocationInvestigated(target, success = false) {
+    if (!target) return;
+    const key = this.getCoordinateKey(target);
+    const suspicious = config.intelligence.suspiciousLocations.find(loc => this.getCoordinateKey(loc) === key);
+    if (suspicious) {
+      suspicious.investigated = true;
+      suspicious.lastInvestigated = Date.now();
+      if (success) {
+        suspicious.confidence = Math.max(suspicious.confidence || 0.6, 0.9);
+      } else {
+        suspicious.confidence = Math.max(0.2, (suspicious.confidence || 0.5) - 0.15);
+      }
+    }
+    const lead = this.coordinateIndex.get(key);
+    if (lead) {
+      lead.lastInvestigated = Date.now();
+      lead.investigated = true;
+      if (!success) {
+        lead.confidence = Math.max(0.2, (lead.confidence || 0.5) - 0.15);
+      }
+    }
+  }
+  
+  calculateTargetPriority({ confidence = 0.5, mentions = 1, source = 'general', timestamp }) {
+    let priority = confidence * 70 + Math.min(mentions, 5) * 4;
+    if (source === 'confirmed_base') priority = 100;
+    if (source === 'chat_highvalue') priority += 15;
+    if (source === 'cluster_analysis') priority += 12;
+    if (source === 'behavior_analysis') priority += 8;
+    if (source === 'logout_location') priority += 4;
+    if (source === 'chunk_anomaly') priority += 5;
+    if (timestamp) {
+      const ageMinutes = (Date.now() - timestamp) / 60000;
+      priority -= Math.min(ageMinutes / 5, 25);
+    }
+    return Math.round(clamp(priority, 15, 100));
+  }
+  
+  getPrioritizedTargets() {
+    const targetsMap = new Map();
+    const addTarget = (key, target) => {
+      const existing = targetsMap.get(key);
+      if (!existing || target.priority > existing.priority) {
+        targetsMap.set(key, target);
+      }
+    };
+    
+    config.intelligence.confirmedBases.forEach(base => {
+      const key = this.getCoordinateKey(base.coords || base);
+      addTarget(key, {
+        x: base.coords.x,
+        y: base.coords.y,
+        z: base.coords.z,
+        source: 'confirmed_base',
+        confidence: 0.95,
+        priority: 100,
+        timestamp: base.timestamp,
+        value: base.totalValue || 0,
+        chestCount: base.chestCount || 0
+      });
+    });
+    
+    this.coordinateIndex.forEach(lead => {
+      const key = this.getCoordinateKey(lead.coordinates);
+      const source = lead.highValue ? 'chat_highvalue' : lead.source || 'chat';
+      const priority = this.calculateTargetPriority({
+        confidence: lead.confidence || 0.5,
+        mentions: lead.mentions || 1,
+        source,
+        timestamp: lead.lastSeen
+      });
+      addTarget(key, {
+        x: lead.coordinates.x,
+        y: lead.coordinates.y,
+        z: lead.coordinates.z,
+        source,
+        confidence: lead.confidence || 0.5,
+        priority,
+        mentions: lead.mentions || 1,
+        keywords: lead.keywords || [],
+        baseName: lead.baseName || null,
+        username: lead.username || null,
+        timestamp: lead.lastSeen
+      });
+    });
+    
+    config.intelligence.suspiciousLocations.forEach(loc => {
+      const key = this.getCoordinateKey(loc);
+      const priority = this.calculateTargetPriority({
+        confidence: loc.confidence || 0.5,
+        mentions: loc.mentionCount || 1,
+        source: loc.source || 'analysis',
+        timestamp: loc.timestamp
+      });
+      addTarget(key, {
+        x: loc.x,
+        y: loc.y,
+        z: loc.z,
+        source: loc.source || 'analysis',
+        confidence: loc.confidence || 0.5,
+        priority,
+        mentions: loc.mentionCount || 1,
+        investigated: !!loc.investigated,
+        timestamp: loc.timestamp
+      });
+    });
+    
+    config.intelligence.logoutLocations.slice(-50).forEach(logout => {
+      const key = this.getCoordinateKey(logout.position);
+      const priority = this.calculateTargetPriority({
+        confidence: 0.45,
+        mentions: 1,
+        source: 'logout_location',
+        timestamp: logout.timestamp
+      });
+      addTarget(key, {
+        x: logout.position.x,
+        y: logout.position.y,
+        z: logout.position.z,
+        source: 'logout_location',
+        confidence: 0.45,
+        priority,
+        username: logout.username,
+        timestamp: logout.timestamp
+      });
+    });
+    
+    return Array.from(targetsMap.values()).sort((a, b) => b.priority - a.priority);
+  }
+  
+  getIntelligenceSummary() {
+    return {
+      totalCoordinates: config.intelligence.coordinates.length,
+      highValueCoordinates: config.intelligence.coordinates.filter(c => c.highValue).length,
+      suspiciousLocations: config.intelligence.suspiciousLocations.length,
+      confirmedBases: config.intelligence.confirmedBases.length,
+      trackedPlayers: this.behaviorAnalyzer.playerProfiles.size,
+      privateMessagesIntercepted: config.intelligence.privateMessages.length,
+      playerAssociations: Object.keys(config.intelligence.playerAssociations || {}).length,
+      prioritizedTargets: this.getPrioritizedTargets().length
+    };
+  }
+  
+  saveIntelligence() {
+    try {
+      const data = {
+        coordinates: config.intelligence.coordinates.slice(-500),
+        suspiciousLocations: config.intelligence.suspiciousLocations,
+        confirmedBases: config.intelligence.confirmedBases,
+        privateMessages: config.intelligence.privateMessages.slice(-500),
+        travelRoutes: config.intelligence.travelRoutes.slice(-200),
+        logoutLocations: config.intelligence.logoutLocations.slice(-200),
+        playerAssociations: config.intelligence.playerAssociations,
+        summary: this.getIntelligenceSummary(),
+        lastUpdate: Date.now()
+      };
+      fs.writeFileSync('./data/intelligence.json', JSON.stringify(data, null, 2));
+      this.messageInterceptor.saveMessageLog();
+      this.behaviorAnalyzer.saveBehaviorData();
+      console.log('[INTEL] Intelligence data saved');
+    } catch (err) {
+      console.log(`[INTEL] Error saving intelligence: ${err.message}`);
+    }
+  }
+}
+
+// === PLUGIN ANALYZER ===
+class PluginAnalyzer {
+  constructor() {
+    this.vulnerabilities = [];
+    this.analysisResults = [];
+    this.scanQueue = [];
+    this.continuousScanning = false;
+    this.scanInterval = null;
+    this.scanIntervalMs = 300000; // 5 minutes default
+    this.historicalScans = [];
+    this.pluginRegistry = new Map(); // Track uploaded plugins
+    this.loadContinuousScanData();
+  }
 // === COORDINATE CONVERSION HELPERS ===
 const CoordinateConverter = {
   overworldToNether: (x, y, z) => {
@@ -16119,6 +17263,7 @@ let globalBot = null;
 let globalPluginAnalyzer = new PluginAnalyzer();
 let globalDupeFramework = null;
 let globalSwarmCoordinator = null;
+let globalIntelligenceDB = null;
 let globalBaseMonitor = null;
 let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
@@ -16149,6 +17294,25 @@ http.createServer((req, res) => {
       crystalMetrics = globalBot.combatAI.crystalPvP.metrics;
     }
     
+    let intelligenceSummary = null;
+    let prioritizedIntelligenceTargets = [];
+    if (config.intelligence.enabled) {
+      if (globalBot?.intelligenceDB || globalIntelligenceDB) {
+        const db = globalBot?.intelligenceDB || globalIntelligenceDB;
+        intelligenceSummary = db.getIntelligenceSummary();
+        prioritizedIntelligenceTargets = db.getPrioritizedTargets().slice(0, 10);
+      } else {
+        intelligenceSummary = {
+          totalCoordinates: config.intelligence.coordinates.length,
+          highValueCoordinates: config.intelligence.coordinates.filter(c => c.highValue).length,
+          suspiciousLocations: config.intelligence.suspiciousLocations.length,
+          confirmedBases: config.intelligence.confirmedBases.length,
+          trackedPlayers: Object.keys(config.intelligence.behaviorProfiles || {}).length,
+          privateMessagesIntercepted: config.intelligence.privateMessages.length,
+          playerAssociations: Object.keys(config.intelligence.playerAssociations || {}).length,
+          prioritizedTargets: 0
+        };
+      }
     // Get projectile and mace metrics if available
     let projectileMetrics = null;
     let maceMetrics = null;
@@ -16305,6 +17469,75 @@ http.createServer((req, res) => {
           guest: config.whitelist.filter(e => e.level === 'guest').length
         }
       },
+      tracking: globalBot?.playerTracker ? {
+        active: globalBot.playerTracker.isTracking,
+        target: globalBot.playerTracker.targetUsername,
+        sightings: globalBot.playerTracker.trackingLog.sightings.length,
+        suspectedBases: globalBot.playerTracker.suspectedBases.length,
+        afkPeriods: globalBot.playerTracker.trackingLog.afkPeriods.length,
+        lastKnownPosition: globalBot.playerTracker.lastKnownPosition ? 
+          `${Math.floor(globalBot.playerTracker.lastKnownPosition.x)}, ${Math.floor(globalBot.playerTracker.lastKnownPosition.y)}, ${Math.floor(globalBot.playerTracker.lastKnownPosition.z)}` :
+          'Unknown',
+        bases: globalBot.playerTracker.suspectedBases.map(b => ({
+          coords: `${b.x}, ${b.y}, ${b.z}`,
+          visitCount: b.visitCount,
+          threatLevel: b.threatLevel,
+          explored: b.explored,
+          storageBlocks: b.storageBlocks?.length || 0,
+          estimatedValue: b.estimatedValue || 0
+        }))
+      } : null,
+      intelligence: config.intelligence.enabled ? {
+        summary: intelligenceSummary || {
+          totalCoordinates: config.intelligence.coordinates.length,
+          highValueCoordinates: config.intelligence.coordinates.filter(c => c.highValue).length,
+          suspiciousLocations: config.intelligence.suspiciousLocations.length,
+          confirmedBases: config.intelligence.confirmedBases.length,
+          trackedPlayers: Object.keys(config.intelligence.behaviorProfiles || {}).length,
+          privateMessagesIntercepted: config.intelligence.privateMessages.length,
+          playerAssociations: Object.keys(config.intelligence.playerAssociations || {}).length,
+          prioritizedTargets: prioritizedIntelligenceTargets.length
+        },
+        alerts: prioritizedIntelligenceTargets.map(t => ({
+          coords: `${Math.round(t.x)}, ${Math.round(t.y || 64)}, ${Math.round(t.z)}`,
+          priority: Math.round(t.priority),
+          confidence: t.confidence ? Number((t.confidence * 100).toFixed(0)) : null,
+          source: t.source,
+          username: t.username || null
+        })),
+        coordinates: config.intelligence.coordinates.slice(-15).map(c => ({
+          coords: `${c.coordinates.x}, ${c.coordinates.y}, ${c.coordinates.z}`,
+          username: c.username,
+          highValue: c.highValue,
+          confidence: c.confidence,
+          dimension: c.dimension,
+          baseName: c.baseName || null,
+          keywords: c.keywords || [],
+          timestamp: c.timestamp
+        })),
+        suspiciousLocations: config.intelligence.suspiciousLocations.slice(-10).map(loc => ({
+          coords: `${loc.x}, ${loc.y}, ${loc.z}`,
+          source: loc.source,
+          confidence: loc.confidence,
+          mentionCount: loc.mentionCount || 0,
+          timestamp: loc.timestamp,
+          investigated: !!loc.investigated,
+          lastInvestigated: loc.lastInvestigated || null
+        })),
+        privateMessages: config.intelligence.privateMessages.slice(-10).map(pm => ({
+          sender: pm.sender,
+          receiver: pm.receiver,
+          content: pm.content,
+          keywords: pm.keywords || [],
+          confidence: pm.confidence,
+          timestamp: pm.timestamp,
+          origin: pm.origin || 'unknown'
+        })),
+        confirmedBases: config.intelligence.confirmedBases.slice(-5),
+        travelRoutes: config.intelligence.travelRoutes.slice(-10),
+        associations: Object.values(config.intelligence.playerAssociations || {}),
+        logoutLocations: (config.intelligence.logoutLocations || []).slice(-10)
+      } : null
       schematics: {
         total: globalSchematicLoader.listSchematics().length,
         loaded: globalSchematicLoader.listSchematics()
@@ -16729,6 +17962,9 @@ http.createServer((req, res) => {
 
 console.log('[DASHBOARD] http://localhost:8080');
 
+// === SCHEMATIC BUILDER ===
+class SchematicBuilder {
+  constructor(bot, schematicLoader = null) {
 // === SCHEMATIC BUILDER SYSTEM ===
 
 // Block physics and dependency data
@@ -17077,6 +18313,8 @@ async function launchBot(username, role = 'fighter') {
   
   const combatAI = new CombatAI(bot);
   const conversationAI = new ConversationAI(bot);
+  const schematicLoader = new SchematicLoader(bot);
+  const intelligenceDB = new IntelligenceDatabase(bot);
   let stashScanner = null;
   let dupeFramework = null;
   let lootOperation = null;
@@ -17101,6 +18339,9 @@ async function launchBot(username, role = 'fighter') {
   
   // Store combatAI reference on bot for stats access
   bot.combatAI = combatAI;
+  bot.schematicLoader = schematicLoader;
+  bot.intelligenceDB = intelligenceDB;
+  globalIntelligenceDB = intelligenceDB;
   
   // Initialize schematic builder (available in all modes)
   bot.schematicBuilder = new SchematicBuilder(bot);
@@ -17392,6 +18633,15 @@ async function launchBot(username, role = 'fighter') {
       }, 2000); // Wait 2 seconds for bot to fully initialize
     }
     
+    // Chat handler with intelligence gathering
+    bot.on('chat', async (username, message) => {
+      if (username === bot.username) return;
+      
+      // Process message through intelligence system
+      if (config.intelligence.enabled && intelligenceDB) {
+        intelligenceDB.processMessage(username, message);
+      }
+      
     // Initialize base monitor if home base is set
     if (config.homeBase.coords) {
       globalBaseMonitor = new BaseMonitor(bot);
@@ -17425,6 +18675,33 @@ async function launchBot(username, role = 'fighter') {
             await bot.deathRecovery.onDeath();
         }
     });
+    
+    // Player movement tracking for intelligence
+    setInterval(() => {
+      if (config.intelligence.enabled && intelligenceDB) {
+        const players = Object.values(bot.entities).filter(e => 
+          e.type === 'player' && e.username !== bot.username
+        );
+        
+        for (const player of players) {
+          intelligenceDB.trackPlayerMovement(player.username, player.position);
+        }
+      }
+    }, 5000); // Track every 5 seconds
+    
+    // Player logout tracking
+    bot.on('playerLeft', (player) => {
+      if (config.intelligence.enabled && intelligenceDB && player.entity) {
+        intelligenceDB.logPlayerLogout(player.username, player.entity.position);
+      }
+    });
+    
+    // Periodic intelligence save
+    setInterval(() => {
+      if (config.intelligence.enabled && intelligenceDB) {
+        intelligenceDB.saveIntelligence();
+      }
+    }, 60000); // Save every minute
     
     // Combat handler
     bot.on('entityHurt', async (entity) => {
