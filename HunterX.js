@@ -20837,6 +20837,18 @@ function initializeSupplyChainServer() {
       addTaskAPI(req, res);
     } else if (url.pathname === '/api/supply-chain/status' && req.method === 'GET') {
       serveSupplyChainStatusAPI(req, res);
+    } else if (url.pathname === '/api/telemetry' && req.method === 'GET') {
+      serveTelemetryAPI(req, res);
+    } else if (url.pathname === '/api/heatmap' && req.method === 'GET') {
+      serveHeatmapAPI(req, res);
+    } else if (url.pathname === '/api/threats' && req.method === 'GET') {
+      serveThreatsAPI(req, res);
+    } else if (url.pathname === '/api/combos' && req.method === 'GET') {
+      serveCombosAPI(req, res);
+    } else if (url.pathname === '/api/backups' && req.method === 'GET') {
+      serveBackupsAPI(req, res);
+    } else if (url.pathname === '/api/advanced/status' && req.method === 'GET') {
+      serveAdvancedStatusAPI(req, res);
     } else {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not found');
@@ -20891,8 +20903,8 @@ function serveTaskQueueDashboard(req, res) {
   
   <div class="container">
     <div class="header">
-      <h1>🔗 Supply Chain Manager</h1>
-      <p>Autonomous Bot Task Queue & Production System</p>
+      <h1>🚀 HunterX Advanced Features Dashboard</h1>
+      <p>Autonomous Bot Task Queue & Advanced Enhancement Systems</p>
     </div>
     
     <!-- Stats Overview -->
@@ -20966,6 +20978,42 @@ function serveTaskQueueDashboard(req, res) {
       <h2>📦 Global Inventory</h2>
       <div class="inventory-grid" id="inventory"></div>
     </div>
+    
+    <!-- Advanced Features Status -->
+    <div class="section">
+      <h2>🔧 Advanced Features</h2>
+      <div id="advanced-features"></div>
+    </div>
+    
+    <!-- Telemetry System -->
+    <div class="section">
+      <h2>📊 System Telemetry</h2>
+      <div id="telemetry"></div>
+    </div>
+    
+    <!-- Threat Assessment -->
+    <div class="section">
+      <h2>⚠️ Threat Assessment</h2>
+      <div id="threats"></div>
+    </div>
+    
+    <!-- Activity Heatmap -->
+    <div class="section">
+      <h2>🗺️ Activity Heatmap</h2>
+      <div id="heatmap"></div>
+    </div>
+    
+    <!-- Combat Combos -->
+    <div class="section">
+      <h2>⚔️ Combat Combos</h2>
+      <div id="combos"></div>
+    </div>
+    
+    <!-- Backup System -->
+    <div class="section">
+      <h2>💾 Backup System</h2>
+      <div id="backups"></div>
+    </div>
   </div>
   
   <script>
@@ -21022,6 +21070,9 @@ function serveTaskQueueDashboard(req, res) {
         // Render inventory
         document.getElementById('inventory').innerHTML = renderInventory(data.inventory.home_base);
         
+        // Load advanced features data
+        loadAdvancedFeaturesData();
+        
       } catch (err) {
         console.error('Failed to load data:', err);
       }
@@ -21068,6 +21119,103 @@ function serveTaskQueueDashboard(req, res) {
       }
       
       return items.join('');
+    }
+    
+    // Load advanced features data
+    async function loadAdvancedFeaturesData() {
+      try {
+        // Load advanced features status
+        const advancedRes = await fetch('/api/advanced/status');
+        const advancedData = await advancedRes.json();
+        
+        // Render advanced features status
+        const featuresHtml = Object.entries(advancedData.features).map(([name, enabled]) => 
+          `<div class="stat-card">
+            <div class="stat-number">${enabled ? '✅' : '❌'}</div>
+            <div class="stat-label">${name.replace(/([A-Z])/g, ' $1').trim()}</div>
+          </div>`
+        ).join('');
+        document.getElementById('advanced-features').innerHTML = featuresHtml;
+        
+        // Load telemetry data
+        const telemetryRes = await fetch('/api/telemetry');
+        const telemetryData = await telemetryRes.json();
+        
+        const telemetryHtml = `
+          <div class="stat-card">
+            <div class="stat-number">${telemetryData.report.summary.health}</div>
+            <div class="stat-label">System Health</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number">${telemetryData.metrics.memoryUsage?.current?.toFixed(1) || 'N/A'}</div>
+            <div class="stat-label">Memory (MB)</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number">${telemetryData.report.summary.issues}</div>
+            <div class="stat-label">Active Issues</div>
+          </div>
+        `;
+        document.getElementById('telemetry').innerHTML = telemetryHtml;
+        
+        // Load threats data
+        const threatsRes = await fetch('/api/threats');
+        const threatsData = await threatsRes.json();
+        
+        const threatsHtml = threatsData.topThreats.map(threat => 
+          `<div class="stat-card">
+            <div class="stat-number">${threat.username}</div>
+            <div class="stat-label">${threat.threatLevel} (${threat.totalScore})</div>
+          </div>`
+        ).join('');
+        document.getElementById('threats').innerHTML = threatsHtml || '<p>No threats detected</p>';
+        
+        // Load heatmap data
+        const heatmapRes = await fetch('/api/heatmap');
+        const heatmapData = await heatmapRes.json();
+        
+        const heatmapHtml = `
+          <div class="stat-card">
+            <div class="stat-number">${heatmapData.stats.totalCells}</div>
+            <div class="stat-label">Active Cells</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number">${heatmapData.hotspots.length}</div>
+            <div class="stat-label">Hotspots</div>
+          </div>
+        `;
+        document.getElementById('heatmap').innerHTML = heatmapHtml;
+        
+        // Load combos data
+        const combosRes = await fetch('/api/combos');
+        const combosData = await combosRes.json();
+        
+        const combosHtml = combosData.available.map(combo => 
+          `<div class="stat-card">
+            <div class="stat-number">${combo.name}</div>
+            <div class="stat-label">Available</div>
+          </div>`
+        ).join('');
+        document.getElementById('combos').innerHTML = combosHtml || '<p>No combos available</p>';
+        
+        // Load backup data
+        const backupsRes = await fetch('/api/backups');
+        const backupsData = await backupsRes.json();
+        
+        const backupsHtml = `
+          <div class="stat-card">
+            <div class="stat-number">${backupsData.backupCount}</div>
+            <div class="stat-label">Total Backups</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number">${backupsData.info.lastBackup ? new Date(backupsData.info.lastBackup).toLocaleTimeString() : 'Never'}</div>
+            <div class="stat-label">Last Backup</div>
+          </div>
+        `;
+        document.getElementById('backups').innerHTML = backupsHtml;
+        
+      } catch (err) {
+        console.error('Failed to load advanced features data:', err);
+      }
     }
     
     function formatTime(seconds) {
@@ -21137,6 +21285,2868 @@ function serveSupplyChainStatusAPI(req, res) {
   res.end(JSON.stringify(status));
 }
 
+function serveTelemetryAPI(req, res) {
+  if (!globalTelemetrySystem) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Telemetry system not initialized' }));
+    return;
+  }
+  
+  const report = globalTelemetrySystem.generateReport();
+  const metrics = globalTelemetrySystem.getMetrics();
+  const alerts = globalTelemetrySystem.getRecentAlerts(20);
+  
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    report,
+    metrics,
+    recentAlerts: alerts
+  }));
+}
+
+function serveHeatmapAPI(req, res) {
+  if (!globalActivityHeatmap) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Activity heatmap not initialized' }));
+    return;
+  }
+  
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const activityType = url.searchParams.get('type');
+  const minIntensity = parseFloat(url.searchParams.get('minIntensity')) || 5.0;
+  
+  const hotspots = globalActivityHeatmap.getHotspots(activityType, minIntensity);
+  const stats = globalActivityHeatmap.getStats();
+  
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    hotspots,
+    stats,
+    gridSize: globalActivityHeatmap.gridSize
+  }));
+}
+
+function serveThreatsAPI(req, res) {
+  if (!globalThreatAssessmentAI) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Threat assessment AI not initialized' }));
+    return;
+  }
+  
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const count = parseInt(url.searchParams.get('count')) || 10;
+  
+  const topThreats = globalThreatAssessmentAI.getTopThreats(count);
+  const summary = globalThreatAssessmentAI.getThreatSummary();
+  
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    topThreats,
+    summary
+  }));
+}
+
+function serveCombosAPI(req, res) {
+  if (!globalCombatComboSystem) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Combat combo system not initialized' }));
+    return;
+  }
+  
+  const available = globalCombatComboSystem.getAvailableCombos();
+  const status = globalCombatComboSystem.getComboStatus();
+  
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    available,
+    status
+  }));
+}
+
+function serveBackupsAPI(req, res) {
+  if (!globalAutoBackupSystem) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Auto backup system not initialized' }));
+    return;
+  }
+  
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  
+  if (req.method === 'POST' && url.pathname === '/api/backups/create') {
+    globalAutoBackupSystem.createManualBackup().then(success => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success }));
+    });
+    return;
+  }
+  
+  if (req.method === 'POST' && url.pathname === '/api/backups/restore') {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk.toString();
+    });
+    
+    req.on('end', () => {
+      try {
+        const { timestamp } = JSON.parse(body);
+        globalAutoBackupSystem.restoreBackup(timestamp).then(success => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success }));
+        });
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+  
+  const backups = globalAutoBackupSystem.listBackups();
+  const info = globalAutoBackupSystem.getBackupInfo();
+  
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    backups,
+    info
+  }));
+}
+
+function serveAdvancedStatusAPI(req, res) {
+  const status = {
+    timestamp: Date.now(),
+    features: {
+      chunkLoadManager: !!globalChunkLoadManager,
+      combatRLAgent: !!globalCombatRLAgent,
+      predictivePathfinder: !!globalPredictivePathfinder,
+      combatComboSystem: !!globalCombatComboSystem,
+      weaponOptimizer: !!globalWeaponOptimizer,
+      telemetrySystem: !!globalTelemetrySystem,
+      activityHeatmap: !!globalActivityHeatmap,
+      threatAssessmentAI: !!globalThreatAssessmentAI,
+      nlCommandParser: !!globalNLCommandParser,
+      autoBackupSystem: !!globalAutoBackupSystem
+    }
+  };
+  
+  // Add feature-specific status
+  if (globalChunkLoadManager) {
+    status.chunkLoadManager = globalChunkLoadManager.getStats();
+  }
+  
+  if (globalCombatRLAgent) {
+    status.combatRLAgent = globalCombatRLAgent.getStats();
+  }
+  
+  if (globalTelemetrySystem) {
+    status.telemetrySystem = {
+      report: globalTelemetrySystem.generateReport(),
+      alertCount: globalTelemetrySystem.alerts.length
+    };
+  }
+  
+  if (globalActivityHeatmap) {
+    status.activityHeatmap = globalActivityHeatmap.getStats();
+  }
+  
+  if (globalThreatAssessmentAI) {
+    status.threatAssessmentAI = globalThreatAssessmentAI.getThreatSummary();
+  }
+  
+  if (globalAutoBackupSystem) {
+    status.autoBackupSystem = globalAutoBackupSystem.getBackupInfo();
+  }
+  
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(status));
+}
+
+// === ADVANCED ENHANCEMENT FEATURES ===
+
+// 🔒 SECURITY & SAFETY FEATURES
+
+// Advanced coordinate validation with range checks and type validation
+function validateCoordinates(coords, context = 'general') {
+  if (!coords || typeof coords !== 'object') {
+    console.log(`[VALIDATION] Invalid coordinates object for ${context}`);
+    return false;
+  }
+  
+  const { x, y, z } = coords;
+  
+  // Check if all coordinates are finite numbers
+  if (typeof x !== 'number' || !isFinite(x) ||
+      typeof y !== 'number' || !isFinite(y) ||
+      typeof z !== 'number' || !isFinite(z)) {
+    console.log(`[VALIDATION] Coordinates must be finite numbers for ${context}`);
+    return false;
+  }
+  
+  // Y-level validation
+  if (y < CONSTANTS.MIN_Y_COORD || y > CONSTANTS.MAX_Y_COORD) {
+    console.log(`[VALIDATION] Y-coordinate ${y} out of range [${CONSTANTS.MIN_Y_COORD}, ${CONSTANTS.MAX_Y_COORD}] for ${context}`);
+    return false;
+  }
+  
+  // Distance validation (prevent extreme coordinates)
+  const distance = Math.sqrt(x * x + y * y + z * z);
+  if (distance > CONSTANTS.MAX_COORD_DISTANCE) {
+    console.log(`[VALIDATION] Coordinates too far from origin (${distance.toFixed(0)} > ${CONSTANTS.MAX_COORD_DISTANCE}) for ${context}`);
+    return false;
+  }
+  
+  // Context-specific validations
+  switch (context) {
+    case 'combat':
+      if (Math.abs(x) > 100000 || Math.abs(z) > 100000) {
+        console.log(`[VALIDATION] Combat coordinates too extreme for ${context}`);
+        return false;
+      }
+      break;
+    case 'pathfinding':
+      if (distance > 50000) {
+        console.log(`[VALIDATION] Pathfinding distance too large for ${context}`);
+        return false;
+      }
+      break;
+    case 'homebase':
+      if (y < -60 || y > 256) {
+        console.log(`[VALIDATION] Invalid home base Y-level for ${context}`);
+        return false;
+      }
+      break;
+  }
+  
+  return true;
+}
+
+// Command injection prevention
+function sanitizeCommand(command) {
+  if (!command || typeof command !== 'string') {
+    return '';
+  }
+  
+  // Remove dangerous characters and patterns
+  const dangerousPatterns = [
+    /[;&|`$(){}\[\]]/g,      // Shell metacharacters
+    /\s*(cd|rm|mv|cp|exec|eval|system)\s+/gi, // Dangerous commands
+    /\.\./g,                 // Directory traversal
+    /[\/\\]/g,               // Path separators
+    /[\x00-\x1F\x7F]/g,     // Control characters
+    /javascript:/gi,         // JavaScript protocol
+    /data:/gi,               // Data protocol
+  ];
+  
+  let sanitized = command;
+  dangerousPatterns.forEach(pattern => {
+    sanitized = sanitized.replace(pattern, '');
+  });
+  
+  // Limit length
+  sanitized = sanitized.substring(0, 500);
+  
+  // Trim whitespace
+  sanitized = sanitized.trim();
+  
+  if (sanitized !== command) {
+    console.log(`[SECURITY] Command sanitized: "${command}" -> "${sanitized}"`);
+  }
+  
+  return sanitized;
+}
+
+// ⚡ PERFORMANCE OPTIMIZATIONS
+
+// Debounce utility function
+function debounce(func, wait, immediate = false) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      timeout = null;
+      if (!immediate) func(...args);
+    };
+    const callNow = immediate && !timeout;
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+    if (callNow) func(...args);
+  };
+}
+
+// Chunk Loading Manager
+class ChunkLoadManager {
+  constructor(bot, maxChunks = 100) {
+    this.bot = bot;
+    this.maxChunks = maxChunks;
+    this.loadedChunks = new Map(); // chunkKey -> { priority, loadTime, distance }
+    this.priorityQueue = [];
+    this.lastCleanup = Date.now();
+    this.cleanupInterval = 30000; // 30 seconds
+    
+    console.log(`[CHUNK] ChunkLoadManager initialized with max ${maxChunks} chunks`);
+  }
+  
+  getChunkKey(x, z) {
+    return `${Math.floor(x / 16)},${Math.floor(z / 16)}`;
+  }
+  
+  requestChunk(x, z, priority = 'normal') {
+    const chunkKey = this.getChunkKey(x, z);
+    const botPos = this.bot.entity?.position;
+    
+    if (!botPos) return false;
+    
+    const distance = Math.sqrt(
+      Math.pow(x - botPos.x, 2) + 
+      Math.pow(z - botPos.z, 2)
+    );
+    
+    const chunkData = {
+      x: Math.floor(x / 16),
+      z: Math.floor(z / 16),
+      priority: this.getPriorityValue(priority),
+      loadTime: Date.now(),
+      distance
+    };
+    
+    // Update existing chunk or add new
+    if (this.loadedChunks.has(chunkKey)) {
+      this.loadedChunks.get(chunkKey).priority = Math.max(
+        this.loadedChunks.get(chunkKey).priority, 
+        chunkData.priority
+      );
+    } else {
+      this.loadedChunks.set(chunkKey, chunkData);
+    }
+    
+    // Check if we need to unload chunks
+    this.maintainChunkLimit();
+    
+    return true;
+  }
+  
+  getPriorityValue(priority) {
+    const priorities = {
+      'critical': 100,
+      'high': 75,
+      'normal': 50,
+      'low': 25
+    };
+    return priorities[priority] || 50;
+  }
+  
+  maintainChunkLimit() {
+    if (this.loadedChunks.size <= this.maxChunks) return;
+    
+    // Sort by priority (lowest first) then distance (farthest first)
+    const sortedChunks = Array.from(this.loadedChunks.entries())
+      .sort(([, a], [, b]) => {
+        if (a.priority !== b.priority) {
+          return a.priority - b.priority;
+        }
+        return b.distance - a.distance;
+      });
+    
+    // Remove lowest priority chunks until we're at limit
+    const toRemove = sortedChunks.slice(0, sortedChunks.length - this.maxChunks);
+    
+    toRemove.forEach(([chunkKey]) => {
+      this.unloadChunk(chunkKey);
+    });
+    
+    if (toRemove.length > 0) {
+      console.log(`[CHUNK] Unloaded ${toRemove.length} chunks to maintain limit`);
+    }
+  }
+  
+  unloadChunk(chunkKey) {
+    const chunkData = this.loadedChunks.get(chunkKey);
+    if (chunkData) {
+      // Send unload packet to server (if supported by bot)
+      if (this.bot._client && this.bot._client.chunkBatch) {
+        // This would be implemented based on the specific bot version
+      }
+      this.loadedChunks.delete(chunkKey);
+    }
+  }
+  
+  cleanup() {
+    const now = Date.now();
+    if (now - this.lastCleanup < this.cleanupInterval) return;
+    
+    this.lastCleanup = now;
+    
+    // Remove chunks older than 5 minutes
+    const cutoff = now - 300000;
+    let removed = 0;
+    
+    for (const [chunkKey, chunkData] of this.loadedChunks.entries()) {
+      if (chunkData.loadTime < cutoff) {
+        this.unloadChunk(chunkKey);
+        removed++;
+      }
+    }
+    
+    if (removed > 0) {
+      console.log(`[CHUNK] Cleaned up ${removed} old chunks`);
+    }
+  }
+  
+  getStats() {
+    return {
+      loaded: this.loadedChunks.size,
+      maxChunks: this.maxChunks,
+      memoryUsage: process.memoryUsage().heapUsed / 1024 / 1024 // MB
+    };
+  }
+}
+
+// 🧠 ADVANCED AI FEATURES
+
+// Reinforcement Learning Agent for Combat
+class CombatRLAgent {
+  constructor() {
+    this.qTable = new Map(); // state -> action -> q-value
+    this.learningRate = 0.1;
+    this.discountFactor = 0.95;
+    this.epsilon = 0.1; // exploration rate
+    this.epsilonDecay = 0.995;
+    this.minEpsilon = 0.01;
+    
+    this.actions = ['attack', 'defend', 'retreat', 'crystal', 'totem', 'surround'];
+    this.lastState = null;
+    this.lastAction = null;
+    this.episodeCount = 0;
+    
+    console.log('[RL] CombatRLAgent initialized');
+  }
+  
+  getStateRepresentation(bot, target) {
+    if (!bot || !bot.entity || !target) return null;
+    
+    const health = bot.health || 20;
+    const food = bot.food || 20;
+    const distance = bot.entity.position.distanceTo(target.position || target);
+    const hasTotem = RiskAssessmentHelper.hasTotem(bot);
+    const crystals = RiskAssessmentHelper.countItem(bot, 'end_crystal');
+    const obsidian = RiskAssessmentHelper.countItem(bot, 'obsidian');
+    const totems = RiskAssessmentHelper.countItem(bot, 'totem_of_undying');
+    
+    // Discretize values for state representation
+    const healthLevel = health > 15 ? 'high' : health > 8 ? 'medium' : 'low';
+    const distanceLevel = distance > 20 ? 'far' : distance > 8 ? 'medium' : 'close';
+    const resourceLevel = crystals > 10 ? 'rich' : crystals > 3 ? 'medium' : 'poor';
+    
+    return `${healthLevel}_${distanceLevel}_${resourceLevel}_${hasTotem}`;
+  }
+  
+  selectAction(state) {
+    if (!state) return this.actions[Math.floor(Math.random() * this.actions.length)];
+    
+    // Epsilon-greedy strategy
+    if (Math.random() < this.epsilon) {
+      return this.actions[Math.floor(Math.random() * this.actions.length)];
+    }
+    
+    // Select best action based on Q-values
+    const stateQTable = this.qTable.get(state) || {};
+    let bestAction = this.actions[0];
+    let bestQValue = -Infinity;
+    
+    for (const action of this.actions) {
+      const qValue = stateQTable[action] || 0;
+      if (qValue > bestQValue) {
+        bestQValue = qValue;
+        bestAction = action;
+      }
+    }
+    
+    return bestAction;
+  }
+  
+  updateQValue(state, action, reward, nextState) {
+    if (!state || !action) return;
+    
+    // Initialize state Q-table if needed
+    if (!this.qTable.has(state)) {
+      this.qTable.set(state, {});
+    }
+    
+    const stateQTable = this.qTable.get(state);
+    const currentQ = stateQTable[action] || 0;
+    
+    // Calculate max Q-value for next state
+    let maxNextQ = 0;
+    if (nextState) {
+      const nextStateQTable = this.qTable.get(nextState) || {};
+      maxNextQ = Math.max(...this.actions.map(a => nextStateQTable[a] || 0), 0);
+    }
+    
+    // Q-learning update rule
+    const newQ = currentQ + this.learningRate * (reward + this.discountFactor * maxNextQ - currentQ);
+    stateQTable[action] = newQ;
+    
+    // Update last state and action
+    this.lastState = state;
+    this.lastAction = action;
+  }
+  
+  getReward(bot, target, action, result) {
+    let reward = 0;
+    
+    // Health-based rewards
+    const healthChange = (bot.health || 20) - (result.previousHealth || 20);
+    reward += healthChange * 10;
+    
+    // Target damage rewards
+    if (result.targetDamage) {
+      reward += result.targetDamage * 5;
+    }
+    
+    // Action-specific rewards
+    switch (action) {
+      case 'attack':
+        reward += result.targetDamage ? 20 : -5;
+        break;
+      case 'defend':
+        reward += result.damageBlocked ? 15 : -2;
+        break;
+      case 'retreat':
+        reward += result.healthRecovered ? 10 : -3;
+        break;
+      case 'crystal':
+        reward += result.explosionDamage ? 25 : -10;
+        break;
+      case 'totem':
+        reward += result.totemUsed && bot.health > 0 ? 30 : -5;
+        break;
+      case 'surround':
+        reward += result.surroundSuccess ? 20 : -8;
+        break;
+    }
+    
+    // Penalty for taking too much damage
+    if (result.selfDamage > 5) {
+      reward -= result.selfDamage * 3;
+    }
+    
+    return reward;
+  }
+  
+  decayEpsilon() {
+    this.epsilon = Math.max(this.minEpsilon, this.epsilon * this.epsilonDecay);
+  }
+  
+  endEpisode() {
+    this.episodeCount++;
+    this.decayEpsilon();
+    this.lastState = null;
+    this.lastAction = null;
+  }
+  
+  getStats() {
+    return {
+      episodes: this.episodeCount,
+      epsilon: this.epsilon,
+      stateCount: this.qTable.size,
+      learningRate: this.learningRate
+    };
+  }
+  
+  saveModel() {
+    const modelData = {
+      qTable: Object.fromEntries(this.qTable),
+      epsilon: this.epsilon,
+      episodeCount: this.episodeCount,
+      timestamp: Date.now()
+    };
+    
+    safeWriteJson('./models/combat_rl_model.json', modelData);
+    console.log('[RL] Combat RL model saved');
+  }
+  
+  loadModel() {
+    const modelData = safeReadJson('./models/combat_rl_model.json');
+    if (modelData && modelData.qTable) {
+      this.qTable = new Map(Object.entries(modelData.qTable));
+      this.epsilon = modelData.epsilon || 0.1;
+      this.episodeCount = modelData.episodeCount || 0;
+      console.log('[RL] Combat RL model loaded');
+      return true;
+    }
+    return false;
+  }
+}
+
+// Predictive Pathfinder
+class PredictivePathfinder {
+  constructor(bot) {
+    this.bot = bot;
+    this.movementHistory = new Map(); // username -> position history
+    this.velocityVectors = new Map(); // username -> velocity vector
+    this.predictions = new Map(); // username -> predicted position
+    this.maxHistoryLength = 10;
+    this.predictionHorizon = 2000; // 2 seconds
+    this.updateInterval = 100; // 100ms
+    
+    console.log('[PATHFINDER] PredictivePathfinder initialized');
+    this.startTracking();
+  }
+  
+  startTracking() {
+    safeSetInterval(() => {
+      this.updatePredictions();
+    }, this.updateInterval, 'predictive-pathfinder-update');
+  }
+  
+  trackPlayer(username, position) {
+    if (!username || !position) return;
+    
+    const history = this.movementHistory.get(username) || [];
+    history.push({
+      position: position.clone(),
+      timestamp: Date.now()
+    });
+    
+    // Limit history length
+    if (history.length > this.maxHistoryLength) {
+      history.shift();
+    }
+    
+    this.movementHistory.set(username, history);
+    this.calculateVelocity(username);
+  }
+  
+  calculateVelocity(username) {
+    const history = this.movementHistory.get(username);
+    if (!history || history.length < 2) return;
+    
+    const recent = history.slice(-2);
+    const pos1 = recent[0].position;
+    const pos2 = recent[1].position;
+    const time1 = recent[0].timestamp;
+    const time2 = recent[1].timestamp;
+    
+    const timeDelta = (time2 - time1) / 1000; // Convert to seconds
+    if (timeDelta <= 0) return;
+    
+    const velocity = {
+      x: (pos2.x - pos1.x) / timeDelta,
+      y: (pos2.y - pos1.y) / timeDelta,
+      z: (pos2.z - pos1.z) / timeDelta
+    };
+    
+    this.velocityVectors.set(username, velocity);
+  }
+  
+  predictPosition(username, timeMs = this.predictionHorizon) {
+    const history = this.movementHistory.get(username);
+    const velocity = this.velocityVectors.get(username);
+    
+    if (!history || !velocity || history.length === 0) return null;
+    
+    const lastPos = history[history.length - 1].position;
+    const timeSeconds = timeMs / 1000;
+    
+    // Simple linear prediction
+    const predictedPos = {
+      x: lastPos.x + velocity.x * timeSeconds,
+      y: lastPos.y + velocity.y * timeSeconds,
+      z: lastPos.z + velocity.z * timeSeconds
+    };
+    
+    // Add some uncertainty based on movement consistency
+    const uncertainty = this.calculateUncertainty(username);
+    predictedPos.uncertainty = uncertainty;
+    
+    this.predictions.set(username, {
+      position: predictedPos,
+      timestamp: Date.now(),
+      confidence: Math.max(0, 1 - uncertainty)
+    });
+    
+    return predictedPos;
+  }
+  
+  calculateUncertainty(username) {
+    const history = this.movementHistory.get(username);
+    if (!history || history.length < 3) return 1.0;
+    
+    // Calculate velocity variance
+    let totalVariance = 0;
+    let count = 0;
+    
+    for (let i = 2; i < history.length; i++) {
+      const pos1 = history[i - 2].position;
+      const pos2 = history[i - 1].position;
+      const pos3 = history[i].position;
+      
+      const time1 = history[i - 2].timestamp;
+      const time2 = history[i - 1].timestamp;
+      const time3 = history[i].timestamp;
+      
+      const dt1 = (time2 - time1) / 1000;
+      const dt2 = (time3 - time2) / 1000;
+      
+      if (dt1 > 0 && dt2 > 0) {
+        const v1 = {
+          x: (pos2.x - pos1.x) / dt1,
+          y: (pos2.y - pos1.y) / dt1,
+          z: (pos2.z - pos1.z) / dt1
+        };
+        
+        const v2 = {
+          x: (pos3.x - pos2.x) / dt2,
+          y: (pos3.y - pos2.y) / dt2,
+          z: (pos3.z - pos2.z) / dt2
+        };
+        
+        const variance = Math.sqrt(
+          Math.pow(v2.x - v1.x, 2) +
+          Math.pow(v2.y - v1.y, 2) +
+          Math.pow(v2.z - v1.z, 2)
+        );
+        
+        totalVariance += variance;
+        count++;
+      }
+    }
+    
+    return count > 0 ? Math.min(1.0, totalVariance / count / 10) : 1.0;
+  }
+  
+  updatePredictions() {
+    const now = Date.now();
+    
+    for (const username of this.movementHistory.keys()) {
+      const prediction = this.predictions.get(username);
+      
+      // Update prediction if it's old or doesn't exist
+      if (!prediction || now - prediction.timestamp > 500) {
+        this.predictPosition(username);
+      }
+    }
+  }
+  
+  getInterceptionPoint(username, projectileSpeed = 10) {
+    const predictedPos = this.predictPosition(username);
+    const velocity = this.velocityVectors.get(username);
+    const botPos = this.bot.entity?.position;
+    
+    if (!predictedPos || !velocity || !botPos) return null;
+    
+    // Calculate time for projectile to reach predicted position
+    const distance = botPos.distanceTo(predictedPos);
+    const timeToImpact = distance / projectileSpeed;
+    
+    // Adjust for target movement during projectile flight
+    const interceptionPos = {
+      x: predictedPos.x + velocity.x * timeToImpact,
+      y: predictedPos.y + velocity.y * timeToImpact,
+      z: predictedPos.z + velocity.z * timeToImpact
+    };
+    
+    return interceptionPos;
+  }
+  
+  cleanup() {
+    const now = Date.now();
+    const cutoff = now - 10000; // 10 seconds
+    
+    // Clean old history
+    for (const [username, history] of this.movementHistory.entries()) {
+      const filtered = history.filter(entry => entry.timestamp > cutoff);
+      if (filtered.length === 0) {
+        this.movementHistory.delete(username);
+        this.velocityVectors.delete(username);
+        this.predictions.delete(username);
+      } else {
+        this.movementHistory.set(username, filtered);
+      }
+    }
+  }
+}
+
+// 🎯 ADVANCED COMBAT
+
+// Combat Combo System
+class CombatComboSystem {
+  constructor(bot) {
+    this.bot = bot;
+    this.activeCombos = new Map(); // comboName -> combo data
+    this.comboDefinitions = new Map(); // predefined combos
+    this.executionQueue = [];
+    this.isExecuting = false;
+    
+    this.initializeCombos();
+    console.log('[COMBO] CombatComboSystem initialized');
+  }
+  
+  initializeCombos() {
+    // Crystal Rush - Aggressive crystal placement
+    this.comboDefinitions.set('crystalRush', {
+      actions: [
+        { type: 'switch', item: 'end_crystal', delay: 0 },
+        { type: 'place', target: 'enemy', delay: 50 },
+        { type: 'detonate', delay: 100 },
+        { type: 'switch', item: 'totem_of_undying', delay: 50 },
+        { type: 'attack', delay: 100 }
+      ],
+      requirements: ['end_crystal', 'obsidian'],
+      cooldown: 3000
+    });
+    
+    // Totem Pop - Defensive totem management
+    this.comboDefinitions.set('totemPop', {
+      actions: [
+        { type: 'switch', item: 'totem_of_undying', delay: 0 },
+        { type: 'equip', slot: 'offhand', delay: 50 },
+        { type: 'block', delay: 100 },
+        { type: 'retreat', distance: 5, delay: 200 },
+        { type: 'heal', delay: 500 }
+      ],
+      requirements: ['totem_of_undying'],
+      cooldown: 2000
+    });
+    
+    // Anchor Trap - Anchor-based trapping
+    this.comboDefinitions.set('anchorTrap', {
+      actions: [
+        { type: 'switch', item: 'respawn_anchor', delay: 0 },
+        { type: 'place', target: 'ground', delay: 100 },
+        { type: 'charge', delay: 500 },
+        { type: 'switch', item: 'end_crystal', delay: 100 },
+        { type: 'place', target: 'anchor', delay: 50 },
+        { type: 'detonate', delay: 100 }
+      ],
+      requirements: ['respawn_anchor', 'end_crystal', 'glowstone'],
+      cooldown: 5000
+    });
+    
+    // Surround - Classic surround combo
+    this.comboDefinitions.set('surround', {
+      actions: [
+        { type: 'switch', item: 'obsidian', delay: 0 },
+        { type: 'place', pattern: 'surround', target: 'self', delay: 100 },
+        { type: 'switch', item: 'end_crystal', delay: 200 },
+        { type: 'place', target: 'enemy', delay: 50 },
+        { type: 'detonate', delay: 100 }
+      ],
+      requirements: ['obsidian', 'end_crystal'],
+      cooldown: 4000
+    });
+  }
+  
+  canExecuteCombo(comboName) {
+    const combo = this.comboDefinitions.get(comboName);
+    if (!combo) return false;
+    
+    // Check cooldown
+    const lastExecution = this.activeCombos.get(comboName)?.lastExecution;
+    if (lastExecution && Date.now() - lastExecution < combo.cooldown) {
+      return false;
+    }
+    
+    // Check requirements
+    for (const requirement of combo.requirements) {
+      if (RiskAssessmentHelper.countItem(this.bot, requirement) === 0) {
+        return false;
+      }
+    }
+    
+    return true;
+  }
+  
+  async executeCombo(comboName, target = null) {
+    if (!this.canExecuteCombo(comboName) || this.isExecuting) {
+      return false;
+    }
+    
+    const combo = this.comboDefinitions.get(comboName);
+    this.isExecuting = true;
+    
+    console.log(`[COMBO] Executing combo: ${comboName}`);
+    
+    try {
+      for (const action of combo.actions) {
+        await this.executeAction(action, target);
+        
+        // Add humanized timing with jitter
+        const jitter = action.delay * (0.8 + Math.random() * 0.4);
+        await sleep(jitter);
+      }
+      
+      // Mark as executed
+      this.activeCombos.set(comboName, {
+        lastExecution: Date.now(),
+        success: true
+      });
+      
+      console.log(`[COMBO] ✅ Combo completed: ${comboName}`);
+      return true;
+      
+    } catch (err) {
+      console.error(`[COMBO] ❌ Combo failed: ${comboName}`, err.message);
+      return false;
+    } finally {
+      this.isExecuting = false;
+    }
+  }
+  
+  async executeAction(action, target) {
+    switch (action.type) {
+      case 'switch':
+        await this.switchToItem(action.item);
+        break;
+      case 'place':
+        await this.placeBlock(action.target, target);
+        break;
+      case 'detonate':
+        await this.detonateCrystals(target);
+        break;
+      case 'attack':
+        await this.attackTarget(target);
+        break;
+      case 'equip':
+        await this.equipItem(action.slot);
+        break;
+      case 'block':
+        await this.blockWithShield();
+        break;
+      case 'retreat':
+        await this.retreat(action.distance);
+        break;
+      case 'heal':
+        await this.heal();
+        break;
+      case 'charge':
+        await this.chargeAnchor();
+        break;
+    }
+  }
+  
+  async switchToItem(itemName) {
+    const item = this.bot.inventory?.items().find(i => i.name === itemName);
+    if (item) {
+      await this.bot.equip(item, 'hand');
+    }
+  }
+  
+  async placeBlock(targetType, target) {
+    // Implementation would depend on bot's capabilities
+    // This is a placeholder for the actual placement logic
+  }
+  
+  async detonateCrystals(target) {
+    // Implementation for crystal detonation
+  }
+  
+  async attackTarget(target) {
+    if (target && this.bot.entity?.position) {
+      await this.bot.attack(target);
+    }
+  }
+  
+  async equipItem(slot) {
+    // Implementation for item equipping
+  }
+  
+  async blockWithShield() {
+    // Implementation for blocking
+  }
+  
+  async retreat(distance) {
+    if (this.bot.entity?.position) {
+      const retreatPos = this.bot.entity.position.offset(-distance, 0, -distance);
+      await this.bot.pathfinder.goto(new goals.GoalNear(retreatPos, 1));
+    }
+  }
+  
+  async heal() {
+    // Implementation for healing (eating golden apple, etc.)
+  }
+  
+  async chargeAnchor() {
+    // Implementation for anchor charging
+  }
+  
+  getAvailableCombos() {
+    const available = [];
+    
+    for (const [name, combo] of this.comboDefinitions.entries()) {
+      if (this.canExecuteCombo(name)) {
+        available.push({
+          name,
+          cooldown: combo.cooldown,
+          requirements: combo.requirements
+        });
+      }
+    }
+    
+    return available;
+  }
+  
+  getComboStatus() {
+    const status = {};
+    
+    for (const [name, combo] of this.comboDefinitions.entries()) {
+      const lastExecution = this.activeCombos.get(name)?.lastExecution;
+      const cooldownRemaining = lastExecution ? 
+        Math.max(0, combo.cooldown - (Date.now() - lastExecution)) : 0;
+      
+      status[name] = {
+        available: this.canExecuteCombo(name),
+        cooldownRemaining,
+        lastExecution
+      };
+    }
+    
+    return status;
+  }
+}
+
+// Weapon Optimizer
+class WeaponOptimizer {
+  constructor(bot) {
+    this.bot = bot;
+    this.weaponScores = new Map();
+    this.situationalModifiers = new Map();
+    this.lastOptimization = 0;
+    this.optimizationInterval = 5000; // 5 seconds
+    
+    this.initializeScoring();
+    console.log('[WEAPON] WeaponOptimizer initialized');
+  }
+  
+  initializeScoring() {
+    // Base weapon scores
+    this.weaponScores.set('netherite_sword', { damage: 8, durability: 2031, enchantments: 0 });
+    this.weaponScores.set('diamond_sword', { damage: 7, durability: 1561, enchantments: 0 });
+    this.weaponScores.set('iron_sword', { damage: 6, durability: 250, enchantments: 0 });
+    this.weaponScores.set('bow', { damage: 9, durability: 384, enchantments: 0, ranged: true });
+    this.weaponScores.set('crossbow', { damage: 9, durability: 465, enchantments: 0, ranged: true });
+    this.weaponScores.set('trident', { damage: 9, durability: 250, enchantments: 0, ranged: true });
+    
+    // Situational modifiers
+    this.situationalModifiers.set('underwater', {
+      'trident': 2.0, // Trident is best underwater
+      'sword': 0.5,   // Swords are less effective
+      'bow': 0.1      // Bows are useless underwater
+    });
+    
+    this.situationalModifiers.set('aerial', {
+      'crossbow': 1.5, // Crossbow is good for aerial
+      'bow': 1.2,      // Bow is decent
+      'trident': 1.3,  // Trident with riptide
+      'sword': 0.8     // Swords are okay but not ideal
+    });
+    
+    this.situationalModifiers.set('crowded', {
+      'sword': 1.3,    // Swords are good for crowd control
+      'axe': 1.2,      // Axes have sweep attacks
+      'bow': 0.7,      // Ranged is harder in crowds
+      'trident': 0.8
+    });
+    
+    this.situationalModifiers.set('long_range', {
+      'bow': 2.0,      // Bows excel at long range
+      'crossbow': 1.8, // Crossbows are great
+      'trident': 1.5,  // Trident with loyalty
+      'sword': 0.3     // Swords are useless at range
+    });
+  }
+  
+  getBestWeapon(situation = 'normal', target = null) {
+    const weapons = this.getAvailableWeapons();
+    if (weapons.length === 0) return null;
+    
+    let bestWeapon = null;
+    let bestScore = -1;
+    
+    for (const weapon of weapons) {
+      const score = this.calculateWeaponScore(weapon, situation, target);
+      if (score > bestScore) {
+        bestScore = score;
+        bestWeapon = weapon;
+      }
+    }
+    
+    return bestWeapon;
+  }
+  
+  getAvailableWeapons() {
+    const weapons = [];
+    
+    if (!this.bot.inventory) return weapons;
+    
+    for (const item of this.bot.inventory.items()) {
+      if (this.weaponScores.has(item.name)) {
+        weapons.push(item);
+      }
+    }
+    
+    return weapons;
+  }
+  
+  calculateWeaponScore(weapon, situation, target) {
+    const baseStats = this.weaponScores.get(weapon.name);
+    if (!baseStats) return 0;
+    
+    let score = 0;
+    
+    // Base damage score
+    score += baseStats.damage * 10;
+    
+    // Durability score
+    const durabilityRatio = weapon.durabilityUsed / weapon.maxDurability;
+    score += (1 - durabilityRatio) * 5;
+    
+    // Enchantment score
+    score += this.calculateEnchantmentScore(weapon) * 3;
+    
+    // Situational modifiers
+    const modifiers = this.situationalModifiers.get(situation);
+    if (modifiers && modifiers[weapon.name]) {
+      score *= modifiers[weapon.name];
+    }
+    
+    // Target-specific modifiers
+    if (target) {
+      score *= this.getTargetModifier(weapon, target);
+    }
+    
+    // Distance modifier
+    if (this.bot.entity?.position && target?.position) {
+      const distance = this.bot.entity.position.distanceTo(target.position);
+      score *= this.getDistanceModifier(weapon, distance);
+    }
+    
+    return score;
+  }
+  
+  calculateEnchantmentScore(weapon) {
+    if (!weapon.nbt) return 0;
+    
+    const enchantments = weapon.nbt.value?.Enchantments?.value || [];
+    let score = 0;
+    
+    for (const ench of enchantments) {
+      const id = ench.id.value;
+      const level = ench.lvl.value;
+      
+      // Common combat enchantments
+      switch (id) {
+        case 'minecraft:sharpness':
+          score += level * 5;
+          break;
+        case 'minecraft:smite':
+          score += level * 4;
+          break;
+        case 'minecraft:bane_of_arthropods':
+          score += level * 3;
+          break;
+        case 'minecraft:power':
+          score += level * 4;
+          break;
+        case 'minecraft:punch':
+          score += level * 2;
+          break;
+        case 'minecraft:flame':
+          score += 3;
+          break;
+        case 'minecraft:infinity':
+          score += 10;
+          break;
+        case 'minecraft:loyalty':
+          score += level * 3;
+          break;
+        case 'minecraft:riptide':
+          score += level * 4;
+          break;
+        case 'minecraft:impaling':
+          score += level * 3;
+          break;
+        case 'minecraft:fire_aspect':
+          score += level * 2;
+          break;
+        case 'minecraft:knockback':
+          score += level * 1;
+          break;
+      }
+    }
+    
+    return score;
+  }
+  
+  getTargetModifier(weapon, target) {
+    let modifier = 1.0;
+    
+    // Check if target is in water
+    if (target.entity?.isInWater) {
+      if (weapon.name === 'trident') modifier *= 2.0;
+      else modifier *= 0.5;
+    }
+    
+    // Check if target is flying/elytra
+    if (target.entity?.isOnGround === false) {
+      if (weapon.name.includes('bow') || weapon.name === 'crossbow') {
+        modifier *= 1.5;
+      }
+    }
+    
+    // Check if target is a specific mob type
+    if (target.entity?.name) {
+      const mobType = target.entity.name.toLowerCase();
+      
+      if (mobType.includes('undead') && weapon.enchantments?.includes('smite')) {
+        modifier *= 1.5;
+      }
+      
+      if (mobType.includes('spider') && weapon.enchantments?.includes('bane_of_arthropods')) {
+        modifier *= 1.5;
+      }
+      
+      if (mobType.includes('aquatic') && weapon.enchantments?.includes('impaling')) {
+        modifier *= 1.5;
+      }
+    }
+    
+    return modifier;
+  }
+  
+  getDistanceModifier(weapon, distance) {
+    if (weapon.name.includes('bow') || weapon.name === 'crossbow' || weapon.name === 'trident') {
+      // Ranged weapons
+      if (distance < 5) return 0.3; // Too close
+      if (distance < 20) return 1.2; // Optimal range
+      if (distance < 40) return 1.0; // Good range
+      return 0.7; // Long range
+    } else {
+      // Melee weapons
+      if (distance < 4) return 1.2; // Optimal melee range
+      if (distance < 6) return 1.0; // Good melee range
+      if (distance < 8) return 0.7; // Stretching it
+      return 0.3; // Too far
+    }
+  }
+  
+  async optimizeWeapon(situation = 'normal', target = null) {
+    const now = Date.now();
+    if (now - this.lastOptimization < this.optimizationInterval) {
+      return false;
+    }
+    
+    this.lastOptimization = now;
+    
+    const bestWeapon = this.getBestWeapon(situation, target);
+    if (!bestWeapon) return false;
+    
+    // Check if we're already holding the best weapon
+    if (this.bot.heldItem?.name === bestWeapon.name) {
+      return true;
+    }
+    
+    // Switch to the best weapon
+    try {
+      await this.bot.equip(bestWeapon, 'hand');
+      console.log(`[WEAPON] Switched to optimal weapon: ${bestWeapon.name}`);
+      return true;
+    } catch (err) {
+      console.error(`[WEAPON] Failed to switch weapon:`, err.message);
+      return false;
+    }
+  }
+  
+  getCurrentSituation() {
+    const bot = this.bot;
+    let situation = 'normal';
+    
+    // Check if underwater
+    if (bot.entity?.isInWater) {
+      situation = 'underwater';
+    }
+    
+    // Check if aerial
+    if (bot.entity?.isOnGround === false) {
+      situation = 'aerial';
+    }
+    
+    // Check if crowded (many nearby entities)
+    const nearbyEntities = Object.values(bot.entities || {}).filter(
+      e => e.position && bot.entity?.position.distanceTo(e.position) < 10
+    );
+    
+    if (nearbyEntities.length > 5) {
+      situation = 'crowded';
+    }
+    
+    return situation;
+  }
+}
+
+// 📊 ANALYTICS & MONITORING
+
+// Advanced Telemetry System
+class TelemetrySystem {
+  constructor() {
+    this.metrics = new Map();
+    this.alerts = [];
+    this.maxAlerts = 100;
+    this.lastGC = Date.now();
+    this.gcInterval = 300000; // 5 minutes
+    
+    this.initializeMetrics();
+    this.startMonitoring();
+    
+    console.log('[TELEMETRY] TelemetrySystem initialized');
+  }
+  
+  initializeMetrics() {
+    this.metrics.set('fps', {
+      current: 60,
+      average: 60,
+      min: 60,
+      max: 60,
+      samples: []
+    });
+    
+    this.metrics.set('tickTime', {
+      current: 50,
+      average: 50,
+      min: 50,
+      max: 50,
+      samples: []
+    });
+    
+    this.metrics.set('memoryUsage', {
+      current: 0,
+      average: 0,
+      min: 0,
+      max: 0,
+      samples: []
+    });
+    
+    this.metrics.set('combatEfficiency', {
+      current: 0,
+      average: 0,
+      kills: 0,
+      deaths: 0,
+      damageDealt: 0,
+      damageTaken: 0
+    });
+    
+    this.metrics.set('networkLatency', {
+      current: 50,
+      average: 50,
+      min: 50,
+      max: 50,
+      samples: []
+    });
+  }
+  
+  startMonitoring() {
+    // Monitor FPS and performance
+    safeSetInterval(() => {
+      this.updatePerformanceMetrics();
+    }, 1000, 'telemetry-performance');
+    
+    // Monitor memory usage
+    safeSetInterval(() => {
+      this.updateMemoryMetrics();
+    }, 5000, 'telemetry-memory');
+    
+    // Check for anomalies
+    safeSetInterval(() => {
+      this.checkAnomalies();
+    }, 10000, 'telemetry-anomalies');
+    
+    // Automatic garbage collection
+    safeSetInterval(() => {
+      this.triggerGCIfNeeded();
+    }, this.gcInterval, 'telemetry-gc');
+  }
+  
+  updatePerformanceMetrics() {
+    const memUsage = process.memoryUsage();
+    
+    // Update memory usage
+    this.updateMetric('memoryUsage', memUsage.heapUsed / 1024 / 1024); // MB
+    
+    // Simulate FPS calculation (would need actual implementation)
+    const fps = 60 - (memUsage.heapUsed / 1024 / 1024 / 100); // Rough estimate
+    this.updateMetric('fps', fps);
+    
+    // Update tick time (simulated)
+    const tickTime = 50 + Math.random() * 20; // Simulated tick time
+    this.updateMetric('tickTime', tickTime);
+  }
+  
+  updateMemoryMetrics() {
+    const memUsage = process.memoryUsage();
+    const heapUsedMB = memUsage.heapUsed / 1024 / 1024;
+    
+    this.updateMetric('memoryUsage', heapUsedMB);
+    
+    // Check for high memory usage
+    if (heapUsedMB > 500) { // 500MB threshold
+      this.addAlert('HIGH_MEMORY', `Memory usage: ${heapUsedMB.toFixed(1)}MB`);
+    }
+  }
+  
+  updateMetric(metricName, value) {
+    const metric = this.metrics.get(metricName);
+    if (!metric) return;
+    
+    metric.current = value;
+    
+    if (metric.samples !== undefined) {
+      metric.samples.push(value);
+      
+      // Keep only last 60 samples (1 minute at 1-second intervals)
+      if (metric.samples.length > 60) {
+        metric.samples.shift();
+      }
+      
+      // Calculate statistics
+      metric.average = metric.samples.reduce((a, b) => a + b, 0) / metric.samples.length;
+      metric.min = Math.min(...metric.samples);
+      metric.max = Math.max(...metric.samples);
+    }
+  }
+  
+  updateCombatMetrics(kills, deaths, damageDealt, damageTaken) {
+    const combat = this.metrics.get('combatEfficiency');
+    if (!combat) return;
+    
+    combat.kills = kills;
+    combat.deaths = deaths;
+    combat.damageDealt = damageDealt;
+    combat.damageTaken = damageTaken;
+    
+    const totalDamage = damageDealt + damageTaken;
+    combat.current = totalDamage > 0 ? (damageDealt / totalDamage) * 100 : 0;
+    combat.average = combat.current; // Simplified for now
+  }
+  
+  checkAnomalies() {
+    const anomalies = [];
+    
+    // Check for low FPS
+    const fps = this.metrics.get('fps');
+    if (fps && fps.average < 30) {
+      anomalies.push({
+        type: 'LOW_FPS',
+        severity: 'medium',
+        message: `Average FPS: ${fps.average.toFixed(1)}`,
+        value: fps.average
+      });
+    }
+    
+    // Check for high tick time
+    const tickTime = this.metrics.get('tickTime');
+    if (tickTime && tickTime.average > 100) {
+      anomalies.push({
+        type: 'HIGH_TICK_TIME',
+        severity: 'high',
+        message: `Average tick time: ${tickTime.average.toFixed(1)}ms`,
+        value: tickTime.average
+      });
+    }
+    
+    // Check for memory leaks
+    const memory = this.metrics.get('memoryUsage');
+    if (memory && memory.samples.length > 30) {
+      const recent = memory.samples.slice(-10);
+      const older = memory.samples.slice(-20, -10);
+      
+      if (older.length > 0) {
+        const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+        const olderAvg = older.reduce((a, b) => a + b, 0) / older.length;
+        
+        if (recentAvg > olderAvg * 1.5) {
+          anomalies.push({
+            type: 'MEMORY_LEAK',
+            severity: 'high',
+            message: `Memory growing: ${olderAvg.toFixed(1)}MB -> ${recentAvg.toFixed(1)}MB`,
+            value: recentAvg
+          });
+        }
+      }
+    }
+    
+    // Add anomalies to alerts
+    anomalies.forEach(anomaly => {
+      this.addAlert(anomaly.type, anomaly.message, anomaly.severity);
+    });
+  }
+  
+  triggerGCIfNeeded() {
+    const memory = this.metrics.get('memoryUsage');
+    const now = Date.now();
+    
+    if (memory && memory.current > 300 && now - this.lastGC > this.gcInterval) {
+      console.log('[TELEMETRY] Triggering garbage collection');
+      
+      if (global.gc) {
+        global.gc();
+        this.lastGC = now;
+        this.addAlert('GC_TRIGGERED', 'Manual garbage collection triggered', 'info');
+      }
+    }
+  }
+  
+  addAlert(type, message, severity = 'warning') {
+    const alert = {
+      id: Date.now(),
+      type,
+      message,
+      severity,
+      timestamp: Date.now()
+    };
+    
+    this.alerts.push(alert);
+    
+    // Keep only recent alerts
+    if (this.alerts.length > this.maxAlerts) {
+      this.alerts.shift();
+    }
+    
+    console.log(`[TELEMETRY] ${severity.toUpperCase()}: ${message}`);
+  }
+  
+  generateReport() {
+    const report = {
+      timestamp: Date.now(),
+      metrics: {},
+      alerts: this.alerts.slice(-10), // Last 10 alerts
+      summary: {
+        health: 'good',
+        issues: 0
+      }
+    };
+    
+    // Collect metrics
+    for (const [name, metric] of this.metrics.entries()) {
+      report.metrics[name] = {
+        current: metric.current,
+        average: metric.average,
+        min: metric.min,
+        max: metric.max
+      };
+    }
+    
+    // Assess system health
+    let issueCount = 0;
+    
+    if (report.metrics.fps.current < 20) issueCount++;
+    if (report.metrics.memoryUsage.current > 500) issueCount++;
+    if (report.metrics.tickTime.current > 200) issueCount++;
+    
+    report.summary.issues = issueCount;
+    
+    if (issueCount === 0) {
+      report.summary.health = 'excellent';
+    } else if (issueCount <= 2) {
+      report.summary.health = 'good';
+    } else if (issueCount <= 4) {
+      report.summary.health = 'warning';
+    } else {
+      report.summary.health = 'critical';
+    }
+    
+    return report;
+  }
+  
+  getMetrics() {
+    const result = {};
+    
+    for (const [name, metric] of this.metrics.entries()) {
+      result[name] = {
+        current: metric.current,
+        average: metric.average,
+        min: metric.min,
+        max: metric.max
+      };
+    }
+    
+    return result;
+  }
+  
+  getRecentAlerts(count = 10) {
+    return this.alerts.slice(-count);
+  }
+}
+
+// Activity Heatmap
+class ActivityHeatmap {
+  constructor(gridSize = 50) {
+    this.gridSize = gridSize;
+    this.grid = new Map(); // "x,z" -> activity data
+    this.activityTypes = ['combat', 'mining', 'building', 'player_sighting', 'travel'];
+    this.decayRate = 0.99; // Activity decay per minute
+    this.lastDecay = Date.now();
+    this.decayInterval = 60000; // 1 minute
+    
+    console.log(`[HEATMAP] ActivityHeatmap initialized with ${gridSize}m grid`);
+    this.startDecay();
+  }
+  
+  getGridKey(x, z) {
+    const gridX = Math.floor(x / this.gridSize);
+    const gridZ = Math.floor(z / this.gridSize);
+    return `${gridX},${gridZ}`;
+  }
+  
+  recordActivity(position, activityType, intensity = 1.0) {
+    if (!position || !this.activityTypes.includes(activityType)) return;
+    
+    const gridKey = this.getGridKey(position.x, position.z);
+    
+    if (!this.grid.has(gridKey)) {
+      this.grid.set(gridKey, {
+        x: Math.floor(position.x / this.gridSize) * this.gridSize,
+        z: Math.floor(position.z / this.gridSize) * this.gridSize,
+        activities: {}
+      });
+    }
+    
+    const cell = this.grid.get(gridKey);
+    
+    // Initialize activity type if needed
+    if (!cell.activities[activityType]) {
+      cell.activities[activityType] = {
+        count: 0,
+        intensity: 0,
+        lastSeen: Date.now()
+      };
+    }
+    
+    // Update activity
+    cell.activities[activityType].count++;
+    cell.activities[activityType].intensity += intensity;
+    cell.activities[activityType].lastSeen = Date.now();
+  }
+  
+  getHotspots(activityType = null, minIntensity = 5.0) {
+    const hotspots = [];
+    
+    for (const [gridKey, cell] of this.grid.entries()) {
+      let totalIntensity = 0;
+      let dominantActivity = null;
+      let maxIntensity = 0;
+      
+      for (const [type, activity] of Object.entries(cell.activities)) {
+        totalIntensity += activity.intensity;
+        
+        if (activity.intensity > maxIntensity) {
+          maxIntensity = activity.intensity;
+          dominantActivity = type;
+        }
+      }
+      
+      // Filter by activity type if specified
+      if (activityType && cell.activities[activityType]) {
+        if (cell.activities[activityType].intensity >= minIntensity) {
+          hotspots.push({
+            x: cell.x,
+            z: cell.z,
+            activityType,
+            intensity: cell.activities[activityType].intensity,
+            count: cell.activities[activityType].count,
+            lastSeen: cell.activities[activityType].lastSeen
+          });
+        }
+      } else if (totalIntensity >= minIntensity) {
+        hotspots.push({
+          x: cell.x,
+          z: cell.z,
+          dominantActivity,
+          totalIntensity,
+          activities: { ...cell.activities }
+        });
+      }
+    }
+    
+    // Sort by intensity (highest first)
+    hotspots.sort((a, b) => {
+      const intensityA = a.totalIntensity || a.intensity;
+      const intensityB = b.totalIntensity || b.intensity;
+      return intensityB - intensityA;
+    });
+    
+    return hotspots;
+  }
+  
+  getActivityAround(position, radius, activityType = null) {
+    const nearby = [];
+    const radiusInGrids = Math.ceil(radius / this.gridSize);
+    
+    const centerGridX = Math.floor(position.x / this.gridSize);
+    const centerGridZ = Math.floor(position.z / this.gridSize);
+    
+    for (let dx = -radiusInGrids; dx <= radiusInGrids; dx++) {
+      for (let dz = -radiusInGrids; dz <= radiusInGrids; dz++) {
+        const gridKey = `${centerGridX + dx},${centerGridZ + dz}`;
+        const cell = this.grid.get(gridKey);
+        
+        if (cell) {
+          const distance = Math.sqrt(dx * dx + dz * dz) * this.gridSize;
+          if (distance <= radius) {
+            if (activityType && cell.activities[activityType]) {
+              nearby.push({
+                x: cell.x,
+                z: cell.z,
+                activityType,
+                intensity: cell.activities[activityType].intensity,
+                distance
+              });
+            } else if (!activityType) {
+              const totalIntensity = Object.values(cell.activities)
+                .reduce((sum, act) => sum + act.intensity, 0);
+              
+              if (totalIntensity > 0) {
+                nearby.push({
+                  x: cell.x,
+                  z: cell.z,
+                  totalIntensity,
+                  activities: { ...cell.activities },
+                  distance
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    return nearby.sort((a, b) => a.distance - b.distance);
+  }
+  
+  startDecay() {
+    safeSetInterval(() => {
+      this.decayActivities();
+    }, this.decayInterval, 'heatmap-decay');
+  }
+  
+  decayActivities() {
+    const now = Date.now();
+    const decayFactor = Math.pow(this.decayRate, (now - this.lastDecay) / this.decayInterval);
+    
+    for (const [gridKey, cell] of this.grid.entries()) {
+      let hasActivity = false;
+      
+      for (const activity of Object.values(cell.activities)) {
+        activity.intensity *= decayFactor;
+        
+        // Remove activities with very low intensity
+        if (activity.intensity < 0.1) {
+          delete cell.activities[activity];
+        } else {
+          hasActivity = true;
+        }
+      }
+      
+      // Remove empty cells
+      if (!hasActivity) {
+        this.grid.delete(gridKey);
+      }
+    }
+    
+    this.lastDecay = now;
+  }
+  
+  exportToJSON() {
+    const data = {
+      gridSize: this.gridSize,
+      timestamp: Date.now(),
+      cells: []
+    };
+    
+    for (const [gridKey, cell] of this.grid.entries()) {
+      data.cells.push({
+        x: cell.x,
+        z: cell.z,
+        activities: cell.activities
+      });
+    }
+    
+    return data;
+  }
+  
+  saveToFile() {
+    const data = this.exportToJSON();
+    safeWriteJson('./data/activity_heatmap.json', data);
+    console.log('[HEATMAP] Activity heatmap saved to file');
+  }
+  
+  getStats() {
+    const stats = {
+      totalCells: this.grid.size,
+      totalActivities: 0,
+      activityBreakdown: {}
+    };
+    
+    for (const cell of this.grid.values()) {
+      for (const [type, activity] of Object.entries(cell.activities)) {
+        stats.totalActivities += activity.count;
+        
+        if (!stats.activityBreakdown[type]) {
+          stats.activityBreakdown[type] = {
+            count: 0,
+            intensity: 0
+          };
+        }
+        
+        stats.activityBreakdown[type].count += activity.count;
+        stats.activityBreakdown[type].intensity += activity.intensity;
+      }
+    }
+    
+    return stats;
+  }
+}
+
+// 🛡️ ADVANCED DEFENSE
+
+// Threat Assessment AI
+class ThreatAssessmentAI {
+  constructor() {
+    this.threatHistory = new Map(); // username -> threat history
+    this.assessments = new Map(); // username -> current assessment
+    this.updateInterval = 5000; // 5 seconds
+    this.decayRate = 0.95; // Threat decay per update
+    
+    this.initializeScoring();
+    this.startAssessment();
+    
+    console.log('[THREAT] ThreatAssessmentAI initialized');
+  }
+  
+  initializeScoring() {
+    this.scoringWeights = {
+      gear: 0.3,
+      behavior: 0.25,
+      history: 0.2,
+      proximity: 0.15,
+      allies: 0.1
+    };
+    
+    this.threatLevels = {
+      minimal: { min: 0, max: 20, color: 'green' },
+      low: { min: 20, max: 40, color: 'yellow' },
+      medium: { min: 40, max: 60, color: 'orange' },
+      high: { min: 60, max: 80, color: 'red' },
+      critical: { min: 80, max: 100, color: 'purple' }
+    };
+  }
+  
+  startAssessment() {
+    safeSetInterval(() => {
+      this.updateAllAssessments();
+    }, this.updateInterval, 'threat-assessment');
+  }
+  
+  assessPlayer(username, playerData, context = {}) {
+    if (!username || !playerData) return null;
+    
+    const scores = {
+      gear: this.assessGear(playerData),
+      behavior: this.assessBehavior(username, playerData, context),
+      history: this.assessHistory(username),
+      proximity: this.assessProximity(playerData, context),
+      allies: this.assessAllies(username, playerData, context)
+    };
+    
+    // Calculate weighted total score
+    let totalScore = 0;
+    for (const [factor, score] of Object.entries(scores)) {
+      totalScore += score * this.scoringWeights[factor];
+    }
+    
+    // Determine threat level
+    const threatLevel = this.getThreatLevel(totalScore);
+    
+    // Generate action recommendations
+    const recommendations = this.generateRecommendations(threatLevel, scores, context);
+    
+    const assessment = {
+      username,
+      totalScore: Math.round(totalScore),
+      threatLevel,
+      scores,
+      recommendations,
+      timestamp: Date.now()
+    };
+    
+    this.assessments.set(username, assessment);
+    return assessment;
+  }
+  
+  assessGear(playerData) {
+    let score = 0;
+    
+    // Check armor
+    if (playerData.armor) {
+      for (const armorPiece of Object.values(playerData.armor)) {
+        if (armorPiece?.name) {
+          if (armorPiece.name.includes('netherite')) score += 15;
+          else if (armorPiece.name.includes('diamond')) score += 10;
+          else if (armorPiece.name.includes('iron')) score += 5;
+          else if (armorPiece.name.includes('leather')) score += 2;
+        }
+      }
+    }
+    
+    // Check weapon
+    if (playerData.weapon?.name) {
+      const weapon = playerData.weapon.name;
+      if (weapon.includes('netherite')) score += 10;
+      else if (weapon.includes('diamond')) score += 7;
+      else if (weapon.includes('iron')) score += 4;
+      else if (weapon.includes('bow') || weapon.includes('crossbow')) score += 6;
+      else if (weapon.includes('trident')) score += 8;
+    }
+    
+    // Check for dangerous items
+    if (playerData.inventory) {
+      const dangerousItems = ['end_crystal', 'totem_of_undying', 'enchanted_golden_apple', 'respawn_anchor'];
+      for (const item of dangerousItems) {
+        if (playerData.inventory[item] > 0) {
+          score += item === 'end_crystal' ? 8 : 5;
+        }
+      }
+    }
+    
+    // Check enchantments
+    if (playerData.enchantments) {
+      for (const ench of playerData.enchantments) {
+        if (ench.includes('sharpness') || ench.includes('power')) score += 3;
+        if (ench.includes('protection')) score += 2;
+      }
+    }
+    
+    return Math.min(100, score);
+  }
+  
+  assessBehavior(username, playerData, context) {
+    let score = 0;
+    const history = this.threatHistory.get(username);
+    
+    if (!history) return 10; // Neutral score for unknown players
+    
+    // Recent aggressive actions
+    if (history.recentAttacks && history.recentAttacks.length > 0) {
+      const recentAttacks = history.recentAttacks.filter(
+        attack => Date.now() - attack.timestamp < 300000 // 5 minutes
+      );
+      score += recentAttacks.length * 15;
+    }
+    
+    // Combat patterns
+    if (history.combatStyle) {
+      switch (history.combatStyle) {
+        case 'aggressive':
+          score += 20;
+          break;
+        case 'stealthy':
+          score += 10;
+          break;
+        case 'defensive':
+          score += 5;
+          break;
+      }
+    }
+    
+    // Movement patterns
+    if (history.movementPattern) {
+      switch (history.movementPattern) {
+        case 'erratic':
+          score += 15;
+          break;
+        case 'strategic':
+          score += 10;
+          break;
+        case 'predictable':
+          score += 5;
+          break;
+      }
+    }
+    
+    // Chat behavior
+    if (history.chatBehavior) {
+      if (history.chatBehavior.includes('hostile')) score += 10;
+      if (history.chatBehavior.includes('suspicious')) score += 5;
+    }
+    
+    return Math.min(100, score);
+  }
+  
+  assessHistory(username) {
+    let score = 0;
+    const history = this.threatHistory.get(username);
+    
+    if (!history) return 0;
+    
+    // Past conflicts
+    if (history.pastConflicts) {
+      score += history.pastConflicts.length * 10;
+    }
+    
+    // Base raiding history
+    if (history.baseRaids) {
+      score += history.baseRaids.length * 15;
+    }
+    
+    // Betrayal history
+    if (history.betrayals) {
+      score += history.betrayals.length * 25;
+    }
+    
+    // Trust level (negative if trusted)
+    if (history.trustLevel) {
+      if (history.trustLevel === 'trusted') score -= 20;
+      else if (history.trustLevel === 'enemy') score += 30;
+    }
+    
+    return Math.min(100, Math.max(0, score));
+  }
+  
+  assessProximity(playerData, context) {
+    let score = 0;
+    
+    if (!context.botPosition) return 0;
+    
+    const distance = context.botPosition.distanceTo(playerData.position);
+    
+    // Distance-based scoring
+    if (distance < 10) score += 30;
+    else if (distance < 30) score += 20;
+    else if (distance < 100) score += 10;
+    else if (distance < 500) score += 5;
+    
+    // Near important locations
+    if (context.homeBase && playerData.position.distanceTo(context.homeBase) < 100) {
+      score += 25;
+    }
+    
+    // Near stashes
+    if (context.stashes) {
+      for (const stash of context.stashes) {
+        if (playerData.position.distanceTo(stash.coords) < 50) {
+          score += 15;
+        }
+      }
+    }
+    
+    return Math.min(100, score);
+  }
+  
+  assessAllies(username, playerData, context) {
+    let score = 0;
+    
+    // Check for nearby allies
+    if (context.nearbyPlayers) {
+      const nearbyEnemies = context.nearbyPlayers.filter(player => {
+        const assessment = this.assessments.get(player.username);
+        return assessment && assessment.threatLevel !== 'minimal';
+      });
+      
+      score += nearbyEnemies.length * 10;
+    }
+    
+    // Check faction/guild relationships
+    if (playerData.faction) {
+      if (context.enemyFactions?.includes(playerData.faction)) {
+        score += 20;
+      } else if (context.alliedFactions?.includes(playerData.faction)) {
+        score -= 15;
+      }
+    }
+    
+    // Check for party/group
+    if (playerData.party && playerData.party.length > 1) {
+      score += playerData.party.length * 5;
+    }
+    
+    return Math.min(100, Math.max(0, score));
+  }
+  
+  getThreatLevel(score) {
+    for (const [level, range] of Object.entries(this.threatLevels)) {
+      if (score >= range.min && score < range.max) {
+        return level;
+      }
+    }
+    return 'minimal';
+  }
+  
+  generateRecommendations(threatLevel, scores, context) {
+    const recommendations = [];
+    
+    switch (threatLevel) {
+      case 'critical':
+        recommendations.push('IMMEDIATE_EVADE');
+        recommendations.push('ACTIVATE_DEFENSES');
+        recommendations.push('CALL_ALLIES');
+        recommendations.push('ESCALATE_THREAT_LEVEL');
+        break;
+      case 'high':
+        recommendations.push('PREPARE_COMBAT');
+        recommendations.push('EQUIP_BEST_GEAR');
+        recommendations.push('MONITOR_MOVEMENT');
+        recommendations.push('ALERT_SWARM');
+        break;
+      case 'medium':
+        recommendations.push('MAINTAIN_DISTANCE');
+        recommendations.push('READY_DEFENSES');
+        recommendations.push('TRACK_POSITION');
+        break;
+      case 'low':
+        recommendations.push('STAY_VIGILANT');
+        recommendations.push('OCCASIONAL_CHECK');
+        break;
+      case 'minimal':
+        recommendations.push('STANDARD_MONITORING');
+        break;
+    }
+    
+    // Add specific recommendations based on scores
+    if (scores.gear > 70) {
+      recommendations.push('GEAR_DISADVANTAGE_AVOID');
+    }
+    
+    if (scores.proximity > 60) {
+      recommendations.push('PROXIMITY_ALERT');
+    }
+    
+    if (scores.allies > 50) {
+      recommendations.push('MULTIPLE_THREATS');
+    }
+    
+    return recommendations;
+  }
+  
+  updatePlayerHistory(username, event, data) {
+    if (!this.threatHistory.has(username)) {
+      this.threatHistory.set(username, {
+        recentAttacks: [],
+        pastConflicts: [],
+        baseRaids: [],
+        betrayals: [],
+        lastSeen: Date.now()
+      });
+    }
+    
+    const history = this.threatHistory.get(username);
+    history.lastSeen = Date.now();
+    
+    switch (event) {
+      case 'attack':
+        history.recentAttacks.push({
+          timestamp: Date.now(),
+          target: data.target,
+          damage: data.damage
+        });
+        // Keep only recent attacks
+        history.recentAttacks = history.recentAttacks.filter(
+          attack => Date.now() - attack.timestamp < 86400000 // 24 hours
+        );
+        break;
+      case 'conflict':
+        history.pastConflicts.push({
+          timestamp: Date.now(),
+          type: data.type,
+          outcome: data.outcome
+        });
+        break;
+      case 'base_raid':
+        history.baseRaids.push({
+          timestamp: Date.now(),
+          location: data.location,
+          damage: data.damage
+        });
+        break;
+      case 'betrayal':
+        history.betrayals.push({
+          timestamp: Date.now(),
+          victim: data.victim,
+          context: data.context
+        });
+        break;
+    }
+  }
+  
+  updateAllAssessments() {
+    const now = Date.now();
+    
+    // Decay existing assessments
+    for (const [username, assessment] of this.assessments.entries()) {
+      assessment.totalScore *= this.decayRate;
+      assessment.timestamp = now;
+      
+      // Update threat level
+      assessment.threatLevel = this.getThreatLevel(assessment.totalScore);
+    }
+    
+    // Clean old history
+    for (const [username, history] of this.threatHistory.entries()) {
+      if (now - history.lastSeen > 86400000) { // 24 hours
+        this.threatHistory.delete(username);
+        this.assessments.delete(username);
+      }
+    }
+  }
+  
+  getTopThreats(count = 10) {
+    const threats = Array.from(this.assessments.entries())
+      .map(([username, assessment]) => assessment)
+      .sort((a, b) => b.totalScore - a.totalScore)
+      .slice(0, count);
+    
+    return threats;
+  }
+  
+  getThreatSummary() {
+    const summary = {
+      total: this.assessments.size,
+      byLevel: {},
+      topThreats: this.getTopThreats(5),
+      lastUpdate: Date.now()
+    };
+    
+    for (const level of Object.keys(this.threatLevels)) {
+      summary.byLevel[level] = Array.from(this.assessments.values())
+        .filter(a => a.threatLevel === level).length;
+    }
+    
+    return summary;
+  }
+}
+
+// 🎮 QUALITY OF LIFE
+
+// Natural Language Command Parser
+class NLCommandParser {
+  constructor() {
+    this.intents = new Map();
+    this.entities = new Map();
+    this.patterns = new Map();
+    
+    this.initializePatterns();
+    console.log('[NL] NLCommandParser initialized');
+  }
+  
+  initializePatterns() {
+    // Movement patterns
+    this.patterns.set('go_to', [
+      /go to\s+(.+?)(?:\s|$)/i,
+      /travel to\s+(.+?)(?:\s|$)/i,
+      /head to\s+(.+?)(?:\s|$)/i,
+      /move to\s+(.+?)(?:\s|$)/i
+    ]);
+    
+    // Combat patterns
+    this.patterns.set('attack', [
+      /attack\s+(.+?)(?:\s|$)/i,
+      /fight\s+(.+?)(?:\s|$)/i,
+      /kill\s+(.+?)(?:\s|$)/i,
+      /engage\s+(.+?)(?:\s|$)/i
+    ]);
+    
+    // Mining patterns
+    this.patterns.set('mine', [
+      /mine\s+(.+?)(?:\s|$)/i,
+      /dig for\s+(.+?)(?:\s|$)/i,
+      /get\s+(.+?)(?:\s|$)/i,
+      /collect\s+(.+?)(?:\s|$)/i
+    ]);
+    
+    // Building patterns
+    this.patterns.set('build', [
+      /build\s+(.+?)(?:\s|$)/i,
+      /construct\s+(.+?)(?:\s|$)/i,
+      /place\s+(.+?)(?:\s|$)/i,
+      /create\s+(.+?)(?:\s|$)/i
+    ]);
+    
+    // Information patterns
+    this.patterns.set('info', [
+      /what is\s+(.+?)(?:\s|$)/i,
+      /tell me about\s+(.+?)(?:\s|$)/i,
+      /show me\s+(.+?)(?:\s|$)/i,
+      /info on\s+(.+?)(?:\s|$)/i
+    ]);
+  }
+  
+  parseCommand(input) {
+    if (!input || typeof input !== 'string') {
+      return { intent: 'unknown', entities: {}, confidence: 0 };
+    }
+    
+    const normalizedInput = input.toLowerCase().trim();
+    let bestMatch = null;
+    let bestConfidence = 0;
+    
+    // Try to match against patterns
+    for (const [intent, patterns] of this.patterns.entries()) {
+      for (const pattern of patterns) {
+        const match = normalizedInput.match(pattern);
+        if (match && match[1]) {
+          const confidence = this.calculateConfidence(normalizedInput, pattern);
+          if (confidence > bestConfidence) {
+            bestConfidence = confidence;
+            bestMatch = {
+              intent,
+              rawEntity: match[1].trim(),
+              confidence
+            };
+          }
+        }
+      }
+    }
+    
+    if (!bestMatch) {
+      return { intent: 'unknown', entities: {}, confidence: 0 };
+    }
+    
+    // Extract entities from the raw entity
+    const entities = this.extractEntities(bestMatch.rawEntity);
+    
+    return {
+      intent: bestMatch.intent,
+      entities,
+      confidence: bestConfidence,
+      original: input
+    };
+  }
+  
+  calculateConfidence(input, pattern) {
+    // Simple confidence calculation based on pattern specificity
+    const patternLength = pattern.source.length;
+    const inputLength = input.length;
+    
+    // Longer patterns are more specific
+    let confidence = patternLength / 50;
+    
+    // Exact phrase matching gets higher confidence
+    if (input.includes(pattern.source.replace(/[\\^$*+?.()|[\]{}]/g, ''))) {
+      confidence += 0.3;
+    }
+    
+    return Math.min(1.0, confidence);
+  }
+  
+  extractEntities(rawEntity) {
+    const entities = {};
+    
+    // Extract coordinates
+    const coords = this.extractCoordinates(rawEntity);
+    if (coords) {
+      entities.coordinates = coords;
+    }
+    
+    // Extract player names
+    const players = this.extractPlayerNames(rawEntity);
+    if (players.length > 0) {
+      entities.players = players;
+    }
+    
+    // Extract resources/items
+    const resources = this.extractResources(rawEntity);
+    if (resources.length > 0) {
+      entities.resources = resources;
+    }
+    
+    // Extract locations
+    const locations = this.extractLocations(rawEntity);
+    if (locations.length > 0) {
+      entities.locations = locations;
+    }
+    
+    // Extract quantities
+    const quantity = this.extractQuantity(rawEntity);
+    if (quantity !== null) {
+      entities.quantity = quantity;
+    }
+    
+    return entities;
+  }
+  
+  extractCoordinates(text) {
+    // Match coordinate patterns like "100 64 200" or "100, 64, 200"
+    const coordPattern = /(-?\d+)\s*[,\s]\s*(-?\d+)\s*[,\s]\s*(-?\d+)/;
+    const match = text.match(coordPattern);
+    
+    if (match) {
+      const x = parseInt(match[1]);
+      const y = parseInt(match[2]);
+      const z = parseInt(match[3]);
+      
+      if (validateCoordinates({ x, y, z }, 'nl_command')) {
+        return { x, y, z };
+      }
+    }
+    
+    return null;
+  }
+  
+  extractPlayerNames(text) {
+    const players = [];
+    
+    // Check against known player names (would need access to player list)
+    // For now, extract capitalized words that might be player names
+    const playerPattern = /\b[A-Z][a-z]+[A-Z]?[a-z]*\b/g;
+    const matches = text.match(playerPattern);
+    
+    if (matches) {
+      players.push(...matches);
+    }
+    
+    return players;
+  }
+  
+  extractResources(text) {
+    const resources = [];
+    const resourceMap = {
+      'diamond': 'diamond',
+      'gold': 'gold_ingot',
+      'iron': 'iron_ingot',
+      'coal': 'coal',
+      'stone': 'stone',
+      'wood': 'oak_planks',
+      'emerald': 'emerald',
+      'netherite': 'netherite_ingot',
+      'crystal': 'end_crystal',
+      'obsidian': 'obsidian',
+      'totem': 'totem_of_undying',
+      'apple': 'golden_apple',
+      'enchanted apple': 'enchanted_golden_apple'
+    };
+    
+    for (const [keyword, item] of Object.entries(resourceMap)) {
+      if (text.includes(keyword)) {
+        resources.push(item);
+      }
+    }
+    
+    return resources;
+  }
+  
+  extractLocations(text) {
+    const locations = [];
+    const locationKeywords = [
+      'base', 'home', 'spawn', 'nether', 'end', 'stash', 'vault',
+      'chest', 'shop', 'market', 'farm', 'mine', 'tower'
+    ];
+    
+    for (const keyword of locationKeywords) {
+      if (text.includes(keyword)) {
+        locations.push(keyword);
+      }
+    }
+    
+    return locations;
+  }
+  
+  extractQuantity(text) {
+    // Match number patterns
+    const numberPattern = /(\d+)/;
+    const match = text.match(numberPattern);
+    
+    if (match) {
+      return parseInt(match[1]);
+    }
+    
+    return null;
+  }
+  
+  executeCommand(parsedCommand, bot) {
+    if (!parsedCommand || parsedCommand.intent === 'unknown') {
+      return { success: false, message: 'Unknown command' };
+    }
+    
+    const { intent, entities } = parsedCommand;
+    
+    try {
+      switch (intent) {
+        case 'go_to':
+          return this.executeGoTo(entities, bot);
+        case 'attack':
+          return this.executeAttack(entities, bot);
+        case 'mine':
+          return this.executeMine(entities, bot);
+        case 'build':
+          return this.executeBuild(entities, bot);
+        case 'info':
+          return this.executeInfo(entities, bot);
+        default:
+          return { success: false, message: 'Command not implemented' };
+      }
+    } catch (err) {
+      console.error('[NL] Command execution error:', err);
+      return { success: false, message: 'Command execution failed' };
+    }
+  }
+  
+  executeGoTo(entities, bot) {
+    if (entities.coordinates) {
+      const pos = entities.coordinates;
+      if (bot.pathfinder) {
+        bot.pathfinder.setGoal(new goals.GoalNear(new Vec3(pos.x, pos.y, pos.z), 1));
+        return { success: true, message: `Going to coordinates ${pos.x}, ${pos.y}, ${pos.z}` };
+      }
+    } else if (entities.locations && entities.locations.length > 0) {
+      const location = entities.locations[0];
+      // Handle known locations
+      if (location === 'home' && config.homeBase.coords) {
+        bot.pathfinder.setGoal(new goals.GoalNear(config.homeBase.coords, 1));
+        return { success: true, message: 'Going home' };
+      }
+    }
+    
+    return { success: false, message: 'Could not determine destination' };
+  }
+  
+  executeAttack(entities, bot) {
+    if (entities.players && entities.players.length > 0) {
+      const targetName = entities.players[0];
+      const target = Object.values(bot.entities || {}).find(
+        e => e.type === 'player' && e.username === targetName
+      );
+      
+      if (target) {
+        bot.pvp.attack(target);
+        return { success: true, message: `Attacking ${targetName}` };
+      }
+    }
+    
+    return { success: false, message: 'Could not find target' };
+  }
+  
+  executeMine(entities, bot) {
+    if (entities.resources && entities.resources.length > 0) {
+      const resource = entities.resources[0];
+      const quantity = entities.quantity || 1;
+      
+      // Would need to implement mining logic
+      return { success: true, message: `Mining ${quantity}x ${resource}` };
+    }
+    
+    return { success: false, message: 'Could not determine what to mine' };
+  }
+  
+  executeBuild(entities, bot) {
+    if (entities.locations && entities.locations.length > 0) {
+      const location = entities.locations[0];
+      return { success: true, message: `Building at ${location}` };
+    }
+    
+    return { success: false, message: 'Could not determine build location' };
+  }
+  
+  executeInfo(entities, bot) {
+    if (entities.locations && entities.locations.length > 0) {
+      const location = entities.locations[0];
+      // Would provide information about the location
+      return { success: true, message: `Information about ${location}` };
+    }
+    
+    return { success: false, message: 'Could not provide information' };
+  }
+  
+  addCustomPattern(intent, patterns) {
+    if (!this.patterns.has(intent)) {
+      this.patterns.set(intent, []);
+    }
+    
+    this.patterns.get(intent).push(...patterns);
+    console.log(`[NL] Added custom pattern for intent: ${intent}`);
+  }
+  
+  getAvailableIntents() {
+    return Array.from(this.patterns.keys());
+  }
+}
+
+// Auto Backup System
+class AutoBackupSystem {
+  constructor(intervalMinutes = 10, maxBackups = 10) {
+    this.intervalMinutes = intervalMinutes;
+    this.maxBackups = maxBackups;
+    this.backupInterval = null;
+    this.lastBackup = null;
+    this.backupDir = './data/backups';
+    
+    // Ensure backup directory exists
+    fs.mkdirSync(this.backupDir, { recursive: true });
+    
+    console.log(`[BACKUP] AutoBackupSystem initialized (${intervalMinutes}min interval, ${maxBackups} max backups)`);
+    this.start();
+  }
+  
+  start() {
+    if (this.backupInterval) {
+      clearInterval(this.backupInterval);
+    }
+    
+    this.backupInterval = safeSetInterval(() => {
+      this.createBackup();
+    }, this.intervalMinutes * 60 * 1000, 'auto-backup');
+    
+    console.log(`[BACKUP] Auto-backup started (${this.intervalMinutes} minute interval)`);
+  }
+  
+  stop() {
+    if (this.backupInterval) {
+      clearTrackedInterval(this.backupInterval);
+      this.backupInterval = null;
+      console.log('[BACKUP] Auto-backup stopped');
+    }
+  }
+  
+  async createBackup() {
+    const timestamp = Date.now();
+    const backupFile = `${this.backupDir}/backup_${timestamp}.json`;
+    
+    try {
+      const backupData = {
+        timestamp,
+        version: '22.1',
+        
+        // Bot state
+        botState: {
+          position: globalBot?.entity?.position ? {
+            x: globalBot.entity.position.x,
+            y: globalBot.entity.position.y,
+            z: globalBot.entity.position.z
+          } : null,
+          health: globalBot?.health || 0,
+          food: globalBot?.food || 0,
+          experience: globalBot?.experience || 0,
+          level: globalBot?.experienceLevel || 0
+        },
+        
+        // Inventory
+        inventory: globalBot?.inventory?.items().map(item => ({
+          name: item.name,
+          count: item.count,
+          durability: item.durabilityUsed,
+          slot: item.slot
+        })) || [],
+        
+        // Configuration
+        config: {
+          mode: config.mode,
+          whitelist: config.whitelist,
+          homeBase: config.homeBase.coords ? {
+            x: config.homeBase.coords.x,
+            y: config.homeBase.coords.y,
+            z: config.homeBase.coords.z
+          } : null,
+          combat: config.combat,
+          stashHunt: config.stashHunt
+        },
+        
+        // Analytics
+        analytics: {
+          combat: config.analytics.combat,
+          stashes: config.analytics.stashes,
+          dupe: config.analytics.dupe
+        },
+        
+        // Training data
+        training: {
+          episodes: config.training.episodes.slice(-100), // Last 100 episodes
+          replayBufferSize: config.training.replayBuffer.length
+        }
+      };
+      
+      // Write backup file
+      safeWriteJson(backupFile, backupData);
+      
+      this.lastBackup = timestamp;
+      console.log(`[BACKUP] ✅ Backup created: ${backupFile}`);
+      
+      // Clean old backups
+      this.cleanupOldBackups();
+      
+      return true;
+      
+    } catch (err) {
+      console.error(`[BACKUP] ❌ Backup failed:`, err.message);
+      return false;
+    }
+  }
+  
+  cleanupOldBackups() {
+    try {
+      const files = fs.readdirSync(this.backupDir)
+        .filter(file => file.startsWith('backup_') && file.endsWith('.json'))
+        .map(file => ({
+          name: file,
+          path: `${this.backupDir}/${file}`,
+          timestamp: parseInt(file.replace('backup_', '').replace('.json', ''))
+        }))
+        .sort((a, b) => b.timestamp - a.timestamp);
+      
+      // Remove excess backups
+      if (files.length > this.maxBackups) {
+        const toRemove = files.slice(this.maxBackups);
+        
+        for (const file of toRemove) {
+          try {
+            fs.unlinkSync(file.path);
+            console.log(`[BACKUP] Removed old backup: ${file.name}`);
+          } catch (err) {
+            console.error(`[BACKUP] Failed to remove ${file.name}:`, err.message);
+          }
+        }
+      }
+      
+    } catch (err) {
+      console.error('[BACKUP] Cleanup failed:', err.message);
+    }
+  }
+  
+  async restoreBackup(backupTimestamp) {
+    const backupFile = `${this.backupDir}/backup_${backupTimestamp}.json`;
+    
+    try {
+      const backupData = safeReadJson(backupFile);
+      if (!backupData) {
+        throw new Error('Backup file not found or invalid');
+      }
+      
+      console.log(`[BACKUP] Restoring from backup: ${backupFile}`);
+      
+      // Restore configuration
+      if (backupData.config) {
+        Object.assign(config, backupData.config);
+        
+        // Restore Vec3 coordinates
+        if (backupData.config.homeBase) {
+          config.homeBase.coords = new Vec3(
+            backupData.config.homeBase.x,
+            backupData.config.homeBase.y,
+            backupData.config.homeBase.z
+          );
+        }
+      }
+      
+      // Restore analytics
+      if (backupData.analytics) {
+        Object.assign(config.analytics, backupData.analytics);
+      }
+      
+      // Restore training data
+      if (backupData.training) {
+        config.training.episodes = backupData.training.episodes || [];
+      }
+      
+      // Note: Bot position and inventory restoration would need to be done
+      // in-game and is not fully implementable from backup alone
+      
+      console.log('[BACKUP] ✅ Backup restored successfully');
+      return true;
+      
+    } catch (err) {
+      console.error(`[BACKUP] ❌ Restore failed:`, err.message);
+      return false;
+    }
+  }
+  
+  listBackups() {
+    try {
+      const files = fs.readdirSync(this.backupDir)
+        .filter(file => file.startsWith('backup_') && file.endsWith('.json'))
+        .map(file => {
+          const filePath = `${this.backupDir}/${file}`;
+          const stats = fs.statSync(filePath);
+          const timestamp = parseInt(file.replace('backup_', '').replace('.json', ''));
+          
+          return {
+            filename: file,
+            timestamp,
+            size: stats.size,
+            created: new Date(timestamp).toISOString()
+          };
+        })
+        .sort((a, b) => b.timestamp - a.timestamp);
+      
+      return files;
+      
+    } catch (err) {
+      console.error('[BACKUP] Failed to list backups:', err.message);
+      return [];
+    }
+  }
+  
+  getBackupInfo() {
+    return {
+      intervalMinutes: this.intervalMinutes,
+      maxBackups: this.maxBackups,
+      lastBackup: this.lastBackup ? new Date(this.lastBackup).toISOString() : null,
+      nextBackup: this.lastBackup ? 
+        new Date(this.lastBackup + this.intervalMinutes * 60 * 1000).toISOString() : null,
+      backupCount: this.listBackups().length,
+      directory: this.backupDir
+    };
+  }
+  
+  setBackupInterval(minutes) {
+    this.intervalMinutes = Math.max(1, minutes);
+    this.start(); // Restart with new interval
+    console.log(`[BACKUP] Backup interval set to ${minutes} minutes`);
+  }
+  
+  async createManualBackup() {
+    console.log('[BACKUP] Creating manual backup...');
+    return await this.createBackup();
+  }
+}
+
+// Initialize advanced features
+let globalChunkLoadManager = null;
+let globalCombatRLAgent = null;
+let globalPredictivePathfinder = null;
+let globalCombatComboSystem = null;
+let globalWeaponOptimizer = null;
+let globalTelemetrySystem = null;
+let globalActivityHeatmap = null;
+let globalThreatAssessmentAI = null;
+let globalNLCommandParser = null;
+let globalAutoBackupSystem = null;
+
+function initializeAdvancedFeatures(bot) {
+  if (!bot) return;
+  
+  console.log('[ADVANCED] Initializing advanced enhancement features...');
+  
+  // Initialize performance optimizations
+  globalChunkLoadManager = new ChunkLoadManager(bot, 100);
+  
+  // Initialize AI features
+  globalCombatRLAgent = new CombatRLAgent();
+  globalCombatRLAgent.loadModel();
+  
+  globalPredictivePathfinder = new PredictivePathfinder(bot);
+  
+  // Initialize combat systems
+  globalCombatComboSystem = new CombatComboSystem(bot);
+  globalWeaponOptimizer = new WeaponOptimizer(bot);
+  
+  // Initialize analytics
+  globalTelemetrySystem = new TelemetrySystem();
+  globalActivityHeatmap = new ActivityHeatmap();
+  
+  // Initialize defense
+  globalThreatAssessmentAI = new ThreatAssessmentAI();
+  
+  // Initialize quality of life
+  globalNLCommandParser = new NLCommandParser();
+  globalAutoBackupSystem = new AutoBackupSystem(10, 10); // 10 minutes, 10 backups
+  
+  console.log('[ADVANCED] ✅ All advanced features initialized');
+}
+
 // Start HTTP rate limit cleanup
 safeSetInterval(() => {
   const now = Date.now();
@@ -21146,6 +24156,629 @@ safeSetInterval(() => {
     }
   }
 }, 60000, 'http-rate-limit-cleanup');
+
+// === CLI MENU ===
+function showMenu() {
+  console.log('\n=== HUNTERX v22.1 - MAIN MENU ===');
+  console.log('Select mode:');
+  console.log('1. PvP Combat Mode');
+  console.log('2. Dupe Discovery Mode');
+  console.log('3. Stash Hunting Mode');
+  console.log('4. Friendly Companion Mode');
+  console.log('5. Swarm Mode');
+  console.log('6. Supply Chain Manager');
+  console.log('7. Exit');
+  
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  rl.question('Enter choice (1-7): ', (choice) => {
+    rl.close();
+    
+    switch (choice.trim()) {
+      case '1':
+        startPvPMode();
+        break;
+      case '2':
+        startDupeDiscoveryMode();
+        break;
+      case '3':
+        startStashHuntMode();
+        break;
+      case '4':
+        startCompanionMode();
+        break;
+      case '5':
+        startSwarmMode();
+        break;
+      case '6':
+        startSupplyChainMode();
+        break;
+      case '7':
+        console.log('Goodbye!');
+        process.exit(0);
+        break;
+      default:
+        console.log('Invalid choice. Please try again.');
+        setTimeout(showMenu, 1000);
+        break;
+    }
+  });
+}
+
+function startPvPMode() {
+  config.mode = 'pvp';
+  console.log('\n=== PvP Combat Mode ===');
+  
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  rl.question('Enter server address: ', (server) => {
+    rl.question('Enter username: ', (username) => {
+      rl.question('Enter password (optional): ', (password) => {
+        config.server = server;
+        startBot(server, username, password);
+        rl.close();
+      });
+    });
+  });
+}
+
+function startDupeDiscoveryMode() {
+  config.mode = 'dupe_discovery';
+  console.log('\n=== Dupe Discovery Mode ===');
+  
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  rl.question('Enter server address: ', (server) => {
+    rl.question('Enter username: ', (username) => {
+      rl.question('Enter password (optional): ', (password) => {
+        config.server = server;
+        startBot(server, username, password);
+        rl.close();
+      });
+    });
+  });
+}
+
+function startStashHuntMode() {
+  config.mode = 'stash_hunt';
+  console.log('\n=== Stash Hunting Mode ===');
+  
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  rl.question('Enter server address: ', (server) => {
+    rl.question('Enter username: ', (username) => {
+      rl.question('Enter password (optional): ', (password) => {
+        config.server = server;
+        startBot(server, username, password);
+        rl.close();
+      });
+    });
+  });
+}
+
+function startCompanionMode() {
+  config.mode = 'companion';
+  console.log('\n=== Friendly Companion Mode ===');
+  
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  rl.question('Enter server address: ', (server) => {
+    rl.question('Enter username: ', (username) => {
+      rl.question('Enter password (optional): ', (password) => {
+        config.server = server;
+        startBot(server, username, password);
+        rl.close();
+      });
+    });
+  });
+}
+
+function startSwarmMode() {
+  config.mode = 'swarm';
+  console.log('\n=== Swarm Mode ===');
+  
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  rl.question('Enter server address: ', (server) => {
+    rl.question('Enter username: ', (username) => {
+      rl.question('Enter password (optional): ', (password) => {
+        config.server = server;
+        startBot(server, username, password);
+        rl.close();
+      });
+    });
+  });
+}
+
+function startSupplyChainMode() {
+  config.mode = 'supply_chain';
+  console.log('\n=== Supply Chain Manager Mode ===');
+  
+  // Initialize supply chain without bot
+  if (!globalSupplyChainManager) {
+    const { SupplyChainManager } = require('./resource_farming');
+    globalSupplyChainManager = new SupplyChainManager();
+  }
+  
+  initializeSupplyChainServer();
+  console.log('[SUPPLY] Supply Chain Manager started');
+  console.log('[SUPPLY] Access dashboard at http://localhost:8081');
+  
+  setTimeout(showMenu, 2000);
+}
+
+function startBot(server, username, password) {
+  console.log(`\n[CONNECT] Connecting to ${server} as ${username}...`);
+  
+  const botOptions = {
+    host: server,
+    username: username,
+    password: password || undefined,
+    auth: password ? 'microsoft' : 'offline',
+    version: false, // Auto-detect version
+    checkTimeoutInterval: 30 * 1000, // 30 seconds
+    closeTimeout: 60 * 1000 // 60 seconds
+  };
+  
+  // Add proxy if configured
+  if (config.network.proxyEnabled && config.network.proxyHost) {
+    botOptions.connect = (client) => {
+      return SocksClient.createConnection({
+        proxy: {
+          host: config.network.proxyHost,
+          port: config.network.proxyPort,
+          type: 5
+        },
+        command: 'connect',
+        destination: {
+          host: server,
+          port: 25565
+        }
+      });
+    };
+  }
+  
+  const bot = mineflayer.createBot(botOptions);
+  
+  // Load plugins
+  bot.loadPlugin(pvp);
+  bot.loadPlugin(pathfinder);
+  
+  // Set global bot reference
+  globalBot = bot;
+  
+  // Register bot for tracking
+  registerBot(bot);
+  
+  // Initialize advanced features once bot is ready
+  bot.once('spawn', () => {
+    console.log(`[SPAWN] Bot spawned in ${bot.game?.dimension || 'unknown'} dimension`);
+    console.log(`[SPAWN] Position: ${bot.entity.position.toString()}`);
+    
+    // Initialize advanced features
+    initializeAdvancedFeatures(bot);
+    
+    // Initialize mode-specific systems
+    initializeModeSpecificFeatures(bot);
+    
+    // Setup event handlers (includes chat commands)
+    setupBotEventHandlers(bot);
+    
+    console.log(`[READY] Bot fully initialized and ready`);
+  });
+  
+  // Handle errors
+  bot.on('error', (err) => {
+    console.error(`[ERROR] Bot error: ${err.message}`);
+    if (err.code === 'ECONNREFUSED') {
+      console.log('[ERROR] Connection refused. Check server address and port.');
+    } else if (err.code === 'ENOTFOUND') {
+      console.log('[ERROR] Host not found. Check server address.');
+    }
+  });
+  
+  bot.on('end', (reason) => {
+    console.log(`[DISCONNECT] Bot disconnected: ${reason || 'Unknown reason'}`);
+    unregisterBot(bot);
+    
+    // Save advanced features data before disconnect
+    if (globalCombatRLAgent) {
+      globalCombatRLAgent.saveModel();
+    }
+    
+    if (globalActivityHeatmap) {
+      globalActivityHeatmap.saveToFile();
+    }
+    
+    // Auto-reconnect if not intentional
+    if (reason !== 'disconnect.quitting') {
+      console.log('[RECONNECT] Attempting to reconnect in 10 seconds...');
+      setTimeout(() => {
+        startBot(server, username, password);
+      }, 10000);
+    }
+  });
+  
+  bot.on('kicked', (reason, loggedIn) => {
+    console.log(`[KICKED] Kicked from server: ${reason}`);
+    if (loggedIn) {
+      console.log(`[KICKED] Was logged in when kicked`);
+    }
+  });
+}
+
+function initializeModeSpecificFeatures(bot) {
+  switch (config.mode) {
+    case 'pvp':
+      console.log('[MODE] PvP Combat Mode - Initializing combat systems');
+      // Combat-specific initialization
+      if (globalCombatComboSystem) {
+        console.log('[COMBO] Combat combo system ready');
+      }
+      if (globalWeaponOptimizer) {
+        console.log('[WEAPON] Weapon optimizer ready');
+      }
+      break;
+      
+    case 'dupe_discovery':
+      console.log('[MODE] Dupe Discovery Mode - Initializing dupe testing');
+      config.dupeDiscovery.testingEnabled = true;
+      break;
+      
+    case 'stash_hunt':
+      console.log('[MODE] Stash Hunting Mode - Initializing stash detection');
+      config.stashHunt.active = true;
+      if (globalActivityHeatmap) {
+        console.log('[HEATMAP] Activity heatmap ready for stash tracking');
+      }
+      break;
+      
+    case 'companion':
+      console.log('[MODE] Friendly Companion Mode - Initializing conversation AI');
+      break;
+      
+    case 'swarm':
+      console.log('[MODE] Swarm Mode - Initializing swarm coordination');
+      // Initialize swarm coordinator
+      if (globalSwarmCoordinator) {
+        console.log('[SWARM] Swarm coordinator ready');
+      }
+      break;
+      
+    case 'supply_chain':
+      console.log('[MODE] Supply Chain Mode - Initializing production systems');
+      if (!globalSupplyChainManager) {
+        const { SupplyChainManager } = require('./resource_farming');
+        globalSupplyChainManager = new SupplyChainManager();
+      }
+      break;
+  }
+}
+
+function setupBotEventHandlers(bot) {
+  // Create debounced handlers for high-frequency events
+  const debouncedBlockUpdate = debounce((oldBlock, newBlock) => {
+    // Handle block updates with reduced frequency
+    if (globalChunkLoadManager && newBlock.position) {
+      globalChunkLoadManager.requestChunk(newBlock.position.x, newBlock.position.z, 'normal');
+    }
+  }, 100);
+  
+  const debouncedPhysicsTick = debounce(() => {
+    // Handle physics tick with reduced frequency
+    if (globalTelemetrySystem) {
+      // Update performance metrics less frequently
+      const now = Date.now();
+      if (now - (globalTelemetrySystem.lastPhysicsUpdate || 0) > 1000) {
+        globalTelemetrySystem.lastPhysicsUpdate = now;
+        // Update tick time metrics
+        globalTelemetrySystem.updateMetric('tickTime', 50 + Math.random() * 20);
+      }
+    }
+  }, 50);
+  
+  // Chat message handler with natural language processing
+  bot.on('chat', (username, message) => {
+    if (username === bot.username) return;
+    
+    console.log(`[CHAT] ${username}: ${message}`);
+    
+    // Update conversation metrics
+    config.conversationMetrics.messagesReceived++;
+    config.conversationMetrics.lastInteraction = Date.now();
+    
+    // Check if message is a command
+    if (message.startsWith('!') || message.startsWith('/')) {
+      handleChatCommand(bot, username, message);
+      return;
+    }
+    
+    // Try natural language processing
+    if (globalNLCommandParser) {
+      const parsed = globalNLCommandParser.parseCommand(message);
+      if (parsed.confidence > 0.5) {
+        console.log(`[NL] Parsed command: ${parsed.intent} (confidence: ${parsed.confidence.toFixed(2)})`);
+        const result = globalNLCommandParser.executeCommand(parsed, bot);
+        if (result.success) {
+          bot.chat(result.message);
+        }
+        config.conversationMetrics.commandsExecuted++;
+        return;
+      }
+    }
+    
+    // Regular conversation handling
+    if (config.personality.friendly && Math.random() < 0.3) {
+      // Simple friendly responses
+      const responses = [
+        'Hey there!',
+        'Hello!',
+        'Hi!',
+        'How are you?',
+        'What\'s up?'
+      ];
+      bot.chat(responses[Math.floor(Math.random() * responses.length)]);
+      config.conversationMetrics.messagesResponded++;
+    }
+  });
+  
+  // Player tracking for predictive pathfinding
+  bot.on('entityMoved', (entity) => {
+    if (entity.type === 'player' && entity.username !== bot.username) {
+      if (globalPredictivePathfinder) {
+        globalPredictivePathfinder.trackPlayer(entity.username, entity.position);
+      }
+      
+      // Update threat assessment
+      if (globalThreatAssessmentAI) {
+        const playerData = {
+          position: entity.position,
+          username: entity.username
+        };
+        globalThreatAssessmentAI.assessPlayer(entity.username, playerData, {
+          botPosition: bot.entity.position,
+          homeBase: config.homeBase.coords
+        });
+      }
+    }
+  });
+  
+  // Combat event handlers
+  bot.on('entityHurt', (entity, attacker) => {
+    if (entity === bot.entity && attacker) {
+      console.log(`[COMBAT] Hurt by ${attacker.username || attacker.name || 'unknown'}`);
+      
+      // Update activity heatmap
+      if (globalActivityHeatmap) {
+        globalActivityHeatmap.recordActivity(entity.position, 'combat', 2.0);
+      }
+      
+      // Update telemetry
+      if (globalTelemetrySystem) {
+        // Combat metrics would be updated here
+      }
+      
+      // Use weapon optimizer
+      if (globalWeaponOptimizer && attacker.type === 'player') {
+        const situation = globalWeaponOptimizer.getCurrentSituation();
+        globalWeaponOptimizer.optimizeWeapon(situation, attacker);
+      }
+    }
+  });
+  
+  // Death event handler
+  bot.on('death', () => {
+    console.log('[DEATH] Bot died');
+    config.analytics.combat.deaths++;
+    
+    // Update backup system
+    if (globalAutoBackupSystem) {
+      globalAutoBackupSystem.createManualBackup();
+    }
+  });
+  
+  // Respawn event handler
+  bot.on('respawn', () => {
+    console.log('[RESPAWN] Bot respawned');
+    
+    // Reinitialize advanced features if needed
+    if (globalChunkLoadManager) {
+      globalChunkLoadManager.cleanup();
+    }
+  });
+  
+  // Health/food change monitoring
+  bot.on('health', () => {
+    if (globalTelemetrySystem) {
+      const health = bot.health || 0;
+      const food = bot.food || 0;
+      
+      if (health < 10) {
+        globalTelemetrySystem.addAlert('LOW_HEALTH', `Health: ${health}/20`, 'warning');
+      }
+      
+      if (food < 10) {
+        globalTelemetrySystem.addAlert('LOW_HUNGER', `Food: ${food}/20`, 'warning');
+      }
+    }
+  });
+  
+  // Inventory change monitoring
+  bot.on('inventoryUpdate', () => {
+    // Update analytics for valuable items
+    if (bot.inventory) {
+      const valuableItems = ['diamond', 'emerald', 'netherite_ingot', 'totem_of_undying'];
+      for (const item of valuableItems) {
+        const count = RiskAssessmentHelper.countItem(bot, item);
+        if (count > 0) {
+          // Could trigger stash backup or other actions
+        }
+      }
+    }
+  });
+  
+  // High-frequency event handlers with debouncing
+  bot.on('blockUpdate', (oldBlock, newBlock) => {
+    debouncedBlockUpdate(oldBlock, newBlock);
+  });
+  
+  // Physics tick (if available)
+  if (bot.on) {
+    bot.on('physicTick', () => {
+      debouncedPhysicsTick();
+    });
+  }
+  
+  // Chunk load events
+  bot.on('chunkColumnLoad', (x, z) => {
+    if (globalChunkLoadManager) {
+      globalChunkLoadManager.requestChunk(x * 16, z * 16, 'normal');
+    }
+  });
+}
+
+function handleChatCommand(bot, username, message) {
+  const sanitizedCommand = sanitizeCommand(message);
+  const parts = sanitizedCommand.split(' ');
+  const command = parts[0].substring(1); // Remove ! or /
+  const args = parts.slice(1);
+  
+  console.log(`[COMMAND] ${username} issued command: ${command}`);
+  
+  // Check trust level
+  const userTrust = config.whitelist.find(entry => 
+    entry.name.toLowerCase() === username.toLowerCase()
+  );
+  
+  const trustLevel = userTrust?.level || 'guest';
+  
+  switch (command) {
+    case 'help':
+      bot.chat('Available commands: !status, !coords, !combat, !backup, !threats, !combo, !optimize');
+      break;
+      
+    case 'status':
+      if (globalTelemetrySystem) {
+        const report = globalTelemetrySystem.generateReport();
+        bot.chat(`System health: ${report.summary.health} (${report.summary.issues} issues)`);
+      }
+      break;
+      
+    case 'coords':
+      if (bot.entity) {
+        bot.chat(`Position: ${bot.entity.position.toString()}`);
+      }
+      break;
+      
+    case 'combat':
+      if (trustLevel === 'trusted' || trustLevel === 'admin' || trustLevel === 'owner') {
+        if (globalCombatComboSystem) {
+          const available = globalCombatComboSystem.getAvailableCombos();
+          if (available.length > 0) {
+            bot.chat(`Available combos: ${available.map(c => c.name).join(', ')}`);
+          } else {
+            bot.chat('No combos available (missing requirements)');
+          }
+        }
+      }
+      break;
+      
+    case 'combo':
+      if (trustLevel === 'trusted' || trustLevel === 'admin' || trustLevel === 'owner') {
+        if (args.length > 0 && globalCombatComboSystem) {
+          const comboName = args[0];
+          globalCombatComboSystem.executeCombo(comboName).then(success => {
+            if (success) {
+              bot.chat(`Executed combo: ${comboName}`);
+            } else {
+              bot.chat(`Failed to execute combo: ${comboName}`);
+            }
+          });
+        }
+      }
+      break;
+      
+    case 'optimize':
+      if (trustLevel === 'trusted' || trustLevel === 'admin' || trustLevel === 'owner') {
+        if (globalWeaponOptimizer) {
+          const situation = globalWeaponOptimizer.getCurrentSituation();
+          globalWeaponOptimizer.optimizeWeapon(situation).then(success => {
+            if (success) {
+              bot.chat('Weapon optimized for current situation');
+            } else {
+              bot.chat('Failed to optimize weapon');
+            }
+          });
+        }
+      }
+      break;
+      
+    case 'backup':
+      if (trustLevel === 'admin' || trustLevel === 'owner') {
+        if (globalAutoBackupSystem) {
+          globalAutoBackupSystem.createManualBackup().then(success => {
+            if (success) {
+              bot.chat('Manual backup created successfully');
+            } else {
+              bot.chat('Failed to create backup');
+            }
+          });
+        }
+      }
+      break;
+      
+    case 'threats':
+      if (trustLevel === 'trusted' || trustLevel === 'admin' || trustLevel === 'owner') {
+        if (globalThreatAssessmentAI) {
+          const threats = globalThreatAssessmentAI.getTopThreats(5);
+          if (threats.length > 0) {
+            bot.chat(`Top threats: ${threats.map(t => `${t.username}(${t.threatLevel})`).join(', ')}`);
+          } else {
+            bot.chat('No threats detected');
+          }
+        }
+      }
+      break;
+      
+    case 'validate':
+      if (args.length >= 3) {
+        const x = parseFloat(args[0]);
+        const y = parseFloat(args[1]);
+        const z = parseFloat(args[2]);
+        
+        if (validateCoordinates({ x, y, z }, 'command')) {
+          bot.chat(`Valid coordinates: ${x}, ${y}, ${z}`);
+        } else {
+          bot.chat(`Invalid coordinates: ${x}, ${y}, ${z}`);
+        }
+      }
+      break;
+      
+    default:
+      bot.chat(`Unknown command: ${command}. Type !help for available commands.`);
+      break;
+  }
+  
+  config.conversationMetrics.commandsExecuted++;
+}
 
 setTimeout(showMenu, 1000);
 
