@@ -12298,7 +12298,7 @@ class ConversationAI {
     
     // Swarm commands
     if (lower.includes('swarm status') || lower.includes('swarm stats')) {
-      this.bot.chat(`Swarm: ${config.swarm.bots.length} bots active, ${config.swarm.threats.length} recent threats), ${config.swarm.guardZones.length} guard zones`);
+      this.bot.chat(`Swarm: ${config.swarm.bots.length} bots active (${config.swarm.threats.length} recent threats), ${config.swarm.guardZones.length} guard zones`);
       return;
     }
     
@@ -19910,6 +19910,7 @@ async function launchBot(username, role = 'fighter') {
       if (config.intelligence.enabled && intelligenceDB) {
         intelligenceDB.processMessage(username, message);
       }
+    });
       
     // Initialize base monitor if home base is set
     if (config.homeBase.coords) {
@@ -20310,7 +20311,7 @@ function mapBlockToGlyph(name) {
   if (name.includes('dirt')) return ':';
   if (name.includes('wood') || name.includes('log')) return 'Y';
   if (name.includes('leaf')) return '*';
-  if (name.includes('ore')) return '
+  if (name.includes('ore')) return '$';
   console.clear();
   console.log(`
 ╔═══════════════════════════════════════════════════════╗
