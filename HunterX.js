@@ -486,7 +486,22 @@ const config = {
     activeOperations: [],
     threats: [],
     guardZones: [],
-    activeDefense: {}
+    activeDefense: {},
+    initialBotCount: 3,
+    maxBots: 50,
+    autoDetectServerType: true,
+    serverType: null,
+    videoFeeds: new Map()
+  },
+  localAccount: {
+    username: '',
+    password: '',
+    authType: 'microsoft'
+  },
+  videoFeed: {
+    enabled: true,
+    fps: 3,
+    resolution: 'medium'
   },
   analytics: {
     combat: { kills: 0, deaths: 0, damageDealt: 0, damageTaken: 0, combatLogs: 0, lastCombatLog: null },
@@ -1883,6 +1898,10 @@ class SwarmCoordinator {
     this.bots = new Map();
     this.messageQueue = [];
     this.buildProjects = new Map();
+    this.viewers = new Set();
+    this.viewerState = new Map();
+    this.defaultVideoBot = null;
+    this.videoBroadcastInterval = null;
     this.startServer();
   }
   
@@ -1892,7 +1911,13 @@ class SwarmCoordinator {
     config.swarm.wsServer = new WebSocket.Server({ port: this.port });
     
     config.swarm.wsServer.on('connection', (ws, req) => {
-      const botId = req.url.replace('/', '');
+      const path = (req.url || '/');
+      if (path.startsWith('/video-feed')) {
+        this.registerViewer(ws);
+        return;
+      }
+      
+      const botId = path.replace('/', '');
       console.log(`[SWARM] Bot connected: ${botId}`);
       
       this.bots.set(botId, {
@@ -1904,6 +1929,11 @@ class SwarmCoordinator {
         task: null,
         lastHeartbeat: Date.now()
       });
+      
+      if (!this.defaultVideoBot) {
+        this.defaultVideoBot = botId;
+      }
+      this.broadcastVideoState();
       
       ws.on('message', (data) => {
         try {
@@ -1917,6 +1947,12 @@ class SwarmCoordinator {
       ws.on('close', () => {
         console.log(`[SWARM] Bot disconnected: ${botId}`);
         this.bots.delete(botId);
+        config.swarm.videoFeeds.delete(botId);
+        if (this.defaultVideoBot === botId) {
+          const remaining = this.getBotIdList();
+          this.defaultVideoBot = remaining.length > 0 ? remaining[0] : null;
+        }
+        this.broadcastVideoState();
       });
       
       ws.send(JSON.stringify({ type: 'CONNECTED', botId }));
@@ -2003,6 +2039,8 @@ class SwarmCoordinator {
       case 'DEFENSE_STATUS':
         console.log(`[SWARM] 🛡️ Defense status from ${botId}: ${message.status}`);
         this.updateDefenseOperation(message);
+        break;
+        
       case 'BUILD_PROGRESS':
         this.handleBuildProgress(botId, message);
         break;
@@ -2017,6 +2055,29 @@ class SwarmCoordinator {
         
       case 'BUILD_CONFLICT':
         this.handleBuildConflict(botId, message);
+        break;
+        
+      case 'HELP_REQUEST':
+        console.log(`[SWARM] 🆘 Help request at ${message.coords.x}, ${message.coords.y}, ${message.coords.z}`);
+        this.coordinateHelpOperation(message);
+        break;
+        
+      case 'VIDEO_FEED':
+        if (config.videoFeed.enabled) {
+          const frameInfo = {
+            data: message.frameData,
+            timestamp: Date.now(),
+            position: message.position || bot.position,
+            health: message.health ?? bot.health,
+            food: message.food ?? null,
+            activity: message.activity || bot.task || 'idle'
+          };
+          config.swarm.videoFeeds.set(botId, frameInfo);
+          if (!this.defaultVideoBot) {
+            this.defaultVideoBot = botId;
+          }
+          this.pushFrameToViewers(botId);
+        }
         break;
     }
   }
@@ -2043,6 +2104,160 @@ class SwarmCoordinator {
     if (bot && bot.ws.readyState === WebSocket.OPEN) {
       bot.ws.send(JSON.stringify(message));
     }
+  }
+  
+  registerViewer(ws) {
+    const viewerId = `viewer_${Date.now()}`;
+    console.log('[VIDEO] Viewer connected');
+    this.viewers.add(ws);
+    
+    this.viewerState.set(ws, {
+      id: viewerId,
+      selectedBot: this.defaultVideoBot,
+      connectedAt: Date.now()
+    });
+    
+    if (!this.defaultVideoBot) {
+      const bots = this.getBotIdList();
+      if (bots.length > 0) {
+        this.defaultVideoBot = bots[0];
+      }
+    }
+    const viewerState = this.viewerState.get(ws);
+    if (viewerState && !viewerState.selectedBot) {
+      viewerState.selectedBot = this.defaultVideoBot;
+    }
+    
+    ws.send(JSON.stringify({
+      type: 'VIEWER_CONNECTED',
+      viewerId,
+      botList: this.getBotIdList(),
+      selectedBot: this.defaultVideoBot
+    }));
+    
+    this.sendLatestFrameToViewer(ws);
+    
+    ws.on('message', (data) => {
+      try {
+        const message = JSON.parse(data);
+        if (message.type === 'SELECT_BOT') {
+          const state = this.viewerState.get(ws);
+          if (state) {
+            state.selectedBot = message.botId;
+            console.log(`[VIDEO] Viewer ${viewerId} switched to bot ${message.botId}`);
+            this.sendLatestFrameToViewer(ws);
+          }
+        } else if (message.type === 'NEXT_BOT') {
+          this.selectAdjacentBot(ws, 1);
+        } else if (message.type === 'PREVIOUS_BOT') {
+          this.selectAdjacentBot(ws, -1);
+        }
+      } catch (err) {
+        console.log('[VIDEO] Invalid viewer message:', err.message);
+      }
+    });
+    
+    ws.on('close', () => {
+      console.log('[VIDEO] Viewer disconnected');
+      this.viewers.delete(ws);
+      this.viewerState.delete(ws);
+    });
+  }
+  
+  getBotIdList() {
+    return Array.from(this.bots.keys());
+  }
+  
+  broadcastVideoState() {
+    const botList = this.getBotIdList();
+    const stateMessage = {
+      type: 'VIDEO_STATE_UPDATE',
+      botList,
+      activeBots: botList.length,
+      selectedBot: this.defaultVideoBot
+    };
+    
+    this.viewers.forEach(ws => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(stateMessage));
+        } catch (err) {}
+      }
+    });
+  }
+  
+  setVideoFocus(botId) {
+    if (botId && !this.bots.has(botId)) {
+      return false;
+    }
+    this.defaultVideoBot = botId || this.defaultVideoBot;
+    this.viewerState.forEach(state => {
+      state.selectedBot = botId;
+    });
+    this.broadcastVideoState();
+    if (botId) {
+      this.pushFrameToViewers(botId);
+    }
+    return true;
+  }
+  
+  sendLatestFrameToViewer(ws) {
+    const state = this.viewerState.get(ws);
+    if (!state || !state.selectedBot) return;
+    
+    const frameInfo = config.swarm.videoFeeds.get(state.selectedBot);
+    if (!frameInfo) return;
+    
+    const feedMessage = {
+      type: 'VIDEO_FRAME',
+      botId: state.selectedBot,
+      frameInfo
+    };
+    
+    if (ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(feedMessage));
+      } catch (err) {
+        console.log(`[VIDEO] Failed to send frame: ${err.message}`);
+      }
+    }
+  }
+  
+  selectAdjacentBot(ws, direction) {
+    const state = this.viewerState.get(ws);
+    if (!state) return;
+    
+    const botList = this.getBotIdList();
+    if (botList.length === 0) return;
+    
+    const currentIndex = botList.indexOf(state.selectedBot);
+    let newIndex = (currentIndex + direction + botList.length) % botList.length;
+    state.selectedBot = botList[newIndex];
+    this.sendLatestFrameToViewer(ws);
+  }
+  
+  pushFrameToViewers(botId) {
+    const frameInfo = config.swarm.videoFeeds.get(botId);
+    if (!frameInfo) return;
+    
+    const feedMessage = {
+      type: 'VIDEO_FRAME',
+      botId,
+      frameInfo
+    };
+    
+    this.viewers.forEach(ws => {
+      if (ws.readyState === WebSocket.OPEN) {
+        const state = this.viewerState.get(ws);
+        if (state && state.selectedBot === botId) {
+          try {
+            ws.send(JSON.stringify(feedMessage));
+          } catch (err) {
+            console.log(`[VIDEO] Failed to send frame to viewer: ${err.message}`);
+          }
+        }
+      }
+    });
   }
   
   coordinateLootOperation(stashData) {
@@ -2203,6 +2418,69 @@ class SwarmCoordinator {
     fs.appendFile('./logs/home_defense.log', logEntry, (err) => {
       if (err) console.error('[SWARM] Failed to log defense resolution:', err);
     });
+  }
+  
+  coordinateHelpOperation(helpData) {
+    const coords = helpData.coords;
+    const requestedBy = helpData.requestedBy;
+    
+    const nearbyBots = [];
+    this.bots.forEach((bot, botId) => {
+      if (bot.position) {
+        const dist = this.distance(bot.position, coords);
+        nearbyBots.push({ ...bot, distance: dist });
+      }
+    });
+    
+    nearbyBots.sort((a, b) => a.distance - b.distance);
+    
+    const operation = {
+      id: `help_${Date.now()}`,
+      type: 'HELP_OPERATION',
+      coords,
+      requestedBy,
+      assignedBots: [],
+      status: 'active',
+      startTime: Date.now()
+    };
+    
+    console.log(`[SWARM] Coordinating help operation - ${nearbyBots.length} bots responding`);
+    
+    nearbyBots.forEach((bot, i) => {
+      operation.assignedBots.push(bot.id);
+      
+      this.sendToBot(bot.id, {
+        type: 'HELP_COMMAND',
+        operationId: operation.id,
+        coords,
+        requestedBy,
+        priority: 'urgent',
+        timestamp: Date.now()
+      });
+      
+      bot.task = `Responding to help request`;
+      bot.status = 'traveling';
+    });
+    
+    config.swarm.activeOperations.push(operation);
+    
+    this.broadcast({
+      type: 'HELP_INITIATED',
+      coords,
+      botsResponding: operation.assignedBots.length,
+      requestedBy
+    });
+    
+    const timeoutMs = helpData.timeout || 5 * 60 * 1000;
+    setTimeout(() => {
+      if (operation.status !== 'active') return;
+      operation.status = 'complete';
+      operation.endTime = Date.now();
+      this.broadcast({
+        type: 'HELP_COMPLETE',
+        operationId: operation.id
+      });
+    }, timeoutMs);
   }
   
   getBotsNear(coords, maxDistance) {
@@ -11696,6 +11974,118 @@ class ConversationAI {
           this.bot.chat("Usage: 'set xp farm here' or 'set xp farm x,y,z'");
         }
       }
+      return;
+    }
+    
+    // Help/Backup command
+    if (lower.includes('!help') || lower.includes('help at') || lower.includes('need help')) {
+      const coords = this.extractCoords(message);
+
+      if (coords) {
+        if (globalSwarmCoordinator) {
+          this.bot.chat(`🆘 Sending all available bots to ${coords.x}, ${coords.y}, ${coords.z}!`);
+          globalSwarmCoordinator.coordinateHelpOperation({
+            coords,
+            requestedBy: username
+          });
+        } else {
+          this.bot.chat("Swarm coordinator not available!");
+        }
+      } else {
+        const playerPos = this.bot.entity.position;
+        if (globalSwarmCoordinator) {
+          this.bot.chat(`🆘 Sending all bots to your location!`);
+          globalSwarmCoordinator.coordinateHelpOperation({
+            coords: { x: Math.floor(playerPos.x), y: Math.floor(playerPos.y), z: Math.floor(playerPos.z) },
+            requestedBy: username
+          });
+        }
+      }
+      return;
+    }
+
+    // Spawn more bots command
+    if (lower.includes('spawn') && (lower.includes('bot') || lower.includes('more'))) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can spawn more bots!");
+        return;
+      }
+
+      const countMatch = message.match(/(\d+)/);
+      const count = countMatch ? parseInt(countMatch[1]) : 3;
+
+      if (!config.server) {
+        this.bot.chat("No server configured for spawning bots.");
+        return;
+      }
+
+      if (!globalBotSpawner) {
+        globalBotSpawner = new BotSpawner();
+      }
+
+      const currentCount = globalBotSpawner.getActiveBotCount();
+      if (currentCount + count > config.swarm.maxBots) {
+        this.bot.chat(`Cannot spawn ${count} bots. Would exceed max limit of ${config.swarm.maxBots}. (Current: ${currentCount})`);
+        return;
+      }
+
+      this.bot.chat(`🤖 Spawning ${count} more bots...`);
+
+      globalBotSpawner.spawnMultiple(config.server, count, config.mode).then(() => {
+        this.bot.chat(`✅ Successfully spawned ${count} bots! Total active: ${globalBotSpawner.getActiveBotCount()}`);
+      }).catch(err => {
+        this.bot.chat(`❌ Failed to spawn bots: ${err.message}`);
+      });
+
+      return;
+    }
+
+    // Swarm status command
+    if (lower.includes('!swarm status') || lower.includes('swarm info')) {
+      if (globalSwarmCoordinator && globalBotSpawner) {
+        const spawnerStatus = globalBotSpawner.getStatus();
+        const swarmStatus = globalSwarmCoordinator.getSwarmStatus();
+
+        this.bot.chat(`🐝 Swarm Status:`);
+        this.bot.chat(`Active bots: ${spawnerStatus.activeBots}/${spawnerStatus.maxBots}`);
+        this.bot.chat(`Server type: ${spawnerStatus.serverType ? (spawnerStatus.serverType.cracked ? 'CRACKED' : 'PREMIUM') : 'Unknown'}`);
+        this.bot.chat(`Connected: ${swarmStatus.bots.length} | Operations: ${swarmStatus.activeOperations || 0}`);
+      } else {
+        this.bot.chat("Swarm system not initialized.");
+      }
+      return;
+    }
+
+    // Detect server type command
+    if (lower.includes('!detect') || lower.includes('detect server')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can run server detection!");
+        return;
+      }
+
+      if (!config.server) {
+        this.bot.chat("No server configured.");
+        return;
+      }
+
+      if (!globalBotSpawner) {
+        globalBotSpawner = new BotSpawner();
+      }
+
+      this.bot.chat("🔍 Running server type detection...");
+
+      globalBotSpawner.detectServerType(config.server).then(result => {
+        globalBotSpawner.serverType = result;
+        config.swarm.serverType = result;
+        this.bot.chat(`✅ Server is ${result.cracked ? 'CRACKED' : 'PREMIUM'}`);
+        this.bot.chat(`Will use ${result.useProxy ? 'proxy bots' : 'local account'}`);
+      }).catch(err => {
+        this.bot.chat(`❌ Detection failed: ${err.message}`);
+      });
+
+      return;
+    }
+
     // Item Finder commands
     if (lower.includes('find') || lower.includes('hunt') || lower.includes('collect') || lower.includes('get me') || lower.includes('fish for') || lower.includes('farm')) {
       await this.handleItemFinderCommand(username, message);
@@ -11908,7 +12298,7 @@ class ConversationAI {
     
     // Swarm commands
     if (lower.includes('swarm status') || lower.includes('swarm stats')) {
-      this.bot.chat(`Swarm: ${config.swarm.bots.length} bots active, ${config.swarm.threats.length} recent threats), ${config.swarm.guardZones.length} guard zones`);
+      this.bot.chat(`Swarm: ${config.swarm.bots.length} bots active (${config.swarm.threats.length} recent threats), ${config.swarm.guardZones.length} guard zones`);
       return;
     }
     
@@ -12213,7 +12603,6 @@ class ConversationAI {
     
     // Default fallback for unrecognized commands
     this.bot.chat("I didn't understand that command. Try 'help' for options!");
-  }
   }
   
   async handleItemFinderCommand(username, message) {
@@ -16131,6 +16520,11 @@ class ProxyManager {
     this.queueLength = null;
     this.estimatedWait = null;
     this.connected = false;
+    this.proxyList = [
+      { host: 'proxy1.example.com', port: 1080, type: 5 },
+      { host: 'proxy2.example.com', port: 1080, type: 5 },
+      { host: 'proxy3.example.com', port: 1080, type: 5 }
+    ];
   }
   
   updateQueueStatus(position, length) {
@@ -16146,6 +16540,13 @@ class ProxyManager {
     return position * avgTimePerPlayer;
   }
   
+  getRandomProxy() {
+    if (this.proxyList.length === 0) {
+      return null;
+    }
+    return this.proxyList[Math.floor(Math.random() * this.proxyList.length)];
+  }
+  
   getStatus() {
     return {
       enabled: config.network.proxyEnabled,
@@ -16157,6 +16558,244 @@ class ProxyManager {
     };
   }
 }
+
+// === BOT SPAWNER WITH SERVER TYPE DETECTION ===
+class BotSpawner {
+  constructor() {
+    this.serverType = null;
+    this.activeBots = [];
+    this.maxBots = config.swarm.maxBots;
+    this.proxyManager = null;
+  }
+  
+  async detectServerType(serverIP) {
+    console.log('[DETECTION] Testing server type...');
+    
+    try {
+      const [host, portStr] = serverIP.split(':');
+      const port = parseInt(portStr) || 25565;
+      
+      const testBot = mineflayer.createBot({
+        host,
+        port,
+        username: `TestBot_${Date.now().toString(36)}`,
+        auth: 'offline',
+        version: '1.20.1',
+        hideErrors: true
+      });
+      
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          testBot.quit();
+          reject(new Error('Connection timeout'));
+        }, 10000);
+        
+        testBot.once('spawn', () => {
+          clearTimeout(timeout);
+          testBot.quit();
+          console.log('[DETECTION] ✓ Server is CRACKED - will use proxies');
+          resolve({ cracked: true, useProxy: true });
+        });
+        
+        testBot.once('error', (err) => {
+          clearTimeout(timeout);
+          testBot.quit();
+          
+          if (err.message.includes('authentication') || 
+              err.message.includes('premium') ||
+              err.message.includes('Session') ||
+              err.message.includes('authenticate')) {
+            console.log('[DETECTION] ✓ Server is PREMIUM - will use local account');
+            resolve({ cracked: false, useProxy: false });
+          } else {
+            reject(err);
+          }
+        });
+        
+        testBot.once('kicked', (reason) => {
+          clearTimeout(timeout);
+          testBot.quit();
+          
+          const reasonStr = typeof reason === 'string' ? reason : JSON.stringify(reason);
+          if (reasonStr.includes('authentication') || 
+              reasonStr.includes('premium') ||
+              reasonStr.includes('Session')) {
+            console.log('[DETECTION] ✓ Server is PREMIUM - will use local account (kicked)');
+            resolve({ cracked: false, useProxy: false });
+          } else {
+            reject(new Error(`Kicked: ${reasonStr}`));
+          }
+        });
+      });
+    } catch (error) {
+      console.error('[DETECTION] Error:', error.message);
+      throw error;
+    }
+  }
+  
+  async spawnBot(serverIP, options = {}) {
+    if (!this.serverType) {
+      try {
+        this.serverType = await this.detectServerType(serverIP);
+        config.swarm.serverType = this.serverType;
+      } catch (err) {
+        console.error('[DETECTION] Failed to detect server type:', err.message);
+        console.log('[DETECTION] Defaulting to cracked server mode');
+        this.serverType = { cracked: true, useProxy: true };
+        config.swarm.serverType = this.serverType;
+      }
+    }
+    
+    if (this.serverType.cracked) {
+      if (this.getActiveBotCount() >= this.maxBots) {
+        throw new Error(`Cannot spawn more bots - max limit ${this.maxBots} reached`);
+      }
+      return await this.createProxyBot(serverIP, options);
+    }
+    
+    // Premium servers - only one local account bot allowed
+    if (this.activeBots.some(info => info.type === 'local')) {
+      throw new Error('Local account bot already running');
+    }
+    
+    return await this.createLocalBot(serverIP, options);
+  }
+  
+  async createProxyBot(serverIP, options) {
+    const [host, portStr] = serverIP.split(':');
+    const port = parseInt(portStr) || 25565;
+    
+    if (!this.proxyManager) {
+      this.proxyManager = new ProxyManager(null);
+    }
+    
+    const username = options.username || this.generateRandomUsername();
+    
+    console.log(`[SPAWNER] Creating proxy bot: ${username}`);
+    
+    const bot = mineflayer.createBot({
+      host,
+      port,
+      username,
+      auth: 'offline',
+      version: options.version || '1.20.1'
+    });
+    
+    this.registerBot(bot, username, 'proxy', options.role);
+    return bot;
+  }
+  
+  async createLocalBot(serverIP, options) {
+    const [host, portStr] = serverIP.split(':');
+    const port = parseInt(portStr) || 25565;
+    
+    const account = config.localAccount;
+    if (!account.username || !account.password) {
+      throw new Error('Local account credentials not configured');
+    }
+    
+    const username = options.username || account.username;
+    console.log(`[SPAWNER] Creating local account bot: ${username}`);
+    
+    const bot = mineflayer.createBot({
+      host,
+      port,
+      username: account.username,
+      password: account.password,
+      auth: account.authType || 'microsoft',
+      version: options.version || '1.20.1'
+    });
+    
+    this.registerBot(bot, username, 'local', options.role);
+    return bot;
+  }
+  
+  registerBot(bot, username, type, role = null) {
+    const entry = {
+      bot,
+      username,
+      type,
+      role,
+      spawned: Date.now()
+    };
+    this.activeBots.push(entry);
+    this.refreshSwarmBotList();
+    
+    const cleanup = () => this.unregisterBot(username);
+    bot.once('end', cleanup);
+    bot.once('kicked', cleanup);
+    bot.once('error', (err) => {
+      if (err && (err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED')) {
+        cleanup();
+      }
+    });
+  }
+  
+  unregisterBot(username) {
+    const index = this.activeBots.findIndex(info => info.username === username);
+    if (index >= 0) {
+      this.activeBots.splice(index, 1);
+      this.refreshSwarmBotList();
+    }
+  }
+  
+  refreshSwarmBotList() {
+    config.swarm.bots = this.activeBots.map(info => ({
+      username: info.username,
+      type: info.type,
+      role: info.role,
+      spawned: info.spawned
+    }));
+  }
+  
+  generateRandomUsername() {
+    const adjectives = ['Swift', 'Silent', 'Dark', 'Shadow', 'Ghost', 'Phantom', 'Stealth', 'Ninja'];
+    const nouns = ['Hunter', 'Warrior', 'Scout', 'Agent', 'Operative', 'Fighter', 'Soldier'];
+    const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+    const noun = nouns[Math.floor(Math.random() * nouns.length)];
+    const num = Math.floor(Math.random() * 999);
+    return `${adj}${noun}${num}`;
+  }
+  
+  async spawnMultiple(serverIP, count, mode) {
+    console.log(`[SPAWNER] Spawning ${count} bots...`);
+    
+    const bots = [];
+    for (let i = 0; i < count; i++) {
+      try {
+        const username = this.generateRandomUsername();
+        const bot = await this.spawnBot(serverIP, { username, role: mode });
+        bots.push(bot);
+        
+        bot.once('spawn', () => {
+          console.log(`[SPAWNER] Bot ${i + 1}/${count} spawned: ${username}`);
+        });
+        
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (err) {
+        console.error(`[SPAWNER] Failed to spawn bot ${i + 1}:`, err.message);
+      }
+    }
+    
+    return bots;
+  }
+  
+  getActiveBotCount() {
+    return this.activeBots.length;
+  }
+  
+  getStatus() {
+    return {
+      serverType: this.serverType,
+      activeBots: this.activeBots.length,
+      maxBots: this.maxBots,
+      bots: config.swarm.bots
+    };
+  }
+}
+
+// Global bot spawner instance
+let globalBotSpawner = null;
 
 // === MOVEMENT FRAMEWORK ===
 class MovementFramework {
@@ -18806,6 +19445,22 @@ class BuildPersistence {
 
 // === MAIN BOT LAUNCHER ===
 async function launchBot(username, role = 'fighter') {
+  if (!config.server) {
+    throw new Error('Server not configured');
+  }
+  
+  if (!globalBotSpawner) {
+    globalBotSpawner = new BotSpawner();
+  }
+  
+  let bot;
+  try {
+    bot = await globalBotSpawner.spawnBot(config.server, { username, role });
+  } catch (err) {
+    console.log(`[SPAWNER] Failed to initialize bot ${username}: ${err.message}`);
+    throw err;
+  }
+  
   const [host, portStr] = config.server.split(':');
   const port = parseInt(portStr) || 25565;
   
@@ -18817,14 +19472,6 @@ async function launchBot(username, role = 'fighter') {
     eventListeners.push({ emitter, event, handler });
   }
 
-  
-  const bot = mineflayer.createBot({
-    host,
-    port,
-    username,
-    auth: 'offline',
-    version: '1.20.1'
-  });
   
   bot.loadPlugin(pvp);
   bot.loadPlugin(pathfinder);
@@ -19136,6 +19783,68 @@ async function launchBot(username, role = 'fighter') {
                 message.location.x, message.location.y, message.location.z), 5
               )).catch(() => {});
               break;
+              
+            case 'HELP_COMMAND':
+              console.log(`[SWARM] 🆘 Help request from ${message.requestedBy} at ${message.coords.x}, ${message.coords.y}, ${message.coords.z}`);
+              bot.chat(`Coming to help ${message.requestedBy}!`);
+              
+              const helpTarget = new Vec3(message.coords.x, message.coords.y, message.coords.z);
+              
+              if (bot.currentHelpTimeout) {
+                clearTimeout(bot.currentHelpTimeout);
+              }
+              
+              bot.currentHelpOperation = {
+                id: message.operationId,
+                requestedBy: message.requestedBy,
+                coords: helpTarget,
+                previousTask: bot.task || null,
+                startedAt: Date.now()
+              };
+              
+              bot.currentHelpTimeout = setTimeout(() => {
+                if (bot.currentHelpOperation && bot.currentHelpOperation.id === message.operationId) {
+                  if (combatAI) {
+                    combatAI.setAggressiveMode(false);
+                  }
+                  bot.currentHelpOperation = null;
+                  bot.chat('Help operation timeout reached. Resuming normal tasks.');
+                }
+              }, 5 * 60 * 1000);
+              
+              if (bot.ashfinder) {
+                bot.ashfinder.goto(new goals.GoalNear(helpTarget, 3))
+                  .then(() => {
+                    console.log(`[SWARM] Arrived at help location`);
+                    bot.chat(`Arrived to help! Ready for combat.`);
+                    
+                    if (combatAI) {
+                      combatAI.setAggressiveMode(true);
+                    }
+                  })
+                  .catch(err => {
+                    console.log(`[SWARM] Failed to reach help location: ${err.message}`);
+                  });
+              }
+              break;
+            
+            case 'HELP_COMPLETE':
+              console.log('[SWARM] ✅ Help operation complete');
+              if (bot.currentHelpTimeout) {
+                clearTimeout(bot.currentHelpTimeout);
+                bot.currentHelpTimeout = null;
+              }
+              if (bot.currentHelpOperation && bot.currentHelpOperation.id === message.operationId) {
+                if (combatAI) {
+                  combatAI.setAggressiveMode(false);
+                }
+                if (bot.ashfinder) {
+                  try { bot.ashfinder.stop(); } catch (err) {}
+                }
+                bot.chat('Help operation complete. Returning to normal tasks.');
+                bot.currentHelpOperation = null;
+              }
+              break;
           }
         } catch (err) {
           console.log('[SWARM] Error processing message:', err.message);
@@ -19201,6 +19910,7 @@ async function launchBot(username, role = 'fighter') {
       if (config.intelligence.enabled && intelligenceDB) {
         intelligenceDB.processMessage(username, message);
       }
+    });
       
     // Initialize base monitor if home base is set
     if (config.homeBase.coords) {
@@ -19499,10 +20209,109 @@ async function launchBot(username, role = 'fighter') {
   return bot;
 }
 
-// === MENU SYSTEM ===
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+function startVideoFeedStreaming(bot, wsClient) {
+  if (!config.videoFeed.enabled || !wsClient) {
+    return;
+  }
 
-function showMenu() {
+  const fps = config.videoFeed.fps || 3;
+  const intervalMs = Math.max(200, Math.floor(1000 / fps));
+  const label = `video-feed-${bot.username}`;
+
+  const sendFrame = () => {
+    if (!wsClient || wsClient.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    const frameData = captureVideoFrame(bot);
+    if (!frameData) {
+      return;
+    }
+
+    const position = bot.entity && bot.entity.position ? {
+      x: Math.round(bot.entity.position.x),
+      y: Math.round(bot.entity.position.y),
+      z: Math.round(bot.entity.position.z)
+    } : null;
+
+    const payload = {
+      type: 'VIDEO_FEED',
+      botName: bot.username,
+      frameData,
+      health: bot.health,
+      food: typeof bot.food === 'number' ? bot.food : null,
+      position,
+      activity: determineBotActivity(bot)
+    };
+
+    try {
+      wsClient.send(JSON.stringify(payload));
+    } catch (err) {
+      console.log(`[VIDEO] Failed to send frame for ${bot.username}: ${err.message}`);
+    }
+  };
+
+  sendFrame();
+
+  const intervalHandle = safeSetInterval(sendFrame, intervalMs, label);
+  bot.videoFeedInterval = intervalHandle;
+
+  const cleanup = () => clearTrackedInterval(intervalHandle);
+  bot.once('end', cleanup);
+  wsClient.once('close', cleanup);
+}
+
+function captureVideoFrame(bot) {
+  if (!bot.entity || !bot.entity.position) {
+    return null;
+  }
+
+  const resolution = (config.videoFeed.resolution || 'medium').toLowerCase();
+  let radius = 4;
+  if (resolution === 'low') radius = 3;
+  if (resolution === 'high') radius = 6;
+
+  const center = bot.entity.position.floored ? bot.entity.position.floored() : 
+    new Vec3(Math.round(bot.entity.position.x), Math.round(bot.entity.position.y), Math.round(bot.entity.position.z));
+
+  const rows = [];
+  for (let dz = -radius; dz <= radius; dz++) {
+    let row = '';
+    for (let dx = -radius; dx <= radius; dx++) {
+      const samplePos = new Vec3(center.x + dx, center.y, center.z + dz);
+      let glyph = ' ';
+      try {
+        const block = bot.blockAt(samplePos);
+        glyph = mapBlockToGlyph(block?.name);
+      } catch (err) {
+        glyph = ' ';
+      }
+      row += glyph;
+    }
+    rows.push(row);
+  }
+
+  const ascii = rows.join('\n');
+  return {
+    encoding: 'ascii',
+    width: rows[0] ? rows[0].length : 0,
+    height: rows.length,
+    ascii,
+    data: Buffer.from(ascii, 'utf8').toString('base64')
+  };
+}
+
+function mapBlockToGlyph(name) {
+  if (!name) return ' ';
+  if (name.includes('water')) return '~';
+  if (name.includes('lava')) return '^';
+  if (name.includes('grass')) return '"';
+  if (name.includes('sand')) return '.';
+  if (name.includes('stone')) return '#';
+  if (name.includes('dirt')) return ':';
+  if (name.includes('wood') || name.includes('log')) return 'Y';
+  if (name.includes('leaf')) return '*';
+  if (name.includes('ore')) return '$';
   console.clear();
   console.log(`
 ╔═══════════════════════════════════════════════════════╗
@@ -19609,34 +20418,82 @@ function configureWhitelist() {
   });
 }
 
-function askServer() {
-  rl.question('Server IP:PORT: ', (server) => {
+async function askServer() {
+  rl.question('Server IP:PORT: ', async (server) => {
     config.server = server.trim();
+    
+    if (config.swarm.autoDetectServerType) {
+      console.log('\nDetecting server type...');
+      
+      if (!globalBotSpawner) {
+        globalBotSpawner = new BotSpawner();
+      }
+      
+      try {
+        const serverType = await globalBotSpawner.detectServerType(config.server);
+        config.swarm.serverType = serverType;
+        
+        if (!serverType.cracked && (!config.localAccount.username || !config.localAccount.password)) {
+          console.log('\n⚠️  Server requires authentication but no local account configured!');
+          console.log('Please configure local account credentials in the config section.');
+          showMenu();
+          return;
+        }
+      } catch (err) {
+        console.log(`\n⚠️  Detection failed: ${err.message}`);
+        console.log('Defaulting to cracked server mode...');
+      }
+    }
+    
     launch();
   });
 }
 
-function launchSwarm() {
+async function launchSwarm() {
   console.log('\n🐝 SWARM MODE - Multi-Bot Coordination\n');
   
-  rl.question('Server IP:PORT: ', (server) => {
+  rl.question('Server IP:PORT: ', async (server) => {
     config.server = server.trim();
     
-    rl.question('Number of bots to launch (1-10): ', (count) => {
-      const botCount = Math.min(10, Math.max(1, parseInt(count) || 3));
+    console.log('\nDetecting server type...');
+    
+    if (!globalBotSpawner) {
+      globalBotSpawner = new BotSpawner();
+    }
+    
+    try {
+      const serverType = await globalBotSpawner.detectServerType(config.server);
+      config.swarm.serverType = serverType;
+    } catch (err) {
+      console.log(`⚠️  Detection failed: ${err.message}`);
+      console.log('Defaulting to cracked server mode...');
+    }
+    
+    rl.question(`\nHow many bots to spawn initially? [default: ${config.swarm.initialBotCount}]: `, (countInput) => {
+      const botCount = parseInt(countInput) || config.swarm.initialBotCount;
+      
+      if (botCount > config.swarm.maxBots) {
+        console.log(`⚠️  Cannot spawn ${botCount} bots. Max limit is ${config.swarm.maxBots}.`);
+        showMenu();
+        return;
+      }
       
       rl.question('Bot mode (pvp/stash/friendly): ', (mode) => {
         config.mode = mode.trim() || 'friendly';
         
-        console.log(`\n🚀 Launching ${botCount} bots in ${config.mode} mode...\n`);
+        console.log(`\n🚀 Launching ${botCount} bots in ${config.mode} mode...`);
+        console.log(`Server type: ${config.swarm.serverType ? (config.swarm.serverType.cracked ? 'CRACKED' : 'PREMIUM') : 'Unknown'}\n`);
         
-        for (let i = 0; i < botCount; i++) {
-          const botName = `Hunter_${i + 1}_${Date.now().toString(36)}`;
-          setTimeout(() => {
-            console.log(`[SWARM] Launching bot ${i + 1}/${botCount}: ${botName}`);
-            launchBot(botName, config.mode);
-          }, i * 2000);
-        }
+        globalBotSpawner.spawnMultiple(config.server, botCount, config.mode).then(() => {
+          console.log(`\n✅ Successfully spawned ${botCount} bots!`);
+          console.log(`Total active bots: ${globalBotSpawner.getActiveBotCount()}`);
+          console.log(`\nCommands:`);
+          console.log(`  - Chat "spawn 5 more bots" to add more bots`);
+          console.log(`  - Chat "!swarm status" for bot info`);
+          console.log(`  - Chat "!help x y z" to send all bots to coordinates`);
+        }).catch(err => {
+          console.error(`❌ Failed to spawn bots: ${err.message}`);
+        });
         
         rl.close();
       });
@@ -19729,7 +20586,7 @@ function launch() {
 const knowledgeBaseCount = config.dupeDiscovery.knowledgeBase?.historicalDupes?.length || 0;
 console.log(`
 ╔═══════════════════════════════════════════════════════╗
-║       HUNTERX v22.0 - INITIALIZING                    ║
+║       HUNTERX v22.1 - INITIALIZING                    ║
 ╠═══════════════════════════════════════════════════════╣
 ║  ✅ Neural networks loaded (Enhanced LSTM)            ║
 ║  ✅ God-Tier Crystal PvP System                       ║
@@ -19745,19 +20602,14 @@ console.log(`
 ║  ✅ Home base system initialized                      ║
 ║  ✅ Ender chest logistics enabled                     ║
 ║  🔗 Supply Chain Manager ready                       ║
+║  🤖 Smart Bot Spawner with Auto-Detection           ║
 ╠═══════════════════════════════════════════════════════╣
-║  NEW: Ultimate Dupe Engine (500+ tests/hour)         ║
-║  NEW: Server lag detection & exploitation            ║
-║  NEW: Multi-bot coordinated testing                  ║
-║  NEW: Chunk boundary exploit scanner                 ║
-║  NEW: Dimension transfer dupe testing                ║
-║  NEW: Death/respawn exploit automation               ║
-║  NEW: Mechanical dupe builder (TNT/Piston)           ║
-║  NEW: Server software fingerprinting                 ║
-║  NEW: Packet timing manipulation                     ║
-║  NEW: Parallel hypothesis testing                    ║
-║  NEW: Smart AI prioritization queue                  ║
-║  🔗 NEW: Task Queue & Production System            ║
+║  NEW: Smart server type detection (cracked/premium)  ║
+║  NEW: Dynamic bot spawning (start with 3, add more)  ║
+║  NEW: Help command - coordinate all bots to location ║
+║  NEW: Video feed infrastructure (WebSocket)          ║
+║  NEW: Swarm management commands (!spawn, !help)      ║
+║  NEW: Auto-detect & use appropriate auth method      ║
 ╚═══════════════════════════════════════════════════════╝
 `);
 
@@ -20524,647 +21376,3 @@ class ProductionTracker {
   }
 }
 
-class ItemHunter {
-  constructor(bot) {
-    this.bot = bot;
-  }
-  
-  async findItem(itemName, quantity) {
-    console.log(`[HUNTER] Starting search for ${quantity}x ${itemName}`);
-    
-    let collected = 0;
-    const startTime = Date.now();
-    
-    // First check bot's inventory
-    const invItem = this.bot.inventory.items().find(i => i.name === itemName);
-    if (invItem) {
-      collected = Math.min(invItem.count, quantity);
-      console.log(`[HUNTER] Found ${collected}x ${itemName} in inventory`);
-    }
-    
-    // If need more, go mining/hunting
-    if (collected < quantity) {
-      const needed = quantity - collected;
-      const additional = await this.collectItem(itemName, needed);
-      collected += additional;
-    }
-    
-    const timeSpent = Date.now() - startTime;
-    console.log(`[HUNTER] Collected ${collected}/${quantity}x ${itemName} in ${timeSpent}ms`);
-    
-    return collected;
-  }
-  
-  async collectItem(itemName, quantity) {
-    // Simple implementation - mine nearby blocks
-    const blocks = this.bot.findBlocks({
-      matching: this.bot.registry.blocksByName[itemName]?.id,
-      maxDistance: 100,
-      count: quantity
-    });
-    
-    let collected = 0;
-    
-    for (const blockPos of blocks) {
-      if (collected >= quantity) break;
-      
-      try {
-        await this.bot.pathfinder.goto(new goals.GoalNear(blockPos.x, blockPos.y, blockPos.z, 1));
-        await this.bot.dig(this.bot.blockAt(blockPos));
-        collected++;
-      } catch (err) {
-        console.log(`[HUNTER] Failed to collect ${itemName}: ${err.message}`);
-      }
-    }
-    
-    return collected;
-  }
-}
-
-class SupplyChainManager {
-  constructor() {
-    this.taskQueue = new TaskQueue();
-    this.inventory = new GlobalInventory();
-    this.productionTracker = new ProductionTracker();
-    this.activeBots = new Map();
-    this.processing = false;
-  }
-  
-  registerBot(bot) {
-    this.activeBots.set(bot.username, bot);
-    console.log(`[SUPPLY] Registered bot: ${bot.username}`);
-  }
-  
-  unregisterBot(botUsername) {
-    this.activeBots.delete(botUsername);
-    console.log(`[SUPPLY] Unregistered bot: ${botUsername}`);
-  }
-  
-  getIdleBots() {
-    const idleBots = [];
-    
-    for (const [botId, bot] of this.activeBots) {
-      // Check if bot is working on a task
-      const isWorking = this.taskQueue.inProgress.some(t => t.assignedTo === botId);
-      
-      if (!isWorking && bot.health > 0) {
-        idleBots.push(bot);
-      }
-    }
-    
-    return idleBots;
-  }
-  
-  async processQueue() {
-    if (this.processing) {
-      console.log('[SUPPLY] Queue processor already running');
-      return;
-    }
-    
-    this.processing = true;
-    console.log('[SUPPLY] Starting queue processor...');
-    
-    while (this.processing) {
-      try {
-        // Get available bots
-        const availableBots = this.getIdleBots();
-        
-        // Assign tasks to bots
-        for (const bot of availableBots) {
-          const task = this.taskQueue.getNextTask(bot.username);
-          
-          if (task) {
-            this.assignTaskToBot(bot, task);
-          }
-        }
-        
-        // Wait before next check
-        await this.sleep(5000);
-      } catch (err) {
-        console.log(`[SUPPLY] Queue processor error: ${err.message}`);
-        await this.sleep(10000);
-      }
-    }
-  }
-  
-  async assignTaskToBot(bot, task) {
-    console.log(`[SUPPLY] Assigning to ${bot.username}: ${task.item} x${task.quantity}`);
-    
-    task.status = 'in_progress';
-    
-    const startTime = Date.now();
-    let success = false;
-    let result = null;
-    
-    try {
-      // Execute based on task type
-      switch (task.type) {
-        case 'collect':
-          result = await this.executeCollectTask(bot, task);
-          success = true;
-          break;
-        case 'find':
-          result = await this.executeFindTask(bot, task);
-          success = true;
-          break;
-        case 'craft':
-          result = await this.executeCraftTask(bot, task);
-          success = true;
-          break;
-        case 'build':
-          result = await this.executeBuildTask(bot, task);
-          success = true;
-          break;
-        default:
-          console.log(`[SUPPLY] Unknown task type: ${task.type}`);
-          success = false;
-      }
-    } catch (err) {
-      console.log(`[SUPPLY] Task failed: ${err.message}`);
-      success = false;
-      result = { error: err.message };
-    }
-    
-    const timeSpent = Date.now() - startTime;
-    
-    // Complete task
-    this.taskQueue.completeTask(task.id, success, result);
-    
-    // Track production
-    if (success && result && result.collected) {
-      this.productionTracker.trackProduction(task.item, result.collected, bot.username, timeSpent);
-      
-      // Store in home base
-      await this.depositToHomeBase(bot, task.item, result.collected);
-      
-      // Update inventory
-      this.inventory.add(task.item, result.collected);
-    }
-  }
-  
-  async executeCollectTask(bot, task) {
-    const hunter = new ItemHunter(bot);
-    const collected = await hunter.findItem(task.item, task.quantity);
-    
-    // Update progress during collection
-    const progress = Math.min(100, (collected / task.quantity) * 100);
-    this.taskQueue.updateProgress(task.id, progress);
-    
-    return { collected, target: task.quantity };
-  }
-  
-  async executeFindTask(bot, task) {
-    // Similar to collect but for rare items
-    return this.executeCollectTask(bot, task);
-  }
-  
-  async executeCraftTask(bot, task) {
-    console.log(`[SUPPLY] Crafting ${task.quantity}x ${task.item}`);
-    
-    // Simple crafting implementation
-    const recipe = bot.recipesFor(bot.registry.itemsByName[task.item]?.id, null, 1, null)[0];
-    if (!recipe) {
-      throw new Error(`No recipe found for ${task.item}`);
-    }
-    
-    let crafted = 0;
-    
-    while (crafted < task.quantity) {
-      try {
-        await bot.craft(recipe, 1);
-        crafted++;
-        
-        // Update progress
-        const progress = (crafted / task.quantity) * 100;
-        this.taskQueue.updateProgress(task.id, progress);
-        
-      } catch (err) {
-        console.log(`[SUPPLY] Crafting failed: ${err.message}`);
-        break;
-      }
-    }
-    
-    return { crafted, target: task.quantity };
-  }
-  
-  async executeBuildTask(bot, task) {
-    console.log(`[SUPPLY] Building ${task.item}`);
-    
-    // For build tasks, we'll just mark as completed
-    // In a real implementation, this would load and build schematics
-    return { built: true, structure: task.item };
-  }
-  
-  async depositToHomeBase(bot, item, quantity) {
-    if (!config.homeBase.coords) {
-      console.log('[SUPPLY] No home base set, skipping deposit');
-      return;
-    }
-    
-    try {
-      // Go to home base
-      await safeGoTo(bot, config.homeBase.coords);
-      
-      // Drop items at home base
-      const itemStack = bot.inventory.items().find(i => i.name === item);
-      if (itemStack) {
-        const toDrop = Math.min(quantity, itemStack.count);
-        await bot.toss(itemStack.type, null, toDrop);
-        console.log(`[SUPPLY] Deposited ${toDrop}x ${item} at home base`);
-      }
-    } catch (err) {
-      console.log(`[SUPPLY] Failed to deposit ${item}: ${err.message}`);
-    }
-  }
-  
-  sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-  
-  getSupplyChainStatus() {
-    return {
-      queue: this.taskQueue.getQueueStatus(),
-      inventory: this.inventory.getInventoryReport(),
-      production: this.productionTracker.getReport(),
-      bots: {
-        total: this.activeBots.size,
-        idle: this.getIdleBots().length,
-        working: this.taskQueue.inProgress.length
-      }
-    };
-  }
-}
-
-// Global instances
-let globalSupplyChainManager = null;
-let httpServer = null;
-
-// Initialize HTTP server for supply chain dashboard
-function initializeSupplyChainServer() {
-  if (httpServer) {
-    console.log('[SUPPLY] HTTP server already running');
-    return;
-  }
-  
-  httpServer = http.createServer((req, res) => {
-    // Rate limiting
-    const clientIp = req.socket.remoteAddress;
-    if (!checkHttpRateLimit(clientIp, 100, 60000)) {
-      res.writeHead(429, { 'Content-Type': 'text/plain' });
-      res.end('Rate limited');
-      return;
-    }
-    
-    // CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    
-    if (req.method === 'OPTIONS') {
-      res.writeHead(200);
-      res.end();
-      return;
-    }
-    
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    
-    // Route handling
-    if (url.pathname === '/task-queue' && req.method === 'GET') {
-      serveTaskQueueDashboard(req, res);
-    } else if (url.pathname === '/api/task-queue' && req.method === 'GET') {
-      serveTaskQueueAPI(req, res);
-    } else if (url.pathname === '/api/task-queue/add' && req.method === 'POST') {
-      addTaskAPI(req, res);
-    } else if (url.pathname === '/api/supply-chain/status' && req.method === 'GET') {
-      serveSupplyChainStatusAPI(req, res);
-    } else {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Not found');
-    }
-  });
-  
-  httpServer.listen(8081, () => {
-    console.log('[SUPPLY] 🌐 Supply Chain Dashboard running on http://localhost:8081');
-    console.log('[SUPPLY] 📊 Task Queue UI: http://localhost:8081/task-queue');
-  });
-}
-
-function serveTaskQueueDashboard(req, res) {
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-  <title>Supply Chain - Task Queue</title>
-  <style>
-    body { font-family: Arial, sans-serif; background: #1a1a1a; color: #00ff00; padding: 20px; margin: 0; }
-    .container { max-width: 1200px; margin: 0 auto; }
-    .header { text-align: center; margin-bottom: 30px; }
-    .section { background: #2a2a2a; padding: 20px; margin: 20px 0; border-radius: 8px; border: 1px solid #00ff00; }
-    .task-form { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 10px; margin-bottom: 20px; }
-    .task-form input, .task-form select { padding: 10px; background: #333; border: 1px solid #00ff00; color: #00ff00; border-radius: 4px; }
-    .task-form button { padding: 10px 20px; background: #00ff00; color: #000; border: none; cursor: pointer; font-weight: bold; border-radius: 4px; }
-    .task-form button:hover { background: #00cc00; }
-    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
-    .stat-card { background: #333; padding: 15px; border-radius: 4px; text-align: center; border-left: 4px solid #00ff00; }
-    .stat-number { font-size: 2em; font-weight: bold; color: #00ff00; }
-    .stat-label { font-size: 0.9em; color: #888; margin-top: 5px; }
-    .task-list { max-height: 400px; overflow-y: auto; }
-    .task-item { background: #333; padding: 15px; margin: 10px 0; border-radius: 4px; border-left: 4px solid #00ff00; }
-    .task-item.in-progress { border-left-color: #ffaa00; }
-    .task-item.completed { border-left-color: #00aa00; opacity: 0.7; }
-    .task-item.failed { border-left-color: #ff0000; }
-    .priority-urgent { color: #ff0000; font-weight: bold; }
-    .priority-high { color: #ffaa00; }
-    .priority-normal { color: #00ff00; }
-    .priority-low { color: #888; }
-    .progress-bar { width: 100%; height: 8px; background: #222; border-radius: 4px; margin-top: 10px; overflow: hidden; }
-    .progress-fill { height: 100%; background: #00ff00; border-radius: 4px; transition: width 0.3s; }
-    .inventory-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
-    .inventory-item { background: #333; padding: 15px; border-radius: 4px; text-align: center; }
-    .inventory-item .count { font-size: 1.5em; font-weight: bold; color: #00ff00; }
-    .inventory-item .name { font-size: 0.9em; color: #ccc; margin-top: 5px; }
-    .refresh-btn { position: fixed; top: 20px; right: 20px; padding: 10px; background: #00ff00; color: #000; border: none; cursor: pointer; border-radius: 4px; font-weight: bold; }
-    .section h2 { margin-top: 0; color: #00ff00; }
-  </style>
-</head>
-<body>
-  <button class="refresh-btn" onclick="loadData()">🔄 Refresh</button>
-  
-  <div class="container">
-    <div class="header">
-      <h1>🔗 Supply Chain Manager</h1>
-      <p>Autonomous Bot Task Queue & Production System</p>
-    </div>
-    
-    <!-- Stats Overview -->
-    <div class="section">
-      <h2>📊 System Overview</h2>
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-number" id="queuedCount">0</div>
-          <div class="stat-label">Queued Tasks</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-number" id="progressCount">0</div>
-          <div class="stat-label">In Progress</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-number" id="completedCount">0</div>
-          <div class="stat-label">Completed</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-number" id="successRate">0%</div>
-          <div class="stat-label">Success Rate</div>
-        </div>
-      </div>
-    </div>
-    
-    <!-- Add Task Form -->
-    <div class="section">
-      <h2>➕ Add Task to Queue</h2>
-      <form class="task-form" id="addTaskForm">
-        <select name="type" required>
-          <option value="collect">Collect</option>
-          <option value="find">Find</option>
-          <option value="craft">Craft</option>
-          <option value="build">Build</option>
-        </select>
-        
-        <input type="text" name="item" placeholder="Item name" required />
-        <input type="number" name="quantity" placeholder="Quantity" value="64" min="1" required />
-        
-        <select name="priority">
-          <option value="normal">Normal</option>
-          <option value="low">Low</option>
-          <option value="high">High</option>
-          <option value="urgent">Urgent</option>
-        </select>
-        
-        <button type="submit">Add to Queue</button>
-      </form>
-    </div>
-    
-    <!-- Queued Tasks -->
-    <div class="section">
-      <h2>📋 Task Queue (<span id="queueCount">0</span>)</h2>
-      <div class="task-list" id="queuedTasks"></div>
-    </div>
-    
-    <!-- In Progress -->
-    <div class="section">
-      <h2>⚙️ In Progress (<span id="progressCount">0</span>)</h2>
-      <div class="task-list" id="progressTasks"></div>
-    </div>
-    
-    <!-- Completed Tasks -->
-    <div class="section">
-      <h2>✅ Recently Completed</h2>
-      <div class="task-list" id="completedTasks"></div>
-    </div>
-    
-    <!-- Global Inventory -->
-    <div class="section">
-      <h2>📦 Global Inventory</h2>
-      <div class="inventory-grid" id="inventory"></div>
-    </div>
-  </div>
-  
-  <script>
-    // Add task
-    document.getElementById('addTaskForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const formData = new FormData(e.target);
-      const task = {
-        type: formData.get('type'),
-        item: formData.get('item'),
-        quantity: parseInt(formData.get('quantity')),
-        priority: formData.get('priority')
-      };
-      
-      try {
-        const response = await fetch('/api/task-queue/add', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(task)
-        });
-        
-        if (response.ok) {
-          e.target.reset();
-          loadData();
-        } else {
-          alert('Failed to add task');
-        }
-      } catch (err) {
-        alert('Error adding task: ' + err.message);
-      }
-    });
-    
-    // Load data
-    async function loadData() {
-      try {
-        const res = await fetch('/api/supply-chain/status');
-        const data = await res.json();
-        
-        // Update stats
-        document.getElementById('queuedCount').textContent = data.queue.stats.totalQueued;
-        document.getElementById('progressCount').textContent = data.queue.stats.totalInProgress;
-        document.getElementById('completedCount').textContent = data.queue.stats.totalCompleted;
-        document.getElementById('successRate').textContent = data.queue.stats.successRate + '%';
-        
-        // Update queue counts
-        document.getElementById('queueCount').textContent = data.queue.queued.length;
-        document.getElementById('progressCount').textContent = data.queue.inProgress.length;
-        
-        // Render tasks
-        document.getElementById('queuedTasks').innerHTML = data.queue.queued.map(renderTask).join('');
-        document.getElementById('progressTasks').innerHTML = data.queue.inProgress.map(renderTask).join('');
-        document.getElementById('completedTasks').innerHTML = data.queue.completed.slice(-10).reverse().map(renderTask).join('');
-        
-        // Render inventory
-        document.getElementById('inventory').innerHTML = renderInventory(data.inventory.home_base);
-        
-      } catch (err) {
-        console.error('Failed to load data:', err);
-      }
-    }
-    
-    function renderTask(task) {
-      const elapsed = task.startedAt ? Math.floor((Date.now() - task.startedAt) / 1000) : 0;
-      const timeStr = elapsed > 0 ? \`<br/>⏱️ Time: \${formatTime(elapsed)}\` : '';
-      const assignedStr = task.assignedTo ? \`<br/>🤖 Assigned to: \${task.assignedTo}\` : '';
-      const progressStr = task.progress > 0 ? \`
-        <div class="progress-bar">
-          <div class="progress-fill" style="width: \${task.progress}%"></div>
-        </div>
-      \` : '';
-      
-      return \`
-        <div class="task-item \${task.status}">
-          <div>
-            <span class="priority-\${task.priority}">[\${task.priority.toUpperCase()}]</span>
-            <strong>\${task.type}</strong>: \${task.quantity}x \${task.item}
-            \${assignedStr}
-            \${timeStr}
-          </div>
-          \${progressStr}
-        </div>
-      \`;
-    }
-    
-    function renderInventory(inv) {
-      const items = [];
-      for (const [item, count] of Object.entries(inv || {})) {
-        if (count > 0) {
-          items.push(\`
-            <div class="inventory-item">
-              <div class="count">\${count}</div>
-              <div class="name">\${item.replace(/_/g, ' ')}</div>
-            </div>
-          \`);
-        }
-      }
-      
-      if (items.length === 0) {
-        return '<p style="text-align: center; color: #888;">No items in inventory</p>';
-      }
-      
-      return items.join('');
-    }
-    
-    function formatTime(seconds) {
-      if (seconds < 60) return seconds + 's';
-      if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
-      return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm';
-    }
-    
-    // Auto-refresh every 3 seconds
-    setInterval(loadData, 3000);
-    loadData();
-  </script>
-</body>
-</html>`;
-  
-  res.writeHead(200, { 'Content-Type': 'text/html' });
-  res.end(html);
-}
-
-function serveTaskQueueAPI(req, res) {
-  if (!globalSupplyChainManager) {
-    res.writeHead(503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Supply chain manager not initialized' }));
-    return;
-  }
-  
-  const status = globalSupplyChainManager.taskQueue.getQueueStatus();
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(status));
-}
-
-function addTaskAPI(req, res) {
-  if (!globalSupplyChainManager) {
-    res.writeHead(503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Supply chain manager not initialized' }));
-    return;
-  }
-  
-  let body = '';
-  req.on('data', chunk => {
-    body += chunk.toString();
-  });
-  
-  req.on('end', () => {
-    try {
-      const task = JSON.parse(body);
-      const taskId = globalSupplyChainManager.taskQueue.addTask(task);
-      
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, taskId }));
-    } catch (err) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message }));
-    }
-  });
-}
-
-function serveSupplyChainStatusAPI(req, res) {
-  if (!globalSupplyChainManager) {
-    res.writeHead(503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Supply chain manager not initialized' }));
-    return;
-  }
-  
-  const status = globalSupplyChainManager.getSupplyChainStatus();
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(status));
-}
-
-// Start HTTP rate limit cleanup
-safeSetInterval(() => {
-  const now = Date.now();
-  for (const [ip, record] of httpRateLimits.entries()) {
-    if (now > record.resetTime) {
-      httpRateLimits.delete(ip);
-    }
-  }
-}, 60000, 'http-rate-limit-cleanup');
-
-setTimeout(showMenu, 1000);
-
-// === GRACEFUL SHUTDOWN ===
-process.on('SIGINT', () => {
-  console.log('\n\n[SHUTDOWN] Saving data...');
-  
-  // Save supply chain data
-  if (globalSupplyChainManager) {
-    globalSupplyChainManager.inventory.save();
-    globalSupplyChainManager.productionTracker.save();
-    console.log('[SUPPLY] Saved inventory and production data');
-  }
-  
-  // Stop supply chain processing
-  if (globalSupplyChainManager) {
-    globalSupplyChainManager.processing = false;
-  }
-  
-  if (globalBot) globalBot.quit();
-  process.exit(0);
-});
