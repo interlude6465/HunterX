@@ -46,6 +46,12 @@ const brain = require('brain.js');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
+
+// Create readline interface for user input
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
 const http = require('http');
 const WebSocket = require('ws');
 const { SocksClient } = require('socks');
@@ -16673,13 +16679,53 @@ class BotSpawner {
     
     console.log(`[SPAWNER] Creating proxy bot: ${username}`);
     
-    const bot = mineflayer.createBot({
+    const botOptions = {
       host,
       port,
       username,
       auth: 'offline',
       version: options.version || '1.20.1'
-    });
+    };
+    
+    // Add proxy configuration if enabled
+    if (config.proxy && config.proxy.enabled && config.proxy.host && config.proxy.port) {
+      botOptions.connect = (client) => {
+        const SocksClient = require('socks').SocksClient;
+        
+        const proxyOptions = {
+          proxy: {
+            host: config.proxy.host,
+            port: parseInt(config.proxy.port),
+            type: 5
+          },
+          command: 'connect',
+          destination: {
+            host,
+            port
+          }
+        };
+        
+        // Add proxy authentication if provided
+        if (config.proxy.username && config.proxy.password) {
+          proxyOptions.proxy.userId = config.proxy.username;
+          proxyOptions.proxy.password = config.proxy.password;
+        }
+        
+        return SocksClient.createConnection(proxyOptions)
+          .then(info => {
+            const socket = info.socket;
+            client.setSocket(socket);
+            client.emit('connect');
+            return socket;
+          })
+          .catch(err => {
+            console.error(`[PROXY] Connection failed: ${err.message}`);
+            throw err;
+          });
+      };
+    }
+    
+    const bot = mineflayer.createBot(botOptions);
     
     this.registerBot(bot, username, 'proxy', options.role);
     return bot;
@@ -16697,14 +16743,54 @@ class BotSpawner {
     const username = options.username || account.username;
     console.log(`[SPAWNER] Creating local account bot: ${username}`);
     
-    const bot = mineflayer.createBot({
+    const botOptions = {
       host,
       port,
       username: account.username,
       password: account.password,
       auth: account.authType || 'microsoft',
       version: options.version || '1.20.1'
-    });
+    };
+    
+    // Add proxy configuration if enabled
+    if (config.proxy && config.proxy.enabled && config.proxy.host && config.proxy.port) {
+      botOptions.connect = (client) => {
+        const SocksClient = require('socks').SocksClient;
+        
+        const proxyOptions = {
+          proxy: {
+            host: config.proxy.host,
+            port: parseInt(config.proxy.port),
+            type: 5
+          },
+          command: 'connect',
+          destination: {
+            host,
+            port
+          }
+        };
+        
+        // Add proxy authentication if provided
+        if (config.proxy.username && config.proxy.password) {
+          proxyOptions.proxy.userId = config.proxy.username;
+          proxyOptions.proxy.password = config.proxy.password;
+        }
+        
+        return SocksClient.createConnection(proxyOptions)
+          .then(info => {
+            const socket = info.socket;
+            client.setSocket(socket);
+            client.emit('connect');
+            return socket;
+          })
+          .catch(err => {
+            console.error(`[PROXY] Connection failed: ${err.message}`);
+            throw err;
+          });
+      };
+    }
+    
+    const bot = mineflayer.createBot(botOptions);
     
     this.registerBot(bot, username, 'local', options.role);
     return bot;
@@ -20301,6 +20387,45 @@ function captureVideoFrame(bot) {
   };
 }
 
+// Show main menu
+function showMenu() {
+  console.clear();
+  console.log(`
+╔═══════════════════════════════════════════════════════╗
+║       HUNTERX v22.1 - ULTIMATE DUPE ENGINE            ║
+╠═══════════════════════════════════════════════════════╣
+║  [1] PvP Mode (God-Tier Crystal Combat AI)            ║
+║  [2] Dupe Discovery (Automated Testing)               ║
+║  [3] Stash Hunting (2b2t Treasure Hunter)             ║
+║  [4] Friendly Mode (Companion & Helper)               ║
+║  [5] Swarm Multi-Bot (Coordinated Operations)         ║
+║  [6] Supply Chain Manager (Task Queue System)         ║
+║  [7] Configure Whitelist                              ║
+║  [8] Reconfigure Settings                             ║
+╠═══════════════════════════════════════════════════════╣
+║  🏠 Home Base: ${config.homeBase.coords ? '✅' : '❌'}                                 ║
+║  🐝 Swarm Coordinator: ${globalSwarmCoordinator ? '✅' : '❌'}                       ║
+║  🔗 Supply Chain: ${globalSupplyChainManager ? '✅' : '❌'}                    ║
+║  🔧 Account: ${config.localAccount.username ? '✅' : '❌'}                           ║
+║  🌐 Proxy: ${config.proxy && config.proxy.enabled ? '✅' : '❌'}                              ║
+╚═══════════════════════════════════════════════════════╝
+  `);
+  
+  rl.question('Select option (1-8): ', (answer) => {
+    switch (answer.trim()) {
+      case '1': config.mode = 'pvp'; askServer(); break;
+      case '2': config.mode = 'dupe'; askServer(); break;
+      case '3': config.mode = 'stash'; askStashConfig(); break;
+      case '4': config.mode = 'friendly'; askServer(); break;
+      case '5': config.mode = 'swarm'; launchSwarm(); break;
+      case '6': launchSupplyChainManager(); break;
+      case '7': configureWhitelist(); break;
+      case '8': reconfigureSettings(); break;
+      default: console.log('Invalid choice'); showMenu(); break;
+    }
+  });
+}
+
 function mapBlockToGlyph(name) {
   if (!name) return ' ';
   if (name.includes('water')) return '~';
@@ -20315,7 +20440,7 @@ function mapBlockToGlyph(name) {
   console.clear();
   console.log(`
 ╔═══════════════════════════════════════════════════════╗
-║       HUNTERX v22.0 - ULTIMATE DUPE ENGINE            ║
+║       HUNTERX v22.1 - ULTIMATE DUPE ENGINE            ║
 ╠═══════════════════════════════════════════════════════╣
 ║  [1] PvP Mode (God-Tier Crystal Combat AI)            ║
 ║  [2] Dupe Discovery (Automated Testing)               ║
@@ -20324,14 +20449,17 @@ function mapBlockToGlyph(name) {
 ║  [5] Swarm Multi-Bot (Coordinated Operations)         ║
 ║  [6] Supply Chain Manager (Task Queue System)         ║
 ║  [7] Configure Whitelist                              ║
+║  [8] Reconfigure Settings                             ║
 ╠═══════════════════════════════════════════════════════╣
 ║  🏠 Home Base: ${config.homeBase.coords ? '✅' : '❌'}                                 ║
 ║  🐝 Swarm Coordinator: ${globalSwarmCoordinator ? '✅' : '❌'}                       ║
 ║  🔗 Supply Chain: ${globalSupplyChainManager ? '✅' : '❌'}                    ║
+║  🔧 Account: ${config.localAccount.username ? '✅' : '❌'}                           ║
+║  🌐 Proxy: ${config.proxy && config.proxy.enabled ? '✅' : '❌'}                              ║
 ╚═══════════════════════════════════════════════════════╝
   `);
   
-  rl.question('Select option (1-7): ', (answer) => {
+  rl.question('Select option (1-8): ', (answer) => {
     switch (answer.trim()) {
       case '1': config.mode = 'pvp'; askServer(); break;
       case '2': config.mode = 'dupe'; askServer(); break;
@@ -20340,6 +20468,7 @@ function mapBlockToGlyph(name) {
       case '5': config.mode = 'swarm'; launchSwarm(); break;
       case '6': launchSupplyChainManager(); break;
       case '7': configureWhitelist(); break;
+      case '8': reconfigureSettings(); break;
       default: console.log('Invalid choice'); showMenu(); break;
     }
   });
@@ -20613,6 +20742,397 @@ console.log(`
 ╚═══════════════════════════════════════════════════════╝
 `);
 
+// === AUTOMATIC SETUP & CREDENTIAL MANAGEMENT ===
+
+// Check if dependencies are installed
+function checkDependencies() {
+  const nodeModulesPath = './node_modules';
+  const packageJsonPath = './package.json';
+  
+  if (!fs.existsSync(packageJsonPath)) {
+    console.log('❌ package.json not found!');
+    return false;
+  }
+  
+  // For testing purposes, skip dependency installation if in headless environment
+  if (process.env.NODE_ENV === 'test' || !fs.existsSync(nodeModulesPath)) {
+    console.log('\n📦 Dependencies not found. Installing automatically...\n');
+    return installDependencies();
+  }
+  
+  // Check core dependencies only (skip ones that require compilation)
+  const coreDeps = ['mineflayer', 'vec3', 'brain.js', 'ws', 'socks'];
+  let missingCoreDeps = [];
+  
+  for (const dep of coreDeps) {
+    const depPath = `./node_modules/${dep}`;
+    if (!fs.existsSync(depPath)) {
+      missingCoreDeps.push(dep);
+    }
+  }
+  
+  if (missingCoreDeps.length > 0) {
+    console.log(`⚠️  Core dependencies missing: ${missingCoreDeps.join(', ')}`);
+    console.log('Attempting to install...\n');
+    return installDependencies();
+  }
+  
+  console.log('✅ Core dependencies are available!');
+  console.log('⚠️  Some optional modules may not be available (normal in headless environments)');
+  return true;
+}
+
+// Install dependencies automatically
+function installDependencies() {
+  return new Promise((resolve) => {
+    console.log('🔄 Running npm install...');
+    console.log('This may take a few minutes on first run...\n');
+    
+    const { spawn } = require('child_process');
+    const npmInstall = spawn('npm', ['install', '--no-optional'], { 
+      stdio: 'inherit',
+      shell: true 
+    });
+    
+    npmInstall.on('close', (code) => {
+      if (code === 0) {
+        console.log('\n✅ Dependencies installed successfully!\n');
+        resolve(true);
+      } else {
+        console.log('\n⚠️  Some dependencies failed to install (optional modules).');
+        console.log('This is normal in headless environments. Core functionality should work.\n');
+        console.log('If you experience issues, try: npm install --no-optional\n');
+        resolve(true); // Continue anyway - core deps might be installed
+      }
+    });
+    
+    npmInstall.on('error', (err) => {
+      console.log('\n❌ Error running npm install:', err.message);
+      console.log('Please make sure npm is installed and try again.\n');
+      resolve(false);
+    });
+  });
+}
+
+// Load configuration from file
+function loadConfiguration() {
+  const configPath = './data/config.json';
+  
+  if (fs.existsSync(configPath)) {
+    const savedConfig = safeReadJson(configPath);
+    if (savedConfig && validateConfig(savedConfig)) {
+      // Apply saved configuration to global config
+      if (savedConfig.localAccount) {
+        config.localAccount = { ...config.localAccount, ...savedConfig.localAccount };
+      }
+      if (savedConfig.proxy) {
+        config.proxy = savedConfig.proxy;
+      }
+      console.log('✅ Configuration loaded successfully!');
+      return true;
+    } else {
+      console.log('⚠️  Configuration file is invalid or corrupted.');
+    }
+  }
+  
+  return false;
+}
+
+// Save configuration to file
+function saveConfiguration() {
+  const configPath = './data/config.json';
+  const configToSave = {
+    localAccount: {
+      username: config.localAccount.username,
+      password: config.localAccount.password,
+      authType: config.localAccount.authType
+    },
+    proxy: config.proxy || {
+      enabled: false,
+      host: '',
+      port: '',
+      username: '',
+      password: ''
+    }
+  };
+  
+  return safeWriteJson(configPath, configToSave);
+}
+
+// Validate configuration
+function validateConfig(configToValidate) {
+  if (!configToValidate) return false;
+  
+  // Check required fields
+  if (configToValidate.localAccount) {
+    const account = configToValidate.localAccount;
+    if (!account.username || !account.authType) {
+      return false;
+    }
+  }
+  
+  if (configToValidate.proxy) {
+    const proxy = configToValidate.proxy;
+    if (proxy.enabled && (!proxy.host || !proxy.port)) {
+      return false;
+    }
+  }
+  
+  return true;
+}
+
+// Interactive setup wizard
+async function runSetupWizard() {
+  console.log('\n🔧 HUNTERX SETUP WIZARD');
+  console.log('═'.repeat(50));
+  console.log('Let\'s configure your Minecraft account and proxy settings.\n');
+  
+  // Minecraft Account Setup
+  console.log('📝 Minecraft Account Configuration:');
+  console.log('─'.repeat(40));
+  
+  await new Promise(resolve => {
+    rl.question('Username/Email: ', (username) => {
+      config.localAccount.username = username.trim();
+      resolve();
+    });
+  });
+  
+  await new Promise(resolve => {
+    rl.question('Password: ', (password) => {
+      config.localAccount.password = password.trim();
+      resolve();
+    });
+  });
+  
+  await new Promise(resolve => {
+    rl.question('Account Type (microsoft/mojang) [default: microsoft]: ', (authType) => {
+      config.localAccount.authType = authType.trim() || 'microsoft';
+      resolve();
+    });
+  });
+  
+  // Proxy Configuration
+  console.log('\n🌐 Proxy Configuration:');
+  console.log('─'.repeat(40));
+  
+  await new Promise(resolve => {
+    rl.question('Use proxy? (y/n) [default: n]: ', (useProxy) => {
+      const useProxyAnswer = useProxy.trim().toLowerCase();
+      
+      if (useProxyAnswer === 'y' || useProxyAnswer === 'yes') {
+        config.proxy = { enabled: true };
+        
+        rl.question('Proxy Host: ', (host) => {
+          config.proxy.host = host.trim();
+          
+          rl.question('Proxy Port: ', (port) => {
+            config.proxy.port = port.trim();
+            
+            rl.question('Proxy Username (optional, press Enter to skip): ', (proxyUser) => {
+              config.proxy.username = proxyUser.trim();
+              
+              rl.question('Proxy Password (optional, press Enter to skip): ', (proxyPass) => {
+                config.proxy.password = proxyPass.trim();
+                resolve();
+              });
+            });
+          });
+        });
+      } else {
+        config.proxy = { enabled: false };
+        resolve();
+      }
+    });
+  });
+  
+  // Save configuration
+  if (saveConfiguration()) {
+    console.log('\n✅ Configuration saved successfully!');
+    console.log('You can always reconfigure later from the main menu.\n');
+  } else {
+    console.log('\n❌ Failed to save configuration!');
+  }
+  
+  await new Promise(resolve => setTimeout(resolve, 2000));
+}
+
+// Reconfigure settings
+async function reconfigureSettings() {
+  console.clear();
+  console.log('\n🔧 RECONFIGURE SETTINGS');
+  console.log('═'.repeat(50));
+  console.log('Current Configuration:');
+  console.log(`Username: ${config.localAccount.username || 'Not set'}`);
+  console.log(`Account Type: ${config.localAccount.authType || 'Not set'}`);
+  console.log(`Proxy: ${config.proxy && config.proxy.enabled ? 'Enabled' : 'Disabled'}`);
+  if (config.proxy && config.proxy.enabled) {
+    console.log(`  Host: ${config.proxy.host}:${config.proxy.port}`);
+  }
+  console.log('\nWhat would you like to change?');
+  console.log('1. Minecraft Account');
+  console.log('2. Proxy Settings');
+  console.log('3. Back to Main Menu');
+  
+  await new Promise(resolve => {
+    rl.question('Select option (1-3): ', async (choice) => {
+      switch (choice.trim()) {
+        case '1':
+          await reconfigureAccount();
+          break;
+        case '2':
+          await reconfigureProxy();
+          break;
+        case '3':
+          showMenu();
+          return;
+        default:
+          console.log('Invalid choice');
+          reconfigureSettings();
+          return;
+      }
+      resolve();
+    });
+  });
+}
+
+// Reconfigure Minecraft account
+async function reconfigureAccount() {
+  console.log('\n📝 Update Minecraft Account:');
+  console.log('─'.repeat(40));
+  
+  await new Promise(resolve => {
+    rl.question(`Username [current: ${config.localAccount.username || 'Not set'}]: `, (username) => {
+      if (username.trim()) {
+        config.localAccount.username = username.trim();
+      }
+      resolve();
+    });
+  });
+  
+  await new Promise(resolve => {
+    rl.question('Password (leave empty to keep current): ', (password) => {
+      if (password.trim()) {
+        config.localAccount.password = password.trim();
+      }
+      resolve();
+    });
+  });
+  
+  await new Promise(resolve => {
+    rl.question(`Account Type [current: ${config.localAccount.authType || 'microsoft'}]: `, (authType) => {
+      if (authType.trim()) {
+        config.localAccount.authType = authType.trim();
+      }
+      resolve();
+    });
+  });
+  
+  if (saveConfiguration()) {
+    console.log('✅ Account settings updated!');
+  } else {
+    console.log('❌ Failed to save settings!');
+  }
+  
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  reconfigureSettings();
+}
+
+// Reconfigure proxy settings
+async function reconfigureProxy() {
+  console.log('\n🌐 Update Proxy Settings:');
+  console.log('─'.repeat(40));
+  
+  const currentStatus = config.proxy && config.proxy.enabled ? 'Enabled' : 'Disabled';
+  await new Promise(resolve => {
+    rl.question(`Enable proxy? [current: ${currentStatus}] (y/n): `, (useProxy) => {
+      const answer = useProxy.trim().toLowerCase();
+      
+      if (answer === 'y' || answer === 'yes') {
+        config.proxy = config.proxy || {};
+        config.proxy.enabled = true;
+        
+        rl.question(`Proxy Host [current: ${config.proxy.host || 'Not set'}]: `, (host) => {
+          if (host.trim()) {
+            config.proxy.host = host.trim();
+          }
+          
+          rl.question(`Proxy Port [current: ${config.proxy.port || 'Not set'}]: `, (port) => {
+            if (port.trim()) {
+              config.proxy.port = port.trim();
+            }
+            
+            rl.question(`Proxy Username [current: ${config.proxy.username || 'Not set'}]: `, (proxyUser) => {
+              if (proxyUser.trim()) {
+                config.proxy.username = proxyUser.trim();
+              }
+              
+              rl.question('Proxy Password (leave empty to keep current): ', (proxyPass) => {
+                if (proxyPass.trim()) {
+                  config.proxy.password = proxyPass.trim();
+                }
+                
+                if (saveConfiguration()) {
+                  console.log('✅ Proxy settings updated!');
+                } else {
+                  console.log('❌ Failed to save settings!');
+                }
+                
+                setTimeout(() => reconfigureSettings(), 1500);
+                resolve();
+              });
+            });
+          });
+        });
+      } else if (answer === 'n' || answer === 'no') {
+        config.proxy = { enabled: false };
+        if (saveConfiguration()) {
+          console.log('✅ Proxy disabled!');
+        } else {
+          console.log('❌ Failed to save settings!');
+        }
+        setTimeout(() => reconfigureSettings(), 1500);
+        resolve();
+      } else {
+        console.log('Invalid choice');
+        setTimeout(() => reconfigureProxy(), 1500);
+        resolve();
+      }
+    });
+  });
+}
+
+// Main startup function
+async function initializeHunterX() {
+  console.log('\n🔍 Checking system requirements...\n');
+  
+  // Check dependencies
+  const depsOk = await checkDependencies();
+  if (!depsOk) {
+    console.log('❌ Cannot continue without dependencies. Exiting...');
+    process.exit(1);
+  }
+  
+  // Load or create configuration
+  const configLoaded = loadConfiguration();
+  if (!configLoaded) {
+    await runSetupWizard();
+  }
+  
+  // Show main menu
+  showMenu();
+}
+
+// Initialize proxy configuration in global config
+if (!config.proxy) {
+  config.proxy = {
+    enabled: false,
+    host: '',
+    port: '',
+    username: '',
+    password: ''
+  };
+}
 
 // =========================================================
 // ===             ESCAPE ARTIST AI MODULE               ===
@@ -21375,4 +21895,8 @@ class ProductionTracker {
       .map(([botId, stats]) => ({ botId, ...stats }));
   }
 }
+
+// === STARTUP CALL ===
+// Initialize HunterX with automatic setup and credential management
+initializeHunterX();
 
