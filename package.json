@@ -3,8 +3,12 @@
   "version": "22.0.0",
   "description": "Advanced Minecraft automation bot with PvP, dupe testing, stash hunting, and schematic building capabilities",
   "main": "HunterX.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
-    "start": "node HunterX.js"
+    "start": "node HunterX.js",
+    "install-deps": "npm install --no-optional"
   },
   "keywords": [
     "minecraft",
@@ -18,9 +22,16 @@
     "mineflayer-pvp": "^1.0.0",
     "@miner-org/mineflayer-baritone": "^4.1.1",
     "vec3": "^0.1.8",
-    "brain.js": "^2.0.0-beta.24",
     "ws": "^8.0.0",
     "socks": "^2.7.0",
     "prismarine-nbt": "^2.0.0"
+  },
+  "optionalDependencies": {
+    "brain.js": "^2.0.0-beta.24"
+  },
+  "optionalDependenciesMeta": {
+    "brain.js": {
+      "optional": true
+    }
   }
 }

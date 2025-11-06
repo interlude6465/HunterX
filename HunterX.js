@@ -42,7 +42,18 @@ const pvp = require('mineflayer-pvp').plugin;
 const pathfinder = require('@miner-org/mineflayer-baritone').loader;
 const goals = require('@miner-org/mineflayer-baritone').goals;
 const Vec3 = require('vec3').Vec3;
-const brain = require('brain.js');
+
+// Neural network support with graceful fallback
+let brain = null;
+let neuralNetworksAvailable = false;
+try {
+  brain = require('brain.js');
+  neuralNetworksAvailable = true;
+  console.log('[NEURAL] Brain.js loaded successfully');
+} catch (err) {
+  console.log('[NEURAL] Brain.js not available, neural features disabled:', err.message);
+  console.log('[NEURAL] This is normal on headless systems or when gl package fails to build');
+}
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
@@ -442,12 +453,13 @@ const config = {
     keywords: ['lifesteal']
   },
   
-  // Neural networks
+  // Neural networks (with fallback support)
   neural: {
-    combat: new brain.NeuralNetwork({ hiddenLayers: [256, 128, 64] }),
-    placement: new brain.NeuralNetwork({ hiddenLayers: [128, 64, 32] }),
-    dupe: new brain.recurrent.LSTM({ hiddenLayers: [256, 128, 64] }),
-    conversation: new brain.recurrent.LSTM({ hiddenLayers: [128, 64] })
+    combat: neuralNetworksAvailable ? new brain.NeuralNetwork({ hiddenLayers: [256, 128, 64] }) : null,
+    placement: neuralNetworksAvailable ? new brain.NeuralNetwork({ hiddenLayers: [128, 64, 32] }) : null,
+    dupe: neuralNetworksAvailable ? new brain.recurrent.LSTM({ hiddenLayers: [256, 128, 64] }) : null,
+    conversation: neuralNetworksAvailable ? new brain.recurrent.LSTM({ hiddenLayers: [128, 64] }) : null,
+    available: neuralNetworksAvailable
   },
   
   // Conversation
@@ -671,20 +683,67 @@ const config = {
 };
 
 // === LOAD MODELS ===
-['combat', 'placement', 'dupe', 'conversation'].forEach(domain => {
-  const modelPath = `./models/${domain}_model.json`;
-  try {
-    if (fs.existsSync(modelPath)) {
-      const modelData = safeReadJson(modelPath);
-      if (modelData) {
-        config.neural[domain].fromJSON(modelData);
-        console.log(`[NEURAL] Loaded ${domain} model`);
+if (neuralNetworksAvailable) {
+  ['combat', 'placement', 'dupe', 'conversation'].forEach(domain => {
+    const modelPath = `./models/${domain}_model.json`;
+    try {
+      if (fs.existsSync(modelPath)) {
+        const modelData = safeReadJson(modelPath);
+        if (modelData && config.neural[domain]) {
+          config.neural[domain].fromJSON(modelData);
+          console.log(`[NEURAL] Loaded ${domain} model`);
+        }
       }
+    } catch (err) {
+      console.error(`[NEURAL] Failed to load ${domain} model: ${err.message}`);
     }
-  } catch (err) {
-    console.error(`[NEURAL] Failed to load ${domain} model: ${err.message}`);
+  });
+} else {
+  console.log('[NEURAL] Skipping model loading - neural networks not available');
+}
+
+// === NEURAL NETWORK FALLBACK HELPERS ===
+function safeNeuralPredict(network, input, fallbackOutput = null) {
+  if (!neuralNetworksAvailable || !network) {
+    return fallbackOutput || Math.random(); // Simple random fallback
   }
-});
+  
+  try {
+    return network.run(input);
+  } catch (err) {
+    console.log('[NEURAL] Prediction failed, using fallback:', err.message);
+    return fallbackOutput || Math.random();
+  }
+}
+
+function safeNeuralTrain(network, data, options = {}) {
+  if (!neuralNetworksAvailable || !network) {
+    console.log('[NEURAL] Training skipped - neural networks not available');
+    return Promise.resolve();
+  }
+  
+  try {
+    return network.train(data, options);
+  } catch (err) {
+    console.log('[NEURAL] Training failed:', err.message);
+    return Promise.resolve();
+  }
+}
+
+function safeNeuralSave(network, filePath) {
+  if (!neuralNetworksAvailable || !network) {
+    console.log(`[NEURAL] Save skipped - neural networks not available: ${filePath}`);
+    return false;
+  }
+  
+  try {
+    const jsonData = network.toJSON();
+    return safeWriteJson(filePath, jsonData);
+  } catch (err) {
+    console.log(`[NEURAL] Save failed: ${filePath} - ${err.message}`);
+    return false;
+  }
+}
 
 // Load whitelist with auto-migration from legacy format
 if (fs.existsSync('./data/whitelist.json')) {
@@ -7659,7 +7718,7 @@ class CrystalPvP {
     this.maxReactionTime = 150; // ms - still very fast
     this.perfectTimingChance = 0.85; // 85% perfect plays
     
-    // Neural network for crystal placement
+    // Neural network for crystal placement (if available)
     this.neuralNet = config.neural.placement;
   }
   
@@ -8095,7 +8154,7 @@ class CrystalPvP {
     
     // Get strategy from neural network
     try {
-      const output = this.neuralNet.run(input);
+      const output = safeNeuralPredict(this.neuralNet, input, 0.5);
       const strategyScore = Array.isArray(output) ? output[0] : output;
       
       // Determine strategy
@@ -14785,16 +14844,13 @@ class DupeTestingFramework {
         return;
       }
       
-      config.neural.dupe.train(trainingData, {
+      await safeNeuralTrain(config.neural.dupe, trainingData, {
         iterations: 100,
         errorThresh: 0.005
       });
-      
+
       // Save updated model
-      safeWriteFile(
-        './models/dupe_model.json',
-        JSON.stringify(config.neural.dupe.toJSON())
-      );
+      safeNeuralSave(config.neural.dupe, './models/dupe_model.json');
     } catch (err) {
       console.log('[DUPE TEST] Neural network training failed:', err.message);
     }
@@ -16413,18 +16469,15 @@ class UltimateDupeEngine {
       }
       
       // Train LSTM network
-      await config.neural.dupe.train(trainingData, {
+      await safeNeuralTrain(config.neural.dupe, trainingData, {
         iterations: 50,
         errorThresh: 0.005,
         log: false
       });
-      
+
       // Save model periodically
       if (this.stats.totalTests % 20 === 0) {
-        safeWriteFile(
-          './models/dupe_model.json',
-          JSON.stringify(config.neural.dupe.toJSON())
-        );
+        safeNeuralSave(config.neural.dupe, './models/dupe_model.json');
       }
     } catch (err) {
       console.log('[NEURAL TRAINING] Error:', err.message);
@@ -20717,7 +20770,7 @@ console.log(`
 ╔═══════════════════════════════════════════════════════╗
 ║       HUNTERX v22.1 - INITIALIZING                    ║
 ╠═══════════════════════════════════════════════════════╣
-║  ✅ Neural networks loaded (Enhanced LSTM)            ║
+║  ${neuralNetworksAvailable ? '✅' : '⚠️'} Neural networks ${neuralNetworksAvailable ? 'loaded (Enhanced LSTM)' : 'disabled (fallback mode)'}            ║
 ║  ✅ God-Tier Crystal PvP System                       ║
 ║  ✅ Combat AI ready                                   ║
 ║  ✅ Conversation system active                        ║
@@ -21722,6 +21775,193 @@ class TaskQueue {
           (this.completed.filter(t => t.status === 'completed').length / this.completed.length * 100).toFixed(1) : 0
       }
     };
+  }
+}
+
+// === SUPPLY CHAIN MANAGER ===
+
+class SupplyChainManager {
+  constructor() {
+    this.activeBots = new Map();
+    this.taskQueue = new TaskQueue();
+    this.globalInventory = new GlobalInventory();
+    this.productionTracker = new ProductionTracker();
+    this.isProcessing = false;
+    this.stats = {
+      tasksCompleted: 0,
+      itemsCollected: 0,
+      botsActive: 0,
+      uptime: Date.now()
+    };
+    
+    console.log('[SUPPLY] Supply Chain Manager initialized');
+  }
+  
+  registerBot(bot) {
+    if (!bot || !bot.username) {
+      console.log('[SUPPLY] Invalid bot provided for registration');
+      return false;
+    }
+    
+    this.activeBots.set(bot.username, {
+      bot: bot,
+      status: 'idle',
+      currentTask: null,
+      stats: {
+        tasksCompleted: 0,
+        itemsCollected: 0,
+        lastActivity: Date.now()
+      }
+    });
+    
+    this.stats.botsActive = this.activeBots.size;
+    console.log(`[SUPPLY] Bot registered: ${bot.username}`);
+    
+    // Assign task if available
+    this.assignTaskToBot(bot.username);
+    return true;
+  }
+  
+  unregisterBot(botUsername) {
+    if (this.activeBots.has(botUsername)) {
+      const botInfo = this.activeBots.get(botUsername);
+      
+      // Return current task to queue if exists
+      if (botInfo.currentTask) {
+        this.taskQueue.returnTask(botInfo.currentTask);
+      }
+      
+      this.activeBots.delete(botUsername);
+      this.stats.botsActive = this.activeBots.size;
+      console.log(`[SUPPLY] Bot unregistered: ${botUsername}`);
+    }
+  }
+  
+  assignTaskToBot(botUsername) {
+    const botInfo = this.activeBots.get(botUsername);
+    if (!botInfo || botInfo.status !== 'idle') {
+      return false;
+    }
+    
+    const task = this.taskQueue.getNextTask(botUsername);
+    if (!task) {
+      return false;
+    }
+    
+    botInfo.currentTask = task;
+    botInfo.status = 'working';
+    
+    console.log(`[SUPPLY] Assigned task ${task.id} to bot ${botUsername}`);
+    
+    // Execute task (simplified for now)
+    this.executeTask(botUsername, task);
+    return true;
+  }
+  
+  executeTask(botUsername, task) {
+    const botInfo = this.activeBots.get(botUsername);
+    if (!botInfo) return;
+    
+    // Simulate task execution
+    setTimeout(() => {
+      this.completeTask(botUsername, task.id, true);
+    }, Math.random() * 10000 + 5000); // 5-15 seconds
+  }
+  
+  completeTask(botUsername, taskId, success = true) {
+    const botInfo = this.activeBots.get(botUsername);
+    if (!botInfo || !botInfo.currentTask || botInfo.currentTask.id !== taskId) {
+      return;
+    }
+    
+    const task = botInfo.currentTask;
+    
+    if (success) {
+      this.taskQueue.completeTask(taskId);
+      this.stats.tasksCompleted++;
+      botInfo.stats.tasksCompleted++;
+      
+      // Update inventory
+      this.globalInventory.add(task.item, task.quantity);
+      this.stats.itemsCollected += task.quantity;
+      botInfo.stats.itemsCollected += task.quantity;
+      
+      console.log(`[SUPPLY] Task completed: ${task.item} x${task.quantity} by ${botUsername}`);
+    } else {
+      this.taskQueue.failTask(taskId);
+      console.log(`[SUPPLY] Task failed: ${task.id} by ${botUsername}`);
+    }
+    
+    botInfo.currentTask = null;
+    botInfo.status = 'idle';
+    botInfo.stats.lastActivity = Date.now();
+    
+    // Assign next task
+    this.assignTaskToBot(botUsername);
+  }
+  
+  processQueue() {
+    if (this.isProcessing) {
+      return;
+    }
+    
+    this.isProcessing = true;
+    console.log('[SUPPLY] Starting queue processor');
+    
+    const processInterval = setInterval(() => {
+      // Try to assign tasks to idle bots
+      for (const [botUsername, botInfo] of this.activeBots) {
+        if (botInfo.status === 'idle') {
+          this.assignTaskToBot(botUsername);
+        }
+      }
+      
+      // Clean up inactive bots
+      this.cleanupInactiveBots();
+      
+    }, 5000); // Check every 5 seconds
+    
+    // Store interval for cleanup
+    if (typeof safeSetInterval === 'function') {
+      safeSetInterval(() => this.processQueue(), 30000, 'supply_chain_processor');
+    }
+  }
+  
+  cleanupInactiveBots() {
+    const now = Date.now();
+    const inactiveThreshold = 300000; // 5 minutes
+    
+    for (const [botUsername, botInfo] of this.activeBots) {
+      if (now - botInfo.stats.lastActivity > inactiveThreshold) {
+        console.log(`[SUPPLY] Removing inactive bot: ${botUsername}`);
+        this.unregisterBot(botUsername);
+      }
+    }
+  }
+  
+  getStatus() {
+    return {
+      activeBots: this.stats.botsActive,
+      tasksCompleted: this.stats.tasksCompleted,
+      itemsCollected: this.stats.itemsCollected,
+      queueLength: this.taskQueue.queue.length,
+      uptime: Date.now() - this.stats.uptime,
+      inventory: this.globalInventory.getInventoryReport()
+    };
+  }
+  
+  shutdown() {
+    console.log('[SUPPLY] Shutting down Supply Chain Manager');
+    
+    // Return all active tasks to queue
+    for (const [botUsername, botInfo] of this.activeBots) {
+      if (botInfo.currentTask) {
+        this.taskQueue.returnTask(botInfo.currentTask.id);
+      }
+    }
+    
+    this.activeBots.clear();
+    this.isProcessing = false;
   }
 }
 
