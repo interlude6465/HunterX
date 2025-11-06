@@ -18548,6 +18548,7 @@ let globalBot = null;
 let globalPluginAnalyzer = new PluginAnalyzer();
 let globalDupeFramework = null;
 let globalSwarmCoordinator = null;
+let globalSupplyChainManager = null;
 let globalIntelligenceDB = null;
 let globalBaseMonitor = null;
 let intervalHandles = []; // Track intervals for cleanup
@@ -19730,6 +19731,12 @@ async function launchBot(username, role = 'fighter') {
       
       globalSchematicBuilder = new SchematicBuilder(globalSwarmCoordinator);
       console.log('[BUILD] Schematic builder initialized');
+    }
+    
+    // Initialize supply chain manager if not already running
+    if (!globalSupplyChainManager) {
+      globalSupplyChainManager = new SupplyChainManager();
+      console.log('[SUPPLY] Supply Chain Manager initialized');
     }
     
     // Initialize base monitor
@@ -20934,8 +20941,101 @@ function validateConfig(configToValidate) {
   return true;
 }
 
+// Basic credential validation for setup wizard
+function validateBasicCredentials(username, password, authType) {
+  if (!username || username.length < 3) {
+    return { valid: false, error: 'Username must be at least 3 characters' };
+  }
+  
+  if (!password || password.length < 6) {
+    return { valid: false, error: 'Password must be at least 6 characters' };
+  }
+  
+  if (!['microsoft', 'mojang'].includes(authType)) {
+    return { valid: false, error: 'Auth type must be microsoft or mojang' };
+  }
+  
+  return { valid: true, error: null };
+}
+
+// Basic proxy validation for setup wizard
+function validateBasicProxy(host, port) {
+  if (!host || host.trim().length === 0) {
+    return { valid: false, error: 'Proxy host is required' };
+  }
+  
+  if (!port || isNaN(port.trim()) || parseInt(port.trim()) <= 0 || parseInt(port.trim()) > 65535) {
+    return { valid: false, error: 'Valid port number (1-65535) is required' };
+  }
+  
+  return { valid: true, error: null };
+}
+
+// Validate proxy connection - Disabled for simpler setup
+// async function validateProxyConnection(host, port, username = '', password = '') {
+//   console.log('🔍 Testing proxy connection...');
+//   
+//   try {
+//     const net = require('net');
+//     const socks = require('socks').SocksClient;
+//     
+//     return new Promise((resolve) => {
+//       const timeout = setTimeout(() => {
+//         resolve({ valid: false, error: 'Connection timeout' });
+//       }, 10000); // 10 second timeout
+//       
+//       socks.createConnection({
+//         proxy: {
+//           host: host,
+//           port: parseInt(port),
+//           type: 5,
+//           userId: username || undefined,
+//           password: password || undefined
+//         },
+//         command: 'connect',
+//         destination: {
+//           host: 'www.google.com',
+//           port: 80
+//         }
+//       }, (err, info) => {
+//         clearTimeout(timeout);
+//         
+//         if (err) {
+//           resolve({ valid: false, error: err.message });
+//         } else {
+//           // Test actual HTTP request through proxy
+//           const socket = info.socket;
+//           
+//           socket.write('GET / HTTP/1.1\r\nHost: www.google.com\r\n\r\n');
+//           
+//           let response = '';
+//           socket.on('data', (data) => {
+//             response += data.toString();
+//             if (response.includes('200 OK') || response.includes('301 Moved')) {
+//               socket.destroy();
+//               resolve({ valid: true, error: null });
+//             }
+//           });
+//           
+//           socket.on('error', () => {
+//             resolve({ valid: false, error: 'HTTP request failed' });
+//           });
+//           
+//           socket.setTimeout(5000, () => {
+//             socket.destroy();
+//             resolve({ valid: false, error: 'HTTP request timeout' });
+//           });
+//         }
+//       });
+//     });
+//     
+//   } catch (error) {
+//     return { valid: false, error: error.message };
+//   }
+// }
+
 // Interactive setup wizard
-async function runSetupWizard() {
+function runSetupWizard() {
   console.log('\n🔧 HUNTERX SETUP WIZARD');
   console.log('═'.repeat(50));
   console.log('Let\'s configure your Minecraft account and proxy settings.\n');
@@ -20944,70 +21044,86 @@ async function runSetupWizard() {
   console.log('📝 Minecraft Account Configuration:');
   console.log('─'.repeat(40));
   
-  await new Promise(resolve => {
-    rl.question('Username/Email: ', (username) => {
-      config.localAccount.username = username.trim();
-      resolve();
-    });
-  });
-  
-  await new Promise(resolve => {
+  rl.question('Username/Email: ', (username) => {
+    config.localAccount.username = username.trim();
+    
     rl.question('Password: ', (password) => {
       config.localAccount.password = password.trim();
-      resolve();
-    });
-  });
-  
-  await new Promise(resolve => {
-    rl.question('Account Type (microsoft/mojang) [default: microsoft]: ', (authType) => {
-      config.localAccount.authType = authType.trim() || 'microsoft';
-      resolve();
-    });
-  });
-  
-  // Proxy Configuration
-  console.log('\n🌐 Proxy Configuration:');
-  console.log('─'.repeat(40));
-  
-  await new Promise(resolve => {
-    rl.question('Use proxy? (y/n) [default: n]: ', (useProxy) => {
-      const useProxyAnswer = useProxy.trim().toLowerCase();
       
-      if (useProxyAnswer === 'y' || useProxyAnswer === 'yes') {
-        config.proxy = { enabled: true };
+      rl.question('Account Type (microsoft/mojang) [default: microsoft]: ', (authType) => {
+        config.localAccount.authType = authType.trim() || 'microsoft';
         
-        rl.question('Proxy Host: ', (host) => {
-          config.proxy.host = host.trim();
+        // Basic validation
+        if (config.localAccount.username.length < 3) {
+          console.log('⚠️ Username should be at least 3 characters');
+        }
+        if (config.localAccount.password.length < 6) {
+          console.log('⚠️ Password should be at least 6 characters');
+        }
+        
+        console.log('🔍 Note: Full credential validation will occur during server connection');
+        console.log('✅ Account configuration saved!');
+        
+        // Proxy Configuration
+        console.log('\n🌐 Proxy Configuration:');
+        console.log('─'.repeat(40));
+        
+        rl.question('Use proxy? (y/n) [default: n]: ', (useProxy) => {
+          const useProxyAnswer = useProxy.trim().toLowerCase();
           
-          rl.question('Proxy Port: ', (port) => {
-            config.proxy.port = port.trim();
-            
-            rl.question('Proxy Username (optional, press Enter to skip): ', (proxyUser) => {
-              config.proxy.username = proxyUser.trim();
-              
-              rl.question('Proxy Password (optional, press Enter to skip): ', (proxyPass) => {
-                config.proxy.password = proxyPass.trim();
-                resolve();
+          if (useProxyAnswer === 'y' || useProxyAnswer === 'yes') {
+            rl.question('Proxy Host: ', (host) => {
+              rl.question('Proxy Port: ', (port) => {
+                rl.question('Proxy Username (optional, press Enter to skip): ', (proxyUser) => {
+                  rl.question('Proxy Password (optional, press Enter to skip): ', (proxyPass) => {
+                    
+                    // Basic validation
+                    if (!host.trim()) {
+                      console.log('⚠️ Proxy host is required');
+                      config.proxy = { enabled: false };
+                    } else if (!port.trim() || isNaN(port.trim())) {
+                      console.log('⚠️ Valid proxy port is required');
+                      config.proxy = { enabled: false };
+                    } else {
+                      config.proxy = { 
+                        enabled: true,
+                        host: host.trim(),
+                        port: port.trim(),
+                        username: proxyUser.trim(),
+                        password: proxyPass.trim()
+                      };
+                      console.log('🔍 Note: Proxy connection will be tested during server connection');
+                      console.log('✅ Proxy configuration saved!');
+                    }
+                    
+                    // Save configuration and continue
+                    saveAndContinue();
+                  });
+                });
               });
             });
-          });
+          } else {
+            config.proxy = { enabled: false };
+            saveAndContinue();
+          }
         });
-      } else {
-        config.proxy = { enabled: false };
-        resolve();
-      }
+      });
     });
   });
   
-  // Save configuration
-  if (saveConfiguration()) {
-    console.log('\n✅ Configuration saved successfully!');
-    console.log('You can always reconfigure later from the main menu.\n');
-  } else {
-    console.log('\n❌ Failed to save configuration!');
+  function saveAndContinue() {
+    // Save configuration
+    if (saveConfiguration()) {
+      console.log('\n✅ Configuration saved successfully!');
+      console.log('You can always reconfigure later from the main menu.\n');
+    } else {
+      console.log('\n❌ Failed to save configuration!');
+    }
+    
+    setTimeout(() => {
+      showMenu();
+    }, 2000);
   }
-  
-  await new Promise(resolve => setTimeout(resolve, 2000));
 }
 
 // Reconfigure settings
@@ -21169,7 +21285,8 @@ async function initializeHunterX() {
   // Load or create configuration
   const configLoaded = loadConfiguration();
   if (!configLoaded) {
-    await runSetupWizard();
+    runSetupWizard();
+    return; // Don't show menu yet, let setup wizard handle it
   }
   
   // Show main menu
