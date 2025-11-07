@@ -151,6 +151,52 @@ function safeWriteJson(filePath, data) {
   return safeWriteFile(filePath, JSON.stringify(data, null, 2));
 }
 
+// === SAFE BOT METHOD WRAPPERS ===
+function safeBotQuit(bot, reason = 'Disconnected') {
+  if (!bot) {
+    console.warn('[BOT] Bot is null, cannot quit');
+    return false;
+  }
+  
+  try {
+    if (typeof bot.quit === 'function') {
+      bot.quit(reason);
+      return true;
+    } else if (typeof bot.end === 'function') {
+      bot.end();
+      return true;
+    } else if (typeof bot.disconnect === 'function') {
+      bot.disconnect();
+      return true;
+    } else {
+      console.warn('[BOT] No quit/disconnect method available on bot');
+      return false;
+    }
+  } catch (err) {
+    console.error(`[BOT] Error during bot quit: ${err.message}`);
+    return false;
+  }
+}
+
+function safeBotMethod(bot, methodName, ...args) {
+  if (!bot) {
+    console.warn(`[BOT] Bot is null, cannot call ${methodName}`);
+    return false;
+  }
+  
+  try {
+    if (typeof bot[methodName] === 'function') {
+      return bot[methodName](...args);
+    } else {
+      console.warn(`[BOT] Method ${methodName} not available on bot`);
+      return false;
+    }
+  } catch (err) {
+    console.error(`[BOT] Error calling ${methodName}: ${err.message}`);
+    return false;
+  }
+}
+
 // === EVENT LISTENER & INTERVAL TRACKING (Issues #6, #7) ===
 const eventListeners = [];
 const activeIntervals = [];
@@ -7354,6 +7400,191 @@ class CombatAI {
     this.currentTarget = null;
     this.projectileAI = new ProjectileAI(bot);
     this.maceAI = new MaceWeaponAI(bot);
+    this.combatLogger = null;
+    this.combatCheck = null;
+  }
+  
+  setCombatLogger(logger) {
+    this.combatLogger = logger;
+  }
+  
+  hasCrystalResources() {
+    const crystals = this.bot.inventory.items().find(i => i.name === 'end_crystal');
+    const obsidian = this.bot.inventory.items().find(i => i.name === 'obsidian');
+    return !!(crystals && obsidian);
+  }
+  
+  getCrystalPvP() {
+    if (!this.crystalPvP) {
+      this.crystalPvP = new CrystalPvP(this.bot, this);
+    }
+    return this.crystalPvP;
+  }
+  
+  async executeSmartCombat(attacker) {
+    // Smart weapon switching logic
+    try {
+      const weapon = this.getBestWeapon();
+      if (weapon && this.bot.inventory.slots[weapon.slot]) {
+        await this.bot.equip(weapon.slot, 'hand');
+        console.log(`[COMBAT] Equipped ${weapon.name} for combat`);
+      }
+      
+      // Attack with best weapon
+      if (this.bot.pvp && attacker) {
+        this.bot.pvp.attack(attacker);
+      }
+    } catch (err) {
+      console.log(`[COMBAT] executeSmartCombat failed: ${err.message}`);
+    }
+  }
+  
+  async executeOptimalAttack(attacker) {
+    // Optimal attack logic
+    try {
+      if (!attacker || !this.bot.pvp) return;
+      
+      // Position for optimal attack
+      const distance = this.bot.entity.position.distanceTo(attacker.position);
+      if (distance > 4) {
+        // Move closer
+        await this.bot.pathfinder.goto(new goals.GoalNear(attacker.position.x, attacker.position.y, attacker.position.z, 3));
+      }
+      
+      // Attack
+      this.bot.pvp.attack(attacker);
+    } catch (err) {
+      console.log(`[COMBAT] executeOptimalAttack failed: ${err.message}`);
+    }
+  }
+  
+  getBestWeapon() {
+    const weapons = this.bot.inventory.items().filter(item => 
+      item.name.includes('sword') || 
+      item.name.includes('axe') || 
+      item.name.includes('bow') ||
+      item.name.includes('crossbow') ||
+      item.name.includes('trident')
+    );
+    
+    // Sort by damage/desirability
+    const weaponPriority = {
+      'netherite_sword': 10,
+      'diamond_sword': 9,
+      'iron_sword': 8,
+      'golden_sword': 7,
+      'stone_sword': 6,
+      'wooden_sword': 5,
+      'netherite_axe': 8,
+      'diamond_axe': 7,
+      'iron_axe': 6,
+      'bow': 5,
+      'crossbow': 5,
+      'trident': 9
+    };
+    
+    return weapons.sort((a, b) => 
+      (weaponPriority[b.name] || 0) - (weaponPriority[a.name] || 0)
+    )[0];
+  }
+  
+  abortCombat(reason = 'aborted') {
+    if (this.combatCheck) {
+      clearInterval(this.combatCheck);
+      this.combatCheck = null;
+    }
+    
+    this.inCombat = false;
+    this.currentTarget = null;
+    
+    if (this.combatLogger) {
+      this.combatLogger.stopMonitoring(reason);
+    }
+    
+    console.log(`[COMBAT] Combat aborted: ${reason}`);
+  }
+  
+  logAllCombatMetrics() {
+    try {
+      if (this.combatLogger) {
+        const metrics = {
+          combatEnded: true,
+          timestamp: Date.now(),
+          inCombat: this.inCombat,
+          hasTarget: !!this.currentTarget
+        };
+        console.log(`[COMBAT] Combat metrics:`, metrics);
+      }
+    } catch (err) {
+      console.log(`[COMBAT] Failed to log combat metrics: ${err.message}`);
+    }
+  }
+  
+  async evaluateAndEquipLoot() {
+    try {
+      const items = this.bot.inventory.items();
+      const currentWeapon = this.bot.inventory.slots[this.bot.getEquipmentDestSlot('hand')];
+      
+      // Check for better weapons
+      const betterWeapon = this.getBestWeapon();
+      if (betterWeapon && betterWeapon !== currentWeapon) {
+        await this.bot.equip(betterWeapon.slot, 'hand');
+        console.log(`[COMBAT] Equipped better weapon: ${betterWeapon.name}`);
+      }
+      
+      // Check for better armor
+      const armorSlots = ['head', 'torso', 'legs', 'feet'];
+      for (const slot of armorSlots) {
+        const currentArmor = this.bot.inventory.slots[this.bot.getEquipmentDestSlot(slot)];
+        const betterArmor = this.getBestArmor(slot);
+        if (betterArmor && betterArmor !== currentArmor) {
+          await this.bot.equip(betterArmor.slot, slot);
+          console.log(`[COMBAT] Equipped better ${slot} armor: ${betterArmor.name}`);
+        }
+      }
+    } catch (err) {
+      console.log(`[COMBAT] Failed to evaluate and equip loot: ${err.message}`);
+    }
+  }
+  
+  getBestArmor(slot) {
+    const items = this.bot.inventory.items().filter(item => {
+      if (slot === 'head' && (item.name.includes('helmet') || item.name.includes('cap'))) return true;
+      if (slot === 'torso' && (item.name.includes('chestplate') || item.name.includes('tunic'))) return true;
+      if (slot === 'legs' && (item.name.includes('leggings') || item.name.includes('pants'))) return true;
+      if (slot === 'feet' && (item.name.includes('boots'))) return true;
+      return false;
+    });
+    
+    const armorPriority = {
+      'netherite': 4,
+      'diamond': 3,
+      'iron': 2,
+      'golden': 1,
+      'leather': 0,
+      'chainmail': 1
+    };
+    
+    return items.sort((a, b) => {
+      const aPriority = armorPriority[this.getArmorMaterial(a.name)] || 0;
+      const bPriority = armorPriority[this.getArmorMaterial(b.name)] || 0;
+      return bPriority - aPriority;
+    })[0];
+  }
+  
+  getArmorMaterial(itemName) {
+    if (itemName.includes('netherite')) return 'netherite';
+    if (itemName.includes('diamond')) return 'diamond';
+    if (itemName.includes('iron')) return 'iron';
+    if (itemName.includes('gold') || itemName.includes('golden')) return 'golden';
+    if (itemName.includes('leather')) return 'leather';
+    if (itemName.includes('chain')) return 'chainmail';
+    return 'unknown';
+  }
+  
+  setAggressiveMode(aggressive) {
+    this.aggressiveMode = aggressive;
+    console.log(`[COMBAT] Aggressive mode: ${aggressive ? 'ON' : 'OFF'}`);
   }
   
   async handleCombat(attacker) {
@@ -16634,61 +16865,99 @@ class BotSpawner {
       const [host, portStr] = serverIP.split(':');
       const port = parseInt(portStr) || 25565;
       
-      const testBot = mineflayer.createBot({
-        host,
-        port,
-        username: `TestBot_${Date.now().toString(36)}`,
-        auth: 'offline',
-        version: '1.20.1',
-        hideErrors: true
-      });
+      let testBot = null;
+      
+      try {
+        testBot = mineflayer.createBot({
+          host,
+          port,
+          username: `TestBot_${Date.now().toString(36)}`,
+          auth: 'offline',
+          version: false, // Auto-detect version
+          hideErrors: true,
+          checkTimeoutInterval: 30000,
+          closeTimeout: 60000
+        });
+      } catch (createError) {
+        console.error('[DETECTION] Failed to create test bot:', createError.message);
+        // Default to cracked mode if we can't even create a bot
+        return { cracked: true, useProxy: true, error: createError.message };
+      }
       
       return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          testBot.quit();
+        let timeout = setTimeout(() => {
+          safeBotQuit(testBot, 'Server detection timeout');
+          testBot = null;
           reject(new Error('Connection timeout'));
         }, 10000);
         
+        const safeCleanup = () => {
+          if (timeout) {
+            clearTimeout(timeout);
+            timeout = null;
+          }
+          if (testBot) {
+            safeBotQuit(testBot, 'Server detection completed');
+            testBot = null;
+          }
+        };
+        
         testBot.once('spawn', () => {
-          clearTimeout(timeout);
-          testBot.quit();
-          console.log('[DETECTION] ✓ Server is CRACKED - will use proxies');
-          resolve({ cracked: true, useProxy: true });
+          const detectedVersion = testBot.version || 'unknown';
+          safeCleanup();
+          console.log(`[DETECTION] ✓ Server is CRACKED - will use proxies (detected version: ${detectedVersion})`);
+          resolve({ cracked: true, useProxy: true, version: detectedVersion });
         });
         
         testBot.once('error', (err) => {
-          clearTimeout(timeout);
-          testBot.quit();
+          const detectedVersion = testBot.version || 'unknown';
+          safeCleanup();
           
           if (err.message.includes('authentication') || 
               err.message.includes('premium') ||
               err.message.includes('Session') ||
               err.message.includes('authenticate')) {
-            console.log('[DETECTION] ✓ Server is PREMIUM - will use local account');
-            resolve({ cracked: false, useProxy: false });
+            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (detected version: ${detectedVersion})`);
+            resolve({ cracked: false, useProxy: false, version: detectedVersion });
+          } else if (err.message.includes('ECONNRESET')) {
+            console.log(`[DETECTION] Connection reset - assuming CRACKED server (detected version: ${detectedVersion})`);
+            resolve({ cracked: true, useProxy: true, version: detectedVersion });
           } else {
-            reject(err);
+            console.error('[DETECTION] Detection error:', err.message);
+            // Default to cracked mode on unknown errors
+            resolve({ cracked: true, useProxy: true, version: detectedVersion, error: err.message });
           }
         });
         
         testBot.once('kicked', (reason) => {
-          clearTimeout(timeout);
-          testBot.quit();
+          const detectedVersion = testBot.version || 'unknown';
+          safeCleanup();
           
           const reasonStr = typeof reason === 'string' ? reason : JSON.stringify(reason);
           if (reasonStr.includes('authentication') || 
               reasonStr.includes('premium') ||
               reasonStr.includes('Session')) {
-            console.log('[DETECTION] ✓ Server is PREMIUM - will use local account (kicked)');
-            resolve({ cracked: false, useProxy: false });
+            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (kicked, detected version: ${detectedVersion})`);
+            resolve({ cracked: false, useProxy: false, version: detectedVersion });
           } else {
-            reject(new Error(`Kicked: ${reasonStr}`));
+            console.log(`[DETECTION] Kicked for unknown reason: ${reasonStr} (detected version: ${detectedVersion})`);
+            // Default to cracked mode on unknown kicks
+            resolve({ cracked: true, useProxy: true, version: detectedVersion, kickReason: reasonStr });
           }
+        });
+        
+        testBot.once('end', () => {
+          if (timeout) {
+            clearTimeout(timeout);
+            timeout = null;
+          }
+          testBot = null;
         });
       });
     } catch (error) {
-      console.error('[DETECTION] Error:', error.message);
-      throw error;
+      console.error('[DETECTION] Critical error:', error.message);
+      // Default to cracked mode on critical errors
+      return { cracked: true, useProxy: true, error: error.message };
     }
   }
   
@@ -16737,7 +17006,7 @@ class BotSpawner {
       port,
       username,
       auth: 'offline',
-      version: options.version || '1.20.1'
+      version: options.version || this.serverType.version || '1.20.1'
     };
     
     // Add proxy configuration if enabled
@@ -16802,7 +17071,7 @@ class BotSpawner {
       username: account.username,
       password: account.password,
       auth: account.authType || 'microsoft',
-      version: options.version || '1.20.1'
+      version: options.version || this.serverType.version || '1.20.1'
     };
     
     // Add proxy configuration if enabled
@@ -19650,7 +19919,14 @@ async function launchBot(username, role = 'fighter') {
   bot.combatLogger = combatLogger;
   bot.schematicBuilder = schematicBuilder;
   bot.schematicLoader = schematicLoader;
-  combatAI.setCombatLogger(combatLogger);
+  
+  // Safe method calls with existence checks
+  if (combatAI && typeof combatAI.setCombatLogger === 'function') {
+    combatAI.setCombatLogger(combatLogger);
+  } else {
+    console.warn('[INIT] combatAI.setCombatLogger method not available');
+  }
+  
   // Store combatAI reference on bot for stats access
   bot.combatAI = combatAI;
   bot.schematicLoader = schematicLoader;
@@ -19950,7 +20226,7 @@ async function launchBot(username, role = 'fighter') {
               
               bot.currentHelpTimeout = setTimeout(() => {
                 if (bot.currentHelpOperation && bot.currentHelpOperation.id === message.operationId) {
-                  if (combatAI) {
+                  if (combatAI && typeof combatAI.setAggressiveMode === 'function') {
                     combatAI.setAggressiveMode(false);
                   }
                   bot.currentHelpOperation = null;
@@ -19964,7 +20240,7 @@ async function launchBot(username, role = 'fighter') {
                     console.log(`[SWARM] Arrived at help location`);
                     bot.chat(`Arrived to help! Ready for combat.`);
                     
-                    if (combatAI) {
+                    if (combatAI && typeof combatAI.setAggressiveMode === 'function') {
                       combatAI.setAggressiveMode(true);
                     }
                   })
@@ -19981,7 +20257,7 @@ async function launchBot(username, role = 'fighter') {
                 bot.currentHelpTimeout = null;
               }
               if (bot.currentHelpOperation && bot.currentHelpOperation.id === message.operationId) {
-                if (combatAI) {
+                if (combatAI && typeof combatAI.setAggressiveMode === 'function') {
                   combatAI.setAggressiveMode(false);
                 }
                 if (bot.ashfinder) {
@@ -20131,7 +20407,7 @@ async function launchBot(username, role = 'fighter') {
           combatLogger.noteAttacker(attacker);
         }
         
-        if (attacker && !combatAI.inCombat) {
+        if (attacker && combatAI && !combatAI.inCombat) {
           // Pause any ongoing build work
           if (bot.currentBuilder) {
             console.log('[BUILDER] ⚔️ Combat detected, pausing build...');
@@ -20159,7 +20435,9 @@ async function launchBot(username, role = 'fighter') {
             }));
           }
           
-          await combatAI.handleCombat(attacker);
+          if (combatAI && typeof combatAI.handleCombat === 'function') {
+            await combatAI.handleCombat(attacker);
+          }
           
           // Resume build work after combat
           if (bot.currentBuilder) {
@@ -20173,7 +20451,7 @@ async function launchBot(username, role = 'fighter') {
     // Totem pop detection (for metrics)
     bot.on('entityEffect', (entity, effect) => {
       if (entity === bot.entity && effect.id === 10) { // Regeneration effect from totem
-        if (combatAI.crystalPvP) {
+        if (combatAI && combatAI.crystalPvP && combatAI.crystalPvP.metrics) {
           combatAI.crystalPvP.metrics.totemPops++;
           console.log('[TOTEM] 🛡️ Totem activated!');
         }
@@ -20191,7 +20469,7 @@ async function launchBot(username, role = 'fighter') {
     
     // Kill handler
     bot.on('entityDead', (entity) => {
-      if (entity.type === 'player' && combatAI.currentTarget === entity) {
+      if (entity.type === 'player' && combatAI && combatAI.currentTarget === entity) {
         console.log(`[KILL] Eliminated ${entity.username}!`);
         config.analytics.combat.kills++;
         combatLogger.stopMonitoring('target_down');
@@ -20227,20 +20505,24 @@ async function launchBot(username, role = 'fighter') {
       
       // Break all circular references (Issue #5)
       if (bot.combatAI) {
-        if (bot.combatAI.crystalPvP) {
-          bot.combatAI.crystalPvP.bot = null;
-          bot.combatAI.crystalPvP = null;
+        try {
+          if (bot.combatAI.crystalPvP) {
+            bot.combatAI.crystalPvP.bot = null;
+            bot.combatAI.crystalPvP = null;
+          }
+          if (bot.combatAI.projectileAI) {
+            bot.combatAI.projectileAI.bot = null;
+            bot.combatAI.projectileAI = null;
+          }
+          if (bot.combatAI.maceAI) {
+            bot.combatAI.maceAI.bot = null;
+            bot.combatAI.maceAI = null;
+          }
+          bot.combatAI.bot = null;
+          bot.combatAI = null;
+        } catch (cleanupErr) {
+          console.error('[CLEANUP] Error during combatAI cleanup:', cleanupErr.message);
         }
-        if (bot.combatAI.projectileAI) {
-          bot.combatAI.projectileAI.bot = null;
-          bot.combatAI.projectileAI = null;
-        }
-        if (bot.combatAI.maceAI) {
-          bot.combatAI.maceAI.bot = null;
-          bot.combatAI.maceAI = null;
-        }
-        bot.combatAI.bot = null;
-        bot.combatAI = null;
       }
       
       if (bot.baseMonitor) {
@@ -21512,7 +21794,9 @@ class EscapeArtist {
   async emergencyLogout() {
     console.log('[ESCAPE] Emergency logout initiated...');
     await this.emergencyStash();
-    this.bot.quit('Emergency escape');
+    
+    safeBotQuit(this.bot, 'Emergency escape');
+    
     return true;
   }
   
