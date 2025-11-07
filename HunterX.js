@@ -10634,6 +10634,16 @@ const CHEST_LOCATIONS = {
 // Natural Language Parser for item requests
 class ItemRequestParser {
   parseRequest(message) {
+    // Skip if message contains bot name references (should have been stripped already)
+    const botNames = ['hunter', 'bot', 'robot'];
+    const lowerMessage = message.toLowerCase();
+    for (const name of botNames) {
+      if (lowerMessage.includes(name)) {
+        console.log(`[ITEM_PARSER] Skipping item request - contains bot reference: ${name}`);
+        return null;
+      }
+    }
+    
     const patterns = [
       /(?:go )?find (?:me )?(?:a |an )?(.+)/i,
       /(?:go )?get (?:me )?(\d+)?\s*(.+)/i,
@@ -10652,6 +10662,20 @@ class ItemRequestParser {
       if (match) {
         const quantity = parseInt(match[1]) || 1;
         const itemName = this.normalizeItemName(match[2] || match[1]);
+        
+        // Validate item name is not empty or just a single word that could be a name
+        if (!itemName || itemName.length < 2) {
+          console.log(`[ITEM_PARSER] Invalid item name: "${itemName}"`);
+          return null;
+        }
+        
+        // Skip common names that might be mistaken for items
+        const skipWords = ['hunter', 'bot', 'robot', 'player', 'user', 'me', 'it', 'that', 'this', 'them', 'him', 'her'];
+        if (skipWords.includes(itemName.toLowerCase())) {
+          console.log(`[ITEM_PARSER] Skipping word that's not an item: "${itemName}"`);
+          return null;
+        }
+        
         return { itemName, quantity };
       }
     }
@@ -12604,6 +12628,92 @@ class ConversationAI {
     this.itemHunter = new ItemHunter(bot);
   }
   
+  // Strip bot name from message with various formats
+  stripBotName(message, username) {
+    if (!message) return message;
+    
+    const botNameVariations = [
+      this.bot.username,           // Exact username
+      this.bot.username.toLowerCase(), // Lowercase
+      'Hunter',                    // Default name
+      'hunter',                    // Lowercase default
+    ];
+    
+    let cleanedMessage = message.trim();
+    
+    // Try each variation
+    for (const name of botNameVariations) {
+      // Pattern 1: "Hunter, command"
+      const pattern1 = new RegExp(`^${name}\\s*[,\\:：]\\s*`, 'i');
+      if (pattern1.test(cleanedMessage)) {
+        cleanedMessage = cleanedMessage.replace(pattern1, '');
+        console.log(`[CONVERSATION] Stripped bot name: "${name}" -> "${cleanedMessage}"`);
+        return cleanedMessage.trim();
+      }
+      
+      // Pattern 2: "@Hunter command"
+      const pattern2 = new RegExp(`^@${name}\\s+`, 'i');
+      if (pattern2.test(cleanedMessage)) {
+        cleanedMessage = cleanedMessage.replace(pattern2, '');
+        console.log(`[CONVERSATION] Stripped bot name with @: "@${name}" -> "${cleanedMessage}"`);
+        return cleanedMessage.trim();
+      }
+      
+      // Pattern 3: "Hunter command" (no punctuation)
+      const pattern3 = new RegExp(`^${name}\\s+`, 'i');
+      if (pattern3.test(cleanedMessage)) {
+        cleanedMessage = cleanedMessage.replace(pattern3, '');
+        console.log(`[CONVERSATION] Stripped bot name (no punctuation): "${name}" -> "${cleanedMessage}"`);
+        return cleanedMessage.trim();
+      }
+    }
+    
+    return cleanedMessage;
+  }
+  
+  // Normalize message before processing
+  normalizeMessage(message, username) {
+    // Strip bot name first
+    let normalized = this.stripBotName(message, username);
+    
+    // Remove extra whitespace
+    normalized = normalized.replace(/\s+/g, ' ').trim();
+    
+    console.log(`[CONVERSATION] Message normalized: "${message}" -> "${normalized}"`);
+    return normalized;
+  }
+  
+  // Generate natural language response for non-commands
+  generateResponse(username, message) {
+    const lower = message.toLowerCase();
+    
+    // Simple acknowledgments
+    if (lower.length < 10 || lower === 'hi' || lower === 'hello' || lower === 'hey') {
+      return `Hello ${username}! How can I help you?`;
+    }
+    
+    if (lower === 'thanks' || lower === 'thank you') {
+      return `You're welcome ${username}!`;
+    }
+    
+    if (lower === 'bye' || lower === 'goodbye') {
+      return `Goodbye ${username}!`;
+    }
+    
+    // Check for status requests
+    if (lower.includes('status') || lower.includes('how are you')) {
+      return `I'm doing great ${username}! Ready to help with commands like "find", "build", "attack", etc.`;
+    }
+    
+    // Check for help requests
+    if (lower.includes('help') || lower.includes('what can you do')) {
+      return `I can help with: finding items, building, combat, spawning bots, and more! Try "find me diamonds" or "attack playername"`;
+    }
+    
+    // Default response
+    return `I'm not sure what you mean ${username}. Try commands like "find me [item]", "attack [player]", or "help" for options!`;
+  }
+  
   isWhitelisted(username) {
     return config.whitelist.some(entry => entry.name === username);
   }
@@ -12624,7 +12734,30 @@ class ConversationAI {
   }
   
   shouldRespond(username, message) {
-    const mentioned = message.toLowerCase().includes('hunter') || message.toLowerCase().includes(this.bot.username.toLowerCase());
+    // Check for bot name mention with various formats
+    const botNameVariations = [
+      'hunter',
+      this.bot.username.toLowerCase()
+    ];
+    
+    let mentioned = false;
+    const lowerMessage = message.toLowerCase();
+    
+    for (const name of botNameVariations) {
+      // Check for @name, name:, name, at the start or anywhere
+      if (lowerMessage.includes(`@${name}`) || 
+          lowerMessage.includes(`${name}:`) ||
+          lowerMessage.includes(`${name}，`) ||
+          lowerMessage.includes(`${name} `) ||
+          lowerMessage.includes(` ${name} `) ||
+          lowerMessage.startsWith(`${name} `) ||
+          lowerMessage.endsWith(` ${name}`) ||
+          lowerMessage === name) {
+        mentioned = true;
+        break;
+      }
+    }
+    
     const isWhitelisted = this.isWhitelisted(username);
     
     return mentioned || isWhitelisted;
@@ -12639,17 +12772,20 @@ class ConversationAI {
     
     if (!this.shouldRespond(username, message)) return;
     
-    this.context.push({ user: username, message, timestamp: Date.now() });
+    // Normalize message (strip bot name, clean whitespace)
+    const normalizedMessage = this.normalizeMessage(message, username);
+    
+    this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
     if (this.context.length > this.maxContext) this.context.shift();
     
-    // Check if it's a command
-    if (this.isCommand(message)) {
-      await this.handleCommand(username, message);
+    // Check if it's a command (use normalized message)
+    if (this.isCommand(normalizedMessage)) {
+      await this.handleCommand(username, normalizedMessage);
       return;
     }
     
     // Generate response
-    const response = this.generateResponse(username, message);
+    const response = this.generateResponse(username, normalizedMessage);
     this.bot.chat(response);
   }
   
@@ -13764,7 +13900,10 @@ class ConversationAI {
     // Parse the item request
     const request = this.itemHunter.parser.parseRequest(message);
     if (!request) {
-      this.bot.chat(`Sorry ${username}, I couldn't understand that item request. Try: "find me [item]" or "get me [quantity] [item]"`);
+      // Suggest common items if parsing failed
+      const suggestions = ['diamond', 'iron', 'gold', 'emerald', 'mending book', 'totem of undying', 'elytra', 'trident'];
+      const suggestionText = suggestions.slice(0, 3).join(', ');
+      this.bot.chat(`Sorry ${username}, I couldn't understand that item request. Try: "find me ${suggestionText}" or "get me 5 diamonds"`);
       return;
     }
     
@@ -13773,7 +13912,18 @@ class ConversationAI {
     // Check if we have knowledge about this item
     const knowledge = ITEM_KNOWLEDGE[itemName];
     if (!knowledge) {
-      this.bot.chat(`Sorry ${username}, I don't have information about "${itemName}". Try a different item name.`);
+      // Find similar items
+      const similarItems = Object.keys(ITEM_KNOWLEDGE).filter(key => 
+        key.toLowerCase().includes(itemName.toLowerCase()) || 
+        itemName.toLowerCase().includes(key.toLowerCase())
+      ).slice(0, 3);
+      
+      if (similarItems.length > 0) {
+        this.bot.chat(`Sorry ${username}, I don't have information about "${itemName}". Did you mean: ${similarItems.join(', ')}?`);
+      } else {
+        const commonItems = ['diamond', 'iron ingot', 'gold ingot', 'emerald', 'mending book'];
+        this.bot.chat(`Sorry ${username}, I don't have information about "${itemName}". Try common items like: ${commonItems.join(', ')}`);
+      }
       return;
     }
     
