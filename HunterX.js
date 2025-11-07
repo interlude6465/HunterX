@@ -21628,66 +21628,165 @@ class TrapDetector {
     }
 
     async detectTrap() {
-        const dangers = [];
-        if (await this.isInObsidianBox()) {
-            dangers.push({ type: 'obsidian_trap', severity: 'high', escape: ['ender_pearl', 'chorus_fruit', 'logout'] });
+        try {
+            if (!this.bot) {
+                return [];
+            }
+            
+            const dangers = [];
+            
+            try {
+                if (await this.isInObsidianBox()) {
+                    dangers.push({ type: 'obsidian_trap', severity: 'high', escape: ['ender_pearl', 'chorus_fruit', 'logout'] });
+                }
+            } catch (error) {
+                // Silently continue if obsidian check fails
+            }
+            
+            try {
+                if (await this.isNearLava() || (this.bot.health && this.bot.health < (this.lastHealth || this.bot.health))) {
+                    dangers.push({ type: 'lava', severity: 'critical', escape: ['fire_resistance_potion', 'water_bucket', 'pearl_out'] });
+                }
+            } catch (error) {
+                // Silently continue if lava check fails
+            }
+            
+            try {
+                if (await this.detectNearbyTNT()) {
+                    dangers.push({ type: 'tnt', severity: 'critical', escape: ['sprint_away', 'pearl_away', 'water_bucket'] });
+                }
+            } catch (error) {
+                // Silently continue if TNT check fails
+            }
+            
+            try {
+                if (this.isFalling() && this.bot.entity && this.bot.entity.position && this.bot.entity.position.y < 10) {
+                    dangers.push({ type: 'void', severity: 'critical', escape: ['ender_pearl', 'water_bucket', 'elyra'] });
+                }
+            } catch (error) {
+                // Silently continue if falling check fails
+            }
+            
+            try {
+                if (await this.detectHostileBoss()) {
+                    dangers.push({ type: 'boss', severity: 'high', escape: ['totem', 'pearl_away', 'logout'] });
+                }
+            } catch (error) {
+                // Silently continue if boss check fails
+            }
+            
+            try {
+                if (await this.isInBedrockBox()) {
+                    dangers.push({ type: 'bedrock_trap', severity: 'critical', escape: ['logout', 'admin_teleport'] });
+                }
+            } catch (error) {
+                // Silently continue if bedrock check fails
+            }
+            
+            this.lastHealth = this.bot.health;
+            return dangers;
+        } catch (error) {
+            // If the entire detectTrap method fails, return empty array
+            return [];
         }
-        if (await this.isNearLava() || this.bot.health < (this.lastHealth || this.bot.health)) {
-            dangers.push({ type: 'lava', severity: 'critical', escape: ['fire_resistance_potion', 'water_bucket', 'pearl_out'] });
-        }
-        if (await this.detectNearbyTNT()) {
-            dangers.push({ type: 'tnt', severity: 'critical', escape: ['sprint_away', 'pearl_away', 'water_bucket'] });
-        }
-        if (this.isFalling() && this.bot.entity.position.y < 10) {
-            dangers.push({ type: 'void', severity: 'critical', escape: ['ender_pearl', 'water_bucket', 'elyra'] });
-        }
-        if (await this.detectHostileBoss()) {
-            dangers.push({ type: 'boss', severity: 'high', escape: ['totem', 'pearl_away', 'logout'] });
-        }
-        if (await this.isInBedrockBox()) {
-            dangers.push({ type: 'bedrock_trap', severity: 'critical', escape: ['logout', 'admin_teleport'] });
-        }
-        this.lastHealth = this.bot.health;
-        return dangers;
     }
 
     async isInObsidianBox() {
-        const pos = this.bot.entity.position;
-        const surroundings = [
-            this.bot.blockAt(pos.offset(1, 0, 0)), this.bot.blockAt(pos.offset(-1, 0, 0)),
-            this.bot.blockAt(pos.offset(0, 0, 1)), this.bot.blockAt(pos.offset(0, 0, -1)),
-            this.bot.blockAt(pos.offset(0, 1, 0)), this.bot.blockAt(pos.offset(0, -1, 0))
-        ];
-        return surroundings.every(block => block && block.name === 'obsidian');
+        try {
+            if (!this.bot || !this.bot.entity || !this.bot.entity.position) {
+                return false;
+            }
+            
+            const pos = this.bot.entity.position;
+            const surroundings = [
+                this.bot.blockAt(pos.offset(1, 0, 0)), this.bot.blockAt(pos.offset(-1, 0, 0)),
+                this.bot.blockAt(pos.offset(0, 0, 1)), this.bot.blockAt(pos.offset(0, 0, -1)),
+                this.bot.blockAt(pos.offset(0, 1, 0)), this.bot.blockAt(pos.offset(0, -1, 0))
+            ];
+            return surroundings.every(block => block && block.name === 'obsidian');
+        } catch (error) {
+            // Silently handle errors to prevent console spam
+            return false;
+        }
     }
 
     async detectNearbyTNT() {
-        const tnt = this.bot.findEntity(e => e.name === 'tnt' && this.bot.entity.position.distanceTo(e.position) < 10);
-        return tnt !== undefined;
+        try {
+            if (!this.bot || !this.bot.entity || !this.bot.entities) {
+                return false;
+            }
+            
+            const tnt = Object.values(this.bot.entities).find(e => 
+                e.name === 'tnt' && 
+                this.bot.entity.position.distanceTo(e.position) < 10
+            );
+            return tnt !== undefined;
+        } catch (error) {
+            // Silently handle errors to prevent console spam
+            return false;
+        }
     }
 
     isFalling() {
-        return this.bot.entity.velocity.y < -0.5;
+        try {
+            if (!this.bot || !this.bot.entity || !this.bot.entity.velocity) {
+                return false;
+            }
+            return this.bot.entity.velocity.y < -0.5;
+        } catch (error) {
+            // Silently handle errors to prevent console spam
+            return false;
+        }
     }
 
     async isNearLava() {
-        const lava = this.bot.findBlock({ matching: this.bot.registry.blocksByName['lava'].id, maxDistance: 5, count: 1 });
-        return lava !== undefined;
+        try {
+            if (!this.bot || !this.bot.registry || !this.bot.registry.blocksByName || !this.bot.registry.blocksByName['lava']) {
+                return false;
+            }
+            
+            const lava = this.bot.findBlock({ matching: this.bot.registry.blocksByName['lava'].id, maxDistance: 5, count: 1 });
+            return lava !== undefined;
+        } catch (error) {
+            // Silently handle errors to prevent console spam
+            return false;
+        }
     }
 
     async detectHostileBoss() {
-        const boss = this.bot.findEntity(e => (e.name === 'wither' || e.name === 'ender_dragon') && this.bot.entity.position.distanceTo(e.position) < 50);
-        return boss !== undefined;
+        try {
+            if (!this.bot || !this.bot.entity || !this.bot.entities) {
+                return false;
+            }
+            
+            const boss = Object.values(this.bot.entities).find(e => 
+                (e.name === 'wither' || e.name === 'ender_dragon') && 
+                this.bot.entity.position.distanceTo(e.position) < 50
+            );
+            return boss !== undefined;
+        } catch (error) {
+            // Silently handle errors to prevent console spam
+            return false;
+        }
     }
 
     async isInBedrockBox() {
-        const pos = this.bot.entity.position;
-        const surroundings = [
-            this.bot.blockAt(pos.offset(1, 0, 0)), this.bot.blockAt(pos.offset(-1, 0, 0)),
-            this.bot.blockAt(pos.offset(0, 0, 1)), this.bot.blockAt(pos.offset(0, 0, -1)),
-            this.bot.blockAt(pos.offset(0, 1, 0)), this.bot.blockAt(pos.offset(0, -1, 0))
-        ];
-        return surroundings.every(block => block && block.name === 'bedrock');
+        try {
+            if (!this.bot || !this.bot.entity || !this.bot.entity.position) {
+                return false;
+            }
+            
+            const pos = this.bot.entity.position;
+            const surroundings = [
+                this.bot.blockAt(pos.offset(1, 0, 0)), this.bot.blockAt(pos.offset(-1, 0, 0)),
+                this.bot.blockAt(pos.offset(0, 0, 1)), this.bot.blockAt(pos.offset(0, 0, -1)),
+                this.bot.blockAt(pos.offset(0, 1, 0)), this.bot.blockAt(pos.offset(0, -1, 0))
+            ];
+            return surroundings.every(block => block && block.name === 'bedrock');
+        } catch (error) {
+            // Silently handle errors to prevent console spam
+            return false;
+        }
     }
 }
 
