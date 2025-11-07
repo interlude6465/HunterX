@@ -2865,7 +2865,7 @@ class BaseMonitor {
     // Subscribe to events
     this.subscribeToEvents();
     
-    console.log(`[BASE MONITOR] Initialized - protecting ${config.homeBase.coords.toString()} with ${config.homeBase.defensePerimeter}m perimeter`);
+    console.log(`[BASE MONITOR] Initialized - protecting ${config.homeBase.coords ? config.homeBase.coords.toString() : 'Not set'} with ${config.homeBase.defensePerimeter}m perimeter`);
   }
   
   isWhitelisted(username) {
