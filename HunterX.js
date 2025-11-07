@@ -20070,7 +20070,7 @@ async function launchBot(username, role = 'fighter') {
         bot.swarmWs = wsClient;
         
         // Start heartbeat
-        const heartbeatInterval = setInterval(() => {
+        const heartbeatInterval = safeSetInterval(() => {
           if (wsClient && wsClient.readyState === WebSocket.OPEN) {
             wsClient.send(JSON.stringify({
               type: 'HEARTBEAT',
@@ -20081,10 +20081,7 @@ async function launchBot(username, role = 'fighter') {
               status: combatAI.inCombat ? 'combat' : (config.tasks.current ? 'busy' : 'idle')
             }));
           }
-        }, 3000);
-        
-        // Track the interval for cleanup
-        addTrackedInterval(heartbeatInterval, 'swarm-heartbeat');
+        }, 3000, 'swarm-heartbeat');
       });
       
       wsClient.on('message', async (data) => {
@@ -22063,7 +22060,7 @@ class DangerMonitor {
     console.log('[DANGER] Monitoring started');
 
     // Check every 500ms
-    this.monitorInterval = setInterval(async () => {
+    this.monitorInterval = safeSetInterval(async () => {
       if (!this.monitoring) return;
       
       // Check for dangers
@@ -22092,10 +22089,7 @@ class DangerMonitor {
       
       this.lastHealth = this.bot.health;
       
-    }, 500);
-    
-    // Track the interval for cleanup
-    addTrackedInterval(this.monitorInterval, 'danger-monitor');
+    }, 500, 'danger-monitor');
   }
   
   async emergencyHealing() {
@@ -22130,7 +22124,8 @@ class DangerMonitor {
   stopMonitoring() {
     this.monitoring = false;
     if (this.monitorInterval) {
-      clearInterval(this.monitorInterval);
+      clearTrackedInterval(this.monitorInterval);
+      this.monitorInterval = null;
     }
     console.log('[DANGER] Monitoring stopped');
   }
