@@ -1269,6 +1269,621 @@ const ENDER_CHEST_PRIORITY_ITEMS = [
   'shulker_box', 'black_shulker_box', 'white_shulker_box'
 ];
 
+// === EQUIPMENT MANAGER - SMART ARMOR & WEAPON SYSTEM ===
+class EquipmentManager {
+  constructor(bot) {
+    this.bot = bot;
+    this.currentTask = 'idle'; // idle, combat, mining, woodcutting, digging
+    
+    // Equipment priorities and values
+    this.materialPriority = {
+      'netherite': 5,
+      'diamond': 4,
+      'iron': 3,
+      'stone': 2,
+      'wooden': 1,
+      'gold': 1.5
+    };
+    
+    this.weaponTypes = ['sword', 'axe', 'bow', 'crossbow', 'trident'];
+    this.toolTypes = ['pickaxe', 'axe', 'shovel', 'hoe'];
+    this.armorTypes = ['helmet', 'chestplate', 'leggings', 'boots'];
+    
+    // Combat enchantment priorities
+    this.enchantmentPriorities = {
+      'sharpness': 10,
+      'fire_aspect': 8,
+      'knockback': 6,
+      'smite': 7,
+      'bane_of_arthropods': 5,
+      'power': 9,
+      'punch': 6,
+      'flame': 7,
+      'infinity': 8,
+      'unbreaking': 4,
+      'mending': 5,
+      'protection': 8,
+      'blast_protection': 7,
+      'fire_protection': 6,
+      'projectile_protection': 6,
+      'feather_falling': 7,
+      'respiration': 5,
+      'aqua_affinity': 4,
+      'depth_strider': 4
+    };
+    
+    this.lastEquipmentCheck = 0;
+    this.equipmentCheckInterval = 5000; // Check every 5 seconds
+    
+    console.log('[EQUIPMENT] Equipment Manager initialized');
+  }
+  
+  // === AUTOMATIC ARMOR EQUIPPING ===
+  async equipBestArmor() {
+    const inventory = this.bot.inventory.items();
+    const armorSlots = ['head', 'torso', 'legs', 'feet'];
+    const equippedArmor = [];
+    
+    for (const slot of armorSlots) {
+      const bestArmor = this.findBestArmorForSlot(inventory, slot);
+      if (bestArmor) {
+        try {
+          await this.bot.equip(bestArmor, slot);
+          equippedArmor.push(bestArmor.name);
+          console.log(`[ARMOR] Equipped ${bestArmor.name} in ${slot} slot`);
+        } catch (err) {
+          console.log(`[ARMOR] Failed to equip ${bestArmor.name}: ${err.message}`);
+        }
+      }
+    }
+    
+    if (equippedArmor.length > 0) {
+      console.log(`[ARMOR] Equipped armor set: ${equippedArmor.join(', ')}`);
+    }
+    
+    return equippedArmor;
+  }
+  
+  findBestArmorForSlot(inventory, slot) {
+    const slotType = this.getSlotType(slot);
+    if (!slotType) return null;
+    
+    const armorItems = inventory.filter(item => 
+      item.name.includes(slotType) && this.isArmor(item.name)
+    );
+    
+    if (armorItems.length === 0) return null;
+    
+    // Get currently equipped item
+    const currentEquipment = this.bot.entity.equipment[this.getEquipmentSlotId(slot)];
+    const currentValue = currentEquipment ? this.calculateArmorValue(currentEquipment) : 0;
+    
+    // Find best armor piece
+    let bestArmor = null;
+    let bestValue = currentValue;
+    
+    for (const armor of armorItems) {
+      const armorValue = this.calculateArmorValue(armor);
+      if (armorValue > bestValue) {
+        bestValue = armorValue;
+        bestArmor = armor;
+      }
+    }
+    
+    return bestArmor;
+  }
+  
+  calculateArmorValue(item) {
+    if (!item || !item.name) return 0;
+    
+    let value = ITEM_VALUES[item.name] || 0;
+    
+    // Add enchantment bonus
+    if (item.nbt && item.nbt.value && item.nbt.value.Enchantments) {
+      const enchantments = item.nbt.value.Enchantments.value || [];
+      for (const enchantment of enchantments) {
+        const enchantName = enchantment.id.value.replace('minecraft:', '');
+        const level = enchantment.lvl.value || 1;
+        const priority = this.enchantmentPriorities[enchantName] || 1;
+        value += priority * level * 2;
+      }
+    }
+    
+    // Durability consideration
+    if (item.maxDurability && item.durabilityUsed !== undefined) {
+      const durabilityRatio = 1 - (item.durabilityUsed / item.maxDurability);
+      value *= Math.max(0.3, durabilityRatio); // Minimum 30% value for damaged items
+    }
+    
+    return value;
+  }
+  
+  // === SMART WEAPON SELECTION ===
+  async equipBestWeapon(situation = 'combat') {
+    const inventory = this.bot.inventory.items();
+    const weapons = this.findWeapons(inventory);
+    
+    if (weapons.length === 0) {
+      console.log('[WEAPON] No weapons found in inventory');
+      return null;
+    }
+    
+    let bestWeapon = null;
+    let bestScore = -1;
+    
+    for (const weapon of weapons) {
+      const score = this.calculateWeaponScore(weapon, situation);
+      if (score > bestScore) {
+        bestScore = score;
+        bestWeapon = weapon;
+      }
+    }
+    
+    if (bestWeapon) {
+      try {
+        await this.bot.equip(bestWeapon, 'hand');
+        console.log(`[WEAPON] Equipped ${bestWeapon.name} for ${situation} (score: ${bestScore.toFixed(1)})`);
+        return bestWeapon;
+      } catch (err) {
+        console.log(`[WEAPON] Failed to equip ${bestWeapon.name}: ${err.message}`);
+      }
+    }
+    
+    return null;
+  }
+  
+  findWeapons(inventory) {
+    return inventory.filter(item => {
+      const name = item.name;
+      return this.weaponTypes.some(type => name.includes(type)) ||
+             name.includes('sword') || name.includes('axe') || 
+             name.includes('bow') || name.includes('crossbow') || name.includes('trident');
+    });
+  }
+  
+  calculateWeaponScore(item, situation) {
+    if (!item || !item.name) return 0;
+    
+    let score = 0;
+    const name = item.name;
+    
+    // Base material score
+    for (const [material, priority] of Object.entries(this.materialPriority)) {
+      if (name.includes(material)) {
+        score += priority * 20;
+        break;
+      }
+    }
+    
+    // Weapon type bonuses for different situations
+    if (situation === 'combat') {
+      if (name.includes('sword')) score += 30;
+      if (name.includes('axe')) score += 25;
+      if (name.includes('bow') || name.includes('crossbow')) score += 15;
+      if (name.includes('trident')) score += 20;
+    } else if (situation === 'ranged') {
+      if (name.includes('bow') || name.includes('crossbow')) score += 40;
+      if (name.includes('trident')) score += 30;
+      if (name.includes('sword')) score += 10;
+    }
+    
+    // Enchantment bonuses
+    if (item.nbt && item.nbt.value && item.nbt.value.Enchantments) {
+      const enchantments = item.nbt.value.Enchantments.value || [];
+      for (const enchantment of enchantments) {
+        const enchantName = enchantment.id.value.replace('minecraft:', '');
+        const level = enchantment.lvl.value || 1;
+        const priority = this.enchantmentPriorities[enchantName] || 1;
+        score += priority * level * 3;
+      }
+    }
+    
+    // Durability consideration
+    if (item.maxDurability && item.durabilityUsed !== undefined) {
+      const durabilityRatio = 1 - (item.durabilityUsed / item.maxDurability);
+      score *= Math.max(0.2, durabilityRatio); // Minimum 20% for damaged weapons
+    }
+    
+    // Special bonuses
+    if (name.includes('netherite')) score += 15;
+    if (name.includes('diamond')) score += 10;
+    if (name.includes('enchanted')) score += 5;
+    
+    return score;
+  }
+  
+  // === TOOL MANAGEMENT ===
+  async equipBestTool(task) {
+    this.currentTask = task;
+    const inventory = this.bot.inventory.items();
+    
+    let bestTool = null;
+    let toolType = null;
+    
+    switch (task) {
+      case 'mining':
+        toolType = 'pickaxe';
+        bestTool = this.findBestTool(inventory, 'pickaxe');
+        break;
+      case 'woodcutting':
+        toolType = 'axe';
+        bestTool = this.findBestTool(inventory, 'axe');
+        break;
+      case 'digging':
+        toolType = 'shovel';
+        bestTool = this.findBestTool(inventory, 'shovel');
+        break;
+      case 'farming':
+        toolType = 'hoe';
+        bestTool = this.findBestTool(inventory, 'hoe');
+        break;
+    }
+    
+    if (bestTool) {
+      try {
+        await this.bot.equip(bestTool, 'hand');
+        console.log(`[TOOL] Equipped ${bestTool.name} for ${task}`);
+        return bestTool;
+      } catch (err) {
+        console.log(`[TOOL] Failed to equip ${bestTool.name}: ${err.message}`);
+      }
+    }
+    
+    return null;
+  }
+  
+  findBestTool(inventory, toolType) {
+    const tools = inventory.filter(item => 
+      item.name.includes(toolType) && this.isTool(item.name)
+    );
+    
+    if (tools.length === 0) return null;
+    
+    let bestTool = null;
+    let bestScore = -1;
+    
+    for (const tool of tools) {
+      const score = this.calculateToolScore(tool);
+      if (score > bestScore) {
+        bestScore = score;
+        bestTool = tool;
+      }
+    }
+    
+    return bestTool;
+  }
+  
+  calculateToolScore(item) {
+    if (!item || !item.name) return 0;
+    
+    let score = 0;
+    const name = item.name;
+    
+    // Material priority
+    for (const [material, priority] of Object.entries(this.materialPriority)) {
+      if (name.includes(material)) {
+        score += priority * 10;
+        break;
+      }
+    }
+    
+    // Enchantment bonuses for tools
+    if (item.nbt && item.nbt.value && item.nbt.value.Enchantments) {
+      const enchantments = item.nbt.value.Enchantments.value || [];
+      for (const enchantment of enchantments) {
+        const enchantName = enchantment.id.value.replace('minecraft:', '');
+        let priority = 1;
+        
+        // Tool-specific enchantment priorities
+        if (enchantName === 'efficiency') priority = 10;
+        else if (enchantName === 'unbreaking') priority = 5;
+        else if (enchantName === 'mending') priority = 6;
+        else if (enchantName === 'fortune') priority = 8;
+        else if (enchantName === 'silk_touch') priority = 7;
+        
+        const level = enchantment.lvl.value || 1;
+        score += priority * level * 2;
+      }
+    }
+    
+    // Durability consideration
+    if (item.maxDurability && item.durabilityUsed !== undefined) {
+      const durabilityRatio = 1 - (item.durabilityUsed / item.maxDurability);
+      score *= Math.max(0.1, durabilityRatio); // Minimum 10% for heavily damaged tools
+    }
+    
+    return score;
+  }
+  
+  // === HOTBAR ORGANIZATION ===
+  async organizeHotbar() {
+    const inventory = this.bot.inventory.items();
+    const hotbarSlots = 9; // Slots 0-8
+    
+    // Clear hotbar temporarily by moving items to inventory
+    for (let i = 0; i < hotbarSlots; i++) {
+      const item = this.bot.inventory.slots[i];
+      if (item && item.name) {
+        try {
+          // Move to first available inventory slot
+          for (let j = 9; j < 36; j++) {
+            if (!this.bot.inventory.slots[j]) {
+              await this.bot.moveSlotItem(i, j);
+              break;
+            }
+          }
+        } catch (err) {
+          // Ignore movement errors
+        }
+      }
+    }
+    
+    // Organize hotbar with optimal layout
+    const layout = await this.createOptimalHotbarLayout(inventory);
+    
+    for (let i = 0; i < layout.length && i < hotbarSlots; i++) {
+      if (layout[i]) {
+        try {
+          // Find item in inventory and move to hotbar
+          const inventoryItem = inventory.find(item => item.name === layout[i]);
+          if (inventoryItem) {
+            const sourceSlot = this.getSlotForItem(inventoryItem);
+            if (sourceSlot >= 9) {
+              await this.bot.moveSlotItem(sourceSlot, i);
+              console.log(`[HOTBAR] Moved ${layout[i]} to slot ${i + 1}`);
+            }
+          }
+        } catch (err) {
+          console.log(`[HOTBAR] Failed to move ${layout[i]} to slot ${i + 1}: ${err.message}`);
+        }
+      }
+    }
+    
+    console.log('[HOTBAR] Hotbar organization complete');
+  }
+  
+  async createOptimalHotbarLayout(inventory) {
+    const layout = new Array(9).fill(null);
+    
+    // Slot 1: Best weapon
+    const weapons = this.findWeapons(inventory);
+    if (weapons.length > 0) {
+      let bestWeapon = null;
+      let bestScore = -1;
+      
+      for (const weapon of weapons) {
+        const score = this.calculateWeaponScore(weapon, 'combat');
+        if (score > bestScore) {
+          bestScore = score;
+          bestWeapon = weapon;
+        }
+      }
+      if (bestWeapon) layout[0] = bestWeapon.name;
+    }
+    
+    // Slot 2: Pickaxe
+    const pickaxe = this.findBestTool(inventory, 'pickaxe');
+    if (pickaxe) layout[1] = pickaxe.name;
+    
+    // Slot 3: Axe
+    const axe = this.findBestTool(inventory, 'axe');
+    if (axe) layout[2] = axe.name;
+    
+    // Slot 4: Shovel
+    const shovel = this.findBestTool(inventory, 'shovel');
+    if (shovel) layout[3] = shovel.name;
+    
+    // Slot 5: Shield
+    const shield = inventory.find(item => item.name === 'shield');
+    if (shield) layout[4] = shield.name;
+    
+    // Slot 6: Bow/Crossbow for ranged combat
+    const ranged = inventory.find(item => 
+      item.name.includes('bow') || item.name.includes('crossbow')
+    );
+    if (ranged) layout[5] = ranged.name;
+    
+    // Slot 7: Food (highest priority food)
+    const foodItems = ['cooked_beef', 'cooked_porkchop', 'bread', 'golden_apple', 'enchanted_golden_apple'];
+    for (const food of foodItems) {
+      const foodItem = inventory.find(item => item.name === food);
+      if (foodItem) {
+        layout[6] = foodItem.name;
+        break;
+      }
+    }
+    
+    // Slot 8: Blocks (cobblestone, dirt, etc.)
+    const blocks = ['cobblestone', 'dirt', 'oak_planks', 'stone'];
+    for (const block of blocks) {
+      const blockItem = inventory.find(item => item.name === block);
+      if (blockItem) {
+        layout[7] = blockItem.name;
+        break;
+      }
+    }
+    
+    // Slot 9: Misc important item (torch, water bucket, etc.)
+    const misc = ['torch', 'water_bucket', 'lava_bucket', 'ender_pearl'];
+    for (const item of misc) {
+      const miscItem = inventory.find(itemName => itemName.name === item);
+      if (miscItem) {
+        layout[8] = miscItem.name;
+        break;
+      }
+    }
+    
+    return layout;
+  }
+  
+  // === OFFHAND MANAGEMENT ===
+  async equipOffhand() {
+    const inventory = this.bot.inventory.items();
+    
+    // Priority: Totem > Shield > Arrow > Food
+    const priorities = [
+      { type: 'totem', items: ['totem_of_undying'] },
+      { type: 'shield', items: ['shield'] },
+      { type: 'arrow', items: ['arrow', 'spectral_arrow', 'tipped_arrow'] },
+      { type: 'food', items: ['golden_apple', 'enchanted_golden_apple', 'cooked_beef', 'cooked_porkchop'] }
+    ];
+    
+    for (const priority of priorities) {
+      for (const itemName of priority.items) {
+        const item = inventory.find(invItem => invItem.name === itemName);
+        if (item) {
+          try {
+            await this.bot.equip(item, 'off-hand');
+            console.log(`[OFFHAND] Equipped ${item.name} in off-hand`);
+            return item;
+          } catch (err) {
+            console.log(`[OFFHAND] Failed to equip ${item.name}: ${err.message}`);
+          }
+        }
+      }
+    }
+    
+    return null;
+  }
+  
+  // === DYNAMIC SWITCHING ===
+  async switchToCombatMode() {
+    console.log('[EQUIPMENT] Switching to combat mode');
+    await this.equipBestWeapon('combat');
+    await this.equipOffhand(); // Ensure totem or shield is ready
+  }
+  
+  async switchToTaskMode(task) {
+    console.log(`[EQUIPMENT] Switching to ${task} mode`);
+    await this.equipBestTool(task);
+  }
+  
+  async checkAndSwitchDamagedItems() {
+    const inventory = this.bot.inventory.items();
+    const damagedItems = [];
+    
+    for (const item of inventory) {
+      if (item.maxDurability && item.durabilityUsed !== undefined) {
+        const damageRatio = item.durabilityUsed / item.maxDurability;
+        if (damageRatio > 0.8) { // More than 80% damaged
+          damagedItems.push({ item, damageRatio });
+        }
+      }
+    }
+    
+    if (damagedItems.length > 0) {
+      console.log(`[EQUIPMENT] Found ${damagedItems.length} heavily damaged items, switching to backups`);
+      
+      // Switch weapon if damaged
+      const currentWeapon = this.bot.heldItem;
+      if (currentWeapon) {
+        const weaponDamage = damagedItems.find(d => d.item === currentWeapon);
+        if (weaponDamage) {
+          await this.equipBestWeapon(this.currentTask === 'idle' ? 'combat' : this.currentTask);
+        }
+      }
+      
+      // Switch armor pieces if damaged
+      for (const slot of ['head', 'torso', 'legs', 'feet']) {
+        const currentArmor = this.bot.entity.equipment[this.getEquipmentSlotId(slot)];
+        if (currentArmor) {
+          const armorDamage = damagedItems.find(d => d.item === currentArmor);
+          if (armorDamage) {
+            const replacement = this.findBestArmorForSlot(inventory, slot);
+            if (replacement) {
+              try {
+                await this.bot.equip(replacement, slot);
+                console.log(`[ARMOR] Replaced damaged ${currentArmor.name} with ${replacement.name}`);
+              } catch (err) {
+                console.log(`[ARMOR] Failed to replace damaged armor: ${err.message}`);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // === UTILITY FUNCTIONS ===
+  isArmor(name) {
+    return this.armorTypes.some(type => name.includes(type));
+  }
+  
+  isTool(name) {
+    return this.toolTypes.some(type => name.includes(type));
+  }
+  
+  getSlotType(slot) {
+    const slotMap = {
+      'head': 'helmet',
+      'torso': 'chestplate',
+      'legs': 'leggings',
+      'feet': 'boots'
+    };
+    return slotMap[slot];
+  }
+  
+  getEquipmentSlotId(slot) {
+    const slotMap = {
+      'head': 5,
+      'torso': 6,
+      'legs': 7,
+      'feet': 8,
+      'hand': 0,
+      'off-hand': 45
+    };
+    return slotMap[slot];
+  }
+  
+  getSlotForItem(item) {
+    if (!item || !item.slot) return -1;
+    return item.slot;
+  }
+  
+  // === MAIN UPDATE LOOP ===
+  async update() {
+    const now = Date.now();
+    if (now - this.lastEquipmentCheck < this.equipmentCheckInterval) {
+      return;
+    }
+    
+    this.lastEquipmentCheck = now;
+    
+    try {
+      // Check for damaged items and switch if needed
+      await this.checkAndSwitchDamagedItems();
+      
+      // Ensure offhand is properly equipped
+      const offhandItem = this.bot.inventory.slots[45];
+      if (!offhandItem || (offhandItem.name !== 'totem_of_undying' && 
+          offhandItem.name !== 'shield' && !offhandItem.name.includes('arrow'))) {
+        await this.equipOffhand();
+      }
+    } catch (err) {
+      console.log(`[EQUIPMENT] Update error: ${err.message}`);
+    }
+  }
+  
+  // === INITIALIZATION ===
+  async initialize() {
+    console.log('[EQUIPMENT] Initializing equipment system...');
+    
+    // Equip best armor
+    await this.equipBestArmor();
+    
+    // Equip best weapon
+    await this.equipBestWeapon('combat');
+    
+    // Equip offhand item
+    await this.equipOffhand();
+    
+    // Organize hotbar
+    await this.organizeHotbar();
+    
+    console.log('[EQUIPMENT] Equipment system initialization complete');
+  }
+}
+
 // === ANTI-CHEAT BYPASS SYSTEM ===
 
 // Server Profile Manager - Manages server-specific anti-cheat profiles
@@ -5099,18 +5714,17 @@ class StashScanner {
   }
   
   async smartEquipArmor(item) {
-    const slot = this.getArmorSlot(item.name);
-    if (!slot) return;
-    
-    const currentArmor = this.bot.entity.equipment[this.getArmorSlotId(slot)];
-    const currentValue = currentArmor ? ITEM_VALUES[currentArmor.name] || 0 : 0;
-    const newValue = ITEM_VALUES[item.name] || 0;
-    
-    if (newValue > currentValue) {
-      try {
-        await this.bot.equip(item.type, slot);
-        console.log(`[EQUIP] Upgraded ${slot} to ${item.name}`);
-      } catch (err) {}
+    // Use new EquipmentManager if available
+    if (this.bot.equipmentManager) {
+      const slot = this.getArmorSlot(item.name);
+      if (slot) {
+        try {
+          await this.bot.equip(item.type, slot);
+          console.log(`[EQUIPMENT] Equipped ${item.name} in ${slot} slot`);
+        } catch (err) {
+          console.log(`[EQUIPMENT] Failed to equip ${item.name}: ${err.message}`);
+        }
+      }
     }
   }
   
@@ -20102,7 +20716,12 @@ async function launchBot(username, role = 'fighter') {
 
     await combatLogger.onSpawn();
     console.log('[BARITONE] Pathfinder ready');
-    
+
+    // Initialize Equipment Manager
+    bot.equipmentManager = new EquipmentManager(bot);
+    await bot.equipmentManager.initialize();
+    console.log('[EQUIPMENT] Equipment manager initialized');
+
     // Initialize ender chest manager
     enderManager = new EnderChestManager(bot);
     
@@ -20535,6 +21154,13 @@ async function launchBot(username, role = 'fighter') {
       }
     }, 60000); // Save every minute
     
+    // Equipment manager update loop
+    if (bot.equipmentManager) {
+      setInterval(() => {
+        bot.equipmentManager.update();
+      }, 5000); // Update equipment every 5 seconds
+    }
+    
     // Combat handler
     bot.on('entityHurt', async (entity) => {
       if (entity === bot.entity) {
@@ -20548,6 +21174,11 @@ async function launchBot(username, role = 'fighter') {
         }
         
         if (attacker && combatAI && !combatAI.inCombat) {
+          // Switch to combat equipment
+          if (bot.equipmentManager) {
+            await bot.equipmentManager.switchToCombatMode();
+          }
+
           // Pause any ongoing build work
           if (bot.currentBuilder) {
             console.log('[BUILDER] ⚔️ Combat detected, pausing build...');
@@ -20583,6 +21214,16 @@ async function launchBot(username, role = 'fighter') {
           if (bot.currentBuilder) {
             console.log('[BUILDER] ✅ Combat ended, resuming build...');
             bot.currentBuilder.resume();
+          }
+
+          // Switch back to task equipment after combat
+          if (bot.equipmentManager) {
+            // Determine current task and switch to appropriate equipment
+            if (config.tasks.current) {
+              await bot.equipmentManager.switchToTaskMode(config.tasks.current.type || 'idle');
+            } else {
+              await bot.equipmentManager.switchToTaskMode('idle');
+            }
           }
         }
       }
@@ -22602,6 +23243,15 @@ class SupplyChainManager {
   executeTask(botUsername, task) {
     const botInfo = this.activeBots.get(botUsername);
     if (!botInfo) return;
+    
+    // Get bot instance from global bot registry
+    const bot = globalBot;
+    if (!bot || bot.username !== botUsername) return;
+    
+    // Switch equipment based on task type
+    if (bot.equipmentManager) {
+      await bot.equipmentManager.switchToTaskMode(task.type);
+    }
     
     // Simulate task execution
     setTimeout(() => {
