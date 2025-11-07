@@ -39,8 +39,7 @@
 // Old string array format automatically converts to { name, level: 'trusted' }
 const mineflayer = require('mineflayer');
 const pvp = require('mineflayer-pvp').plugin;
-const pathfinder = require('@miner-org/mineflayer-baritone').loader;
-const goals = require('@miner-org/mineflayer-baritone').goals;
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const Vec3 = require('vec3').Vec3;
 
 // Neural network support with graceful fallback
@@ -312,8 +311,8 @@ function safeSendWebSocket(wsClient, message) {
 
 // === SAFE PATHFINDING HELPER (Issue #10) ===
 async function safeGoTo(bot, position, timeout = 60000) {
-  if (!bot.ashfinder) {
-    throw new Error('Baritone pathfinder not loaded');
+  if (!bot.pathfinder) {
+    throw new Error('Pathfinder plugin not loaded');
   }
   
   if (!position || !position.x || !position.y || !position.z) {
@@ -328,11 +327,11 @@ async function safeGoTo(bot, position, timeout = 60000) {
   
   try {
     await Promise.race([
-      bot.ashfinder.goto(goal),
+      bot.pathfinder.goto(goal),
       timeoutPromise
     ]);
   } catch (err) {
-    bot.ashfinder.stop();
+    bot.pathfinder.stop();
     throw err;
   }
 }
@@ -19901,7 +19900,13 @@ async function launchBot(username, role = 'fighter') {
     }
   }, 100);
   
-  bot.loadPlugin(pathfinder);
+  // Load pathfinder plugin
+  try {
+    bot.loadPlugin(pathfinder);
+    console.log('[PATHFINDER] Plugin loaded successfully');
+  } catch (err) {
+    console.error('[PATHFINDER] Failed to load plugin:', err.message);
+  }
   
   globalBot = bot;
   
@@ -19969,13 +19974,23 @@ async function launchBot(username, role = 'fighter') {
   bot.once('spawn', async () => {
     console.log(`[SPAWN] ${username} joined ${config.server}`);
     
-    // Ensure Baritone pathfinder loaded
-    if (!bot.ashfinder) {
-      console.log('[ERROR] Baritone pathfinder not loaded!');
+    // Wait a moment for plugins to fully initialize
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Ensure pathfinder plugin loaded
+    if (!bot.pathfinder) {
+      console.log('[ERROR] Pathfinder plugin not loaded!');
       return;
     }
     
-    bot.pathfinder.setMovements(new Movements(bot));
+    // Set up movements configuration
+    try {
+      bot.pathfinder.setMovements(new Movements(bot));
+      console.log('[PATHFINDER] Movements configured successfully');
+    } catch (err) {
+      console.error('[PATHFINDER] Failed to set movements:', err.message);
+      return;
+    }
 
     await combatLogger.onSpawn();
     console.log('[BARITONE] Pathfinder ready');
