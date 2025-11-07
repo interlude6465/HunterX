@@ -196,6 +196,32 @@ function safeBotMethod(bot, methodName, ...args) {
   }
 }
 
+function getNearbyPlayers(bot, radius) {
+  if (!bot || !bot.entity || !bot.entity.position) {
+    return [];
+  }
+
+  const effectiveRadius = typeof radius === 'number' && isFinite(radius) && radius > 0 ? radius : 50;
+  const playerEntries = Object.values(bot.players || {});
+  const nearby = [];
+
+  for (const entry of playerEntries) {
+    if (!entry || entry.username === bot.username) continue;
+    const entity = entry.entity;
+    if (!entity || !entity.position) continue;
+    const distance = entity.position.distanceTo(bot.entity.position);
+    if (distance <= effectiveRadius) {
+      nearby.push({
+        username: entry.username,
+        entity,
+        distance
+      });
+    }
+  }
+
+  return nearby;
+}
+
 // === EVENT LISTENER & INTERVAL TRACKING (Issues #6, #7) ===
 const eventListeners = [];
 const activeIntervals = [];
@@ -676,6 +702,12 @@ const config = {
     activeProjects: [],
     currentProject: null,
     workerStatus: 'idle'
+  },
+  
+  // Danger escape behavior
+  dangerEscape: {
+    enabled: true,
+    playerProximityRadius: 50
   },
   
   // Spawn escape tracking
@@ -11980,6 +12012,34 @@ class ConversationAI {
     return sanitized;
   }
   
+  broadcastEscapeStatus(includePlayers = false) {
+    const escapeConfig = config.dangerEscape || {};
+    const enabled = escapeConfig.enabled !== false;
+    const radiusValue = typeof escapeConfig.playerProximityRadius === 'number' && isFinite(escapeConfig.playerProximityRadius) && escapeConfig.playerProximityRadius > 0
+      ? escapeConfig.playerProximityRadius
+      : 50;
+    const statusText = enabled ? 'ENABLED' : 'DISABLED';
+
+    this.bot.chat(`[ESCAPE] Escape behavior: ${statusText}`);
+    console.log(`[ESCAPE] Escape behavior: ${statusText}`);
+
+    if (includePlayers) {
+      const nearby = getNearbyPlayers(this.bot, radiusValue);
+      if (nearby.length > 0) {
+        const names = nearby.map(player => {
+          const rounded = Math.round(player.distance);
+          if (player.username && Number.isFinite(rounded)) {
+            return `${player.username} (${rounded}m)`;
+          }
+          return player.username || 'Unknown';
+        });
+        this.bot.chat(`[ESCAPE] Players within ${radiusValue} blocks: ${names.join(', ')}`);
+      } else {
+        this.bot.chat(`[ESCAPE] No players within ${radiusValue} blocks.`);
+      }
+    }
+  }
+  
   isCommand(message) {
     const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'find', 'hunt', 'collect', 'fish for', 'farm'];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
@@ -11992,6 +12052,54 @@ class ConversationAI {
     }
     
     const lower = message.toLowerCase();
+    config.dangerEscape = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
+    
+    if (lower.startsWith('!status')) {
+      this.broadcastEscapeStatus(true);
+      return;
+    }
+    
+    if (lower.startsWith('!escape')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        this.bot.chat("Only trusted+ can modify escape behavior!");
+        return;
+      }
+      
+      const match = lower.match(/^!escape\s+(on|off)\b/);
+      if (!match) {
+        this.bot.chat("Usage: !escape on|off");
+        return;
+      }
+      
+      const shouldEnable = match[1] === 'on';
+      const previous = typeof config.dangerEscape.enabled === 'boolean' ? config.dangerEscape.enabled : true;
+      config.dangerEscape.enabled = shouldEnable;
+      if (previous !== shouldEnable) {
+        if (!saveConfiguration()) {
+          this.bot.chat("⚠️ Failed to save escape settings!");
+          console.log('[ESCAPE] Failed to save escape settings');
+        }
+      }
+      
+      this.broadcastEscapeStatus(false);
+      return;
+    }
+    
+    if (lower.startsWith('!stay') || lower.startsWith('!dontleave')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        this.bot.chat("Only trusted+ can modify escape behavior!");
+        return;
+      }
+      
+      config.dangerEscape.enabled = !config.dangerEscape.enabled;
+      if (!saveConfiguration()) {
+        this.bot.chat("⚠️ Failed to save escape settings!");
+        console.log('[ESCAPE] Failed to save escape settings');
+      }
+      
+      this.broadcastEscapeStatus(false);
+      return;
+    }
     
     // Trust management commands (admin+ only)
     if (lower.includes('set trust') || lower.includes('set level')) {
@@ -21202,6 +21310,16 @@ function loadConfiguration() {
       if (savedConfig.proxy) {
         config.proxy = savedConfig.proxy;
       }
+      if (savedConfig.dangerEscape) {
+        const escapeSettings = savedConfig.dangerEscape;
+        if (typeof escapeSettings.enabled === 'boolean') {
+          config.dangerEscape.enabled = escapeSettings.enabled;
+        }
+        const radius = parseFloat(escapeSettings.playerProximityRadius);
+        if (Number.isFinite(radius) && radius > 0) {
+          config.dangerEscape.playerProximityRadius = radius;
+        }
+      }
       console.log('✅ Configuration loaded successfully!');
       return true;
     } else {
@@ -21215,6 +21333,9 @@ function loadConfiguration() {
 // Save configuration to file
 function saveConfiguration() {
   const configPath = './data/config.json';
+  const escapeSettings = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
+  const radius = parseFloat(escapeSettings.playerProximityRadius);
+  const normalizedRadius = Number.isFinite(radius) && radius > 0 ? radius : 50;
   const configToSave = {
     localAccount: {
       username: config.localAccount.username,
@@ -21227,6 +21348,10 @@ function saveConfiguration() {
       port: '',
       username: '',
       password: ''
+    },
+    dangerEscape: {
+      enabled: escapeSettings.enabled !== false,
+      playerProximityRadius: normalizedRadius
     }
   };
   
@@ -21249,6 +21374,19 @@ function validateConfig(configToValidate) {
     const proxy = configToValidate.proxy;
     if (proxy.enabled && (!proxy.host || !proxy.port)) {
       return false;
+    }
+  }
+  
+  if (configToValidate.dangerEscape) {
+    const escapeSettings = configToValidate.dangerEscape;
+    if (escapeSettings.enabled !== undefined && typeof escapeSettings.enabled !== 'boolean') {
+      return false;
+    }
+    if (escapeSettings.playerProximityRadius !== undefined) {
+      const radius = parseFloat(escapeSettings.playerProximityRadius);
+      if (!Number.isFinite(radius) || radius <= 0) {
+        return false;
+      }
     }
   }
   
@@ -21841,6 +21979,25 @@ class EscapeArtist {
   
   async executeEscape(danger) {
     console.log(`[ESCAPE] Danger detected: ${danger.type} (${danger.severity})`);
+
+    const escapeConfig = config.dangerEscape || {};
+    if (escapeConfig.enabled === false) {
+      console.log('[ESCAPE] Escape behavior disabled - staying put');
+      return false;
+    }
+
+    const radiusValue = typeof escapeConfig.playerProximityRadius === 'number' && isFinite(escapeConfig.playerProximityRadius) && escapeConfig.playerProximityRadius > 0
+      ? escapeConfig.playerProximityRadius
+      : 50;
+    const nearbyPlayers = getNearbyPlayers(this.bot, radiusValue);
+    if (nearbyPlayers.length > 0) {
+      console.log(`[ESCAPE] Players detected nearby (${nearbyPlayers.length}) - staying put`);
+      const names = nearbyPlayers.map(player => player.username).filter(Boolean);
+      if (names.length > 0) {
+        console.log(`[ESCAPE] Nearby players (${radiusValue} blocks): ${names.join(', ')}`);
+      }
+      return false;
+    }
     
     for (const method of danger.escape) {
       const success = await this.tryEscapeMethod(method, danger);
