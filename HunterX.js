@@ -20070,8 +20070,8 @@ async function launchBot(username, role = 'fighter') {
         bot.swarmWs = wsClient;
         
         // Start heartbeat
-        setInterval(() => {
-          if (wsClient.readyState === WebSocket.OPEN) {
+        const heartbeatInterval = setInterval(() => {
+          if (wsClient && wsClient.readyState === WebSocket.OPEN) {
             wsClient.send(JSON.stringify({
               type: 'HEARTBEAT',
               id: Date.now(),
@@ -20082,6 +20082,9 @@ async function launchBot(username, role = 'fighter') {
             }));
           }
         }, 3000);
+        
+        // Track the interval for cleanup
+        addTrackedInterval(heartbeatInterval, 'swarm-heartbeat');
       });
       
       wsClient.on('message', async (data) => {
@@ -21625,11 +21628,23 @@ if (!config.proxy) {
 class TrapDetector {
     constructor(bot) {
         this.bot = bot;
+        this.spawnTime = Date.now();
+        this.gracePeriodMs = 10000; // 10 second grace period after spawn
     }
 
     async detectTrap() {
         try {
             if (!this.bot) {
+                return [];
+            }
+            
+            // Skip danger detection during grace period after spawn
+            if (Date.now() - this.spawnTime < this.gracePeriodMs) {
+                return [];
+            }
+            
+            // Additional safety check - ensure bot is properly initialized
+            if (!this.bot.entity || !this.bot.entity.position) {
                 return [];
             }
             
@@ -21644,7 +21659,11 @@ class TrapDetector {
             }
             
             try {
-                if (await this.isNearLava() || (this.bot.health && this.bot.health < (this.lastHealth || this.bot.health))) {
+                const isNearLava = await this.isNearLava();
+                const hasSignificantHealthLoss = this.bot.health && this.lastHealth && 
+                                                  (this.lastHealth - this.bot.health) >= 2; // Only trigger on 2+ health loss
+                
+                if (isNearLava || hasSignificantHealthLoss) {
                     dangers.push({ type: 'lava', severity: 'critical', escape: ['fire_resistance_potion', 'water_bucket', 'pearl_out'] });
                 }
             } catch (error) {
@@ -21745,8 +21764,34 @@ class TrapDetector {
                 return false;
             }
             
-            const lava = this.bot.findBlock({ matching: this.bot.registry.blocksByName['lava'].id, maxDistance: 5, count: 1 });
-            return lava !== undefined;
+            // Additional safety checks
+            if (!this.bot.entity || !this.bot.entity.position) {
+                return false;
+            }
+            
+            // Check if bot is actually in a dangerous position (Y level where lava is common)
+            const botY = this.bot.entity.position.y;
+            if (botY > 50) { // Most dangerous lava is below Y=50
+                return false;
+            }
+            
+            // Look for lava closer to the bot (reduced from 5 to 3 blocks)
+            const lava = this.bot.findBlock({ 
+                matching: this.bot.registry.blocksByName['lava'].id, 
+                maxDistance: 3, 
+                count: 1 
+            });
+            
+            if (!lava) {
+                return false;
+            }
+            
+            // Additional check: is lava at the same level or below the bot?
+            const lavaY = lava.position.y;
+            
+            // Only consider it dangerous if lava is at or below bot level
+            return lavaY <= botY + 1;
+            
         } catch (error) {
             // Silently handle errors to prevent console spam
             return false;
@@ -21923,11 +21968,17 @@ class EscapeArtist {
   }
   
   async emergencyLogout() {
+    // Prevent emergency logout during grace period to avoid false positive loops
+    if (this.trapDetector && (Date.now() - this.trapDetector.spawnTime < this.trapDetector.gracePeriodMs)) {
+      console.log('[ESCAPE] Skipping emergency logout during grace period');
+      return false;
+    }
+
     console.log('[ESCAPE] Emergency logout initiated...');
     await this.emergencyStash();
-    
+
     safeBotQuit(this.bot, 'Emergency escape');
-    
+
     return true;
   }
   
@@ -21999,7 +22050,10 @@ class EscapeArtist {
 class DangerMonitor {
   constructor(bot) {
     this.bot = bot;
+    this.trapDetector = new TrapDetector(bot);
     this.escapeArtist = new EscapeArtist(bot);
+    // Use the same trapDetector instance for consistency
+    this.escapeArtist.trapDetector = this.trapDetector;
     this.lastHealth = bot.health;
     this.monitoring = false;
   }
@@ -22007,13 +22061,13 @@ class DangerMonitor {
   startMonitoring() {
     this.monitoring = true;
     console.log('[DANGER] Monitoring started');
-    
+
     // Check every 500ms
     this.monitorInterval = setInterval(async () => {
       if (!this.monitoring) return;
       
       // Check for dangers
-      const dangers = await this.escapeArtist.trapDetector.detectTrap();
+      const dangers = await this.trapDetector.detectTrap();
       
       if (dangers.length > 0) {
         // Sort by severity
@@ -22039,6 +22093,9 @@ class DangerMonitor {
       this.lastHealth = this.bot.health;
       
     }, 500);
+    
+    // Track the interval for cleanup
+    addTrackedInterval(this.monitorInterval, 'danger-monitor');
   }
   
   async emergencyHealing() {
