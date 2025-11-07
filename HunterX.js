@@ -16628,18 +16628,48 @@ class BotSpawner {
   }
   
   async detectServerType(serverIP) {
-    console.log('[DETECTION] Testing server type...');
+    console.log('[DETECTION] Testing server type and version...');
     
     try {
       const [host, portStr] = serverIP.split(':');
       const port = parseInt(portStr) || 25565;
       
+      // Try detecting version first by attempting connection with multiple versions
+      const versionsToTry = ['1.21.4', '1.21.3', '1.21.2', '1.21.1', '1.21', '1.20.4', '1.20.3', '1.20.2', '1.20.1'];
+      let detectedVersion = null;
+      
+      for (const version of versionsToTry) {
+        try {
+          const result = await this.tryConnectWithVersion(host, port, version);
+          if (result) {
+            detectedVersion = version;
+            console.log(`[DETECTION] ✓ Server supports version ${version}`);
+            break;
+          }
+        } catch (err) {
+          // Try next version
+          continue;
+        }
+      }
+      
+      // If version detection failed, use default
+      if (!detectedVersion) {
+        console.log('[DETECTION] Could not auto-detect version, using 1.20.1');
+        detectedVersion = '1.20.1';
+      }
+      
+      // Store detected version in config for later use
+      if (!config.detectedServerVersion) {
+        config.detectedServerVersion = detectedVersion;
+      }
+      
+      // Now test server type with detected version
       const testBot = mineflayer.createBot({
         host,
         port,
         username: `TestBot_${Date.now().toString(36)}`,
         auth: 'offline',
-        version: '1.20.1',
+        version: detectedVersion,
         hideErrors: true
       });
       
@@ -16653,7 +16683,7 @@ class BotSpawner {
           clearTimeout(timeout);
           testBot.quit();
           console.log('[DETECTION] ✓ Server is CRACKED - will use proxies');
-          resolve({ cracked: true, useProxy: true });
+          resolve({ cracked: true, useProxy: true, version: detectedVersion });
         });
         
         testBot.once('error', (err) => {
@@ -16665,7 +16695,7 @@ class BotSpawner {
               err.message.includes('Session') ||
               err.message.includes('authenticate')) {
             console.log('[DETECTION] ✓ Server is PREMIUM - will use local account');
-            resolve({ cracked: false, useProxy: false });
+            resolve({ cracked: false, useProxy: false, version: detectedVersion });
           } else {
             reject(err);
           }
@@ -16680,7 +16710,7 @@ class BotSpawner {
               reasonStr.includes('premium') ||
               reasonStr.includes('Session')) {
             console.log('[DETECTION] ✓ Server is PREMIUM - will use local account (kicked)');
-            resolve({ cracked: false, useProxy: false });
+            resolve({ cracked: false, useProxy: false, version: detectedVersion });
           } else {
             reject(new Error(`Kicked: ${reasonStr}`));
           }
@@ -16692,32 +16722,97 @@ class BotSpawner {
     }
   }
   
-  async spawnBot(serverIP, options = {}) {
-    if (!this.serverType) {
+  async tryConnectWithVersion(host, port, version) {
+    return new Promise((resolve, reject) => {
       try {
-        this.serverType = await this.detectServerType(serverIP);
-        config.swarm.serverType = this.serverType;
+        const testBot = mineflayer.createBot({
+          host,
+          port,
+          username: `VersionTest_${Date.now().toString(36)}`,
+          auth: 'offline',
+          version: version,
+          hideErrors: true
+        });
+        
+        const timeout = setTimeout(() => {
+          try { testBot.quit(); } catch(e) {}
+          resolve(false);
+        }, 3000);
+        
+        testBot.once('spawn', () => {
+          clearTimeout(timeout);
+          try { testBot.quit(); } catch(e) {}
+          resolve(true);
+        });
+        
+        testBot.once('error', (err) => {
+          clearTimeout(timeout);
+          try { testBot.quit(); } catch(e) {}
+          resolve(false);
+        });
+        
+        testBot.once('kicked', () => {
+          clearTimeout(timeout);
+          try { testBot.quit(); } catch(e) {}
+          resolve(true); // Server responded, version is supported
+        });
       } catch (err) {
-        console.error('[DETECTION] Failed to detect server type:', err.message);
-        console.log('[DETECTION] Defaulting to cracked server mode');
-        this.serverType = { cracked: true, useProxy: true };
-        config.swarm.serverType = this.serverType;
+        reject(err);
+      }
+    });
+  }
+  
+  async spawnBot(serverIP, options = {}) {
+    const maxRetries = options.maxRetries || 3;
+    let lastError = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        if (!this.serverType) {
+          try {
+            this.serverType = await this.detectServerType(serverIP);
+            config.swarm.serverType = this.serverType;
+          } catch (err) {
+            console.error('[DETECTION] Failed to detect server type:', err.message);
+            console.log('[DETECTION] Defaulting to cracked server mode');
+            this.serverType = { cracked: true, useProxy: true };
+            config.swarm.serverType = this.serverType;
+          }
+        }
+        
+        if (this.serverType.cracked) {
+          if (this.getActiveBotCount() >= this.maxBots) {
+            throw new Error(`Cannot spawn more bots - max limit ${this.maxBots} reached`);
+          }
+          return await this.createProxyBot(serverIP, options);
+        }
+        
+        // Premium servers - only one local account bot allowed
+        if (this.activeBots.some(info => info.type === 'local')) {
+          throw new Error('Local account bot already running');
+        }
+        
+        return await this.createLocalBot(serverIP, options);
+      } catch (err) {
+        lastError = err;
+        const errorCode = err.code || err.message;
+        
+        // Check if error is retryable
+        const retryableErrors = ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'];
+        const isRetryable = retryableErrors.some(code => errorCode.includes(code));
+        
+        if (isRetryable && attempt < maxRetries) {
+          const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000); // Exponential backoff, max 10s
+          console.log(`[SPAWNER] Connection attempt ${attempt}/${maxRetries} failed: ${errorCode}. Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else if (!isRetryable || attempt === maxRetries) {
+          console.log(`[SPAWNER] Connection failed after ${attempt} attempts: ${err.message}`);
+          throw err;
+        }
       }
     }
     
-    if (this.serverType.cracked) {
-      if (this.getActiveBotCount() >= this.maxBots) {
-        throw new Error(`Cannot spawn more bots - max limit ${this.maxBots} reached`);
-      }
-      return await this.createProxyBot(serverIP, options);
-    }
-    
-    // Premium servers - only one local account bot allowed
-    if (this.activeBots.some(info => info.type === 'local')) {
-      throw new Error('Local account bot already running');
-    }
-    
-    return await this.createLocalBot(serverIP, options);
+    throw lastError || new Error('Failed to spawn bot after all retries');
   }
   
   async createProxyBot(serverIP, options) {
@@ -16737,7 +16832,7 @@ class BotSpawner {
       port,
       username,
       auth: 'offline',
-      version: options.version || '1.20.1'
+      version: options.version || this.serverType?.version || config.detectedServerVersion || '1.20.1'
     };
     
     // Add proxy configuration if enabled
@@ -16802,7 +16897,7 @@ class BotSpawner {
       username: account.username,
       password: account.password,
       auth: account.authType || 'microsoft',
-      version: options.version || '1.20.1'
+      version: options.version || this.serverType?.version || config.detectedServerVersion || '1.20.1'
     };
     
     // Add proxy configuration if enabled
@@ -19648,7 +19743,6 @@ async function launchBot(username, role = 'fighter') {
   // Store component references on bot for access
   bot.combatAI = combatAI;
   bot.combatLogger = combatLogger;
-  bot.schematicBuilder = schematicBuilder;
   bot.schematicLoader = schematicLoader;
   combatAI.setCombatLogger(combatLogger);
   // Store combatAI reference on bot for stats access
@@ -20320,36 +20414,52 @@ async function launchBot(username, role = 'fighter') {
     });
     
     bot.on('error', (err) => {
-      const errorCode = err.code || 'UNKNOWN';
-      const errorMsg = err.message || 'Unknown error';
-      
-      console.log(`[ERROR] ${errorCode}: ${errorMsg}`);
-      
-      // Log to file with full stack trace
-      const logEntry = `[${new Date().toISOString()}] ${errorCode}: ${errorMsg}\n${err.stack || 'No stack trace'}\n\n`;
-      safeAppendFile('./logs/errors.log', logEntry);
-      
-      // Handle specific error types
-      switch (errorCode) {
-        case 'ECONNREFUSED':
-          console.log('[ERROR] Cannot connect to server - check IP/port. Will retry in 5s...');
-          break;
-        case 'ECONNRESET':
-          console.log('[ERROR] Connection reset by server - possible kick/ban. Reconnecting...');
-          break;
-        case 'ETIMEDOUT':
-          console.log('[ERROR] Connection timeout - server not responding. Retrying...');
-          break;
-        case 'ENOTFOUND':
-          console.log('[ERROR] Server hostname not found - check server address');
-          break;
-        default:
-          console.log(`[ERROR] Unhandled error type: ${errorCode}`);
-      }
-      
-      // Don't crash - let auto-reconnect handle it
-      // The bot.on('end') handler will trigger reconnection
-    });
+       const errorCode = err.code || 'UNKNOWN';
+       const errorMsg = err.message || 'Unknown error';
+
+       console.log(`[ERROR] ${errorCode}: ${errorMsg}`);
+
+       // Log to file with full stack trace
+       const logEntry = `[${new Date().toISOString()}] ${errorCode}: ${errorMsg}\n${err.stack || 'No stack trace'}\n\n`;
+       safeAppendFile('./logs/errors.log', logEntry);
+
+       // Handle specific error types with detailed information
+       switch (errorCode) {
+         case 'ECONNREFUSED':
+           console.log('[ERROR] ✗ Cannot connect to server - check IP/port or server status.');
+           console.log('[ERROR] → Server is not accepting connections');
+           console.log('[ERROR] → Will attempt automatic reconnection...');
+           break;
+         case 'ECONNRESET':
+           console.log('[ERROR] ✗ Connection reset by server');
+           console.log('[ERROR] → Possible causes: player was kicked/banned, server restarted, network issue');
+           console.log('[ERROR] → Attempting to reconnect...');
+           break;
+         case 'ETIMEDOUT':
+           console.log('[ERROR] ✗ Connection timeout - server not responding');
+           console.log('[ERROR] → Server may be offline or network connectivity issue');
+           console.log('[ERROR] → Retrying with exponential backoff...');
+           break;
+         case 'ENOTFOUND':
+           console.log('[ERROR] ✗ Server hostname/IP not found');
+           console.log('[ERROR] → Check server address configuration');
+           break;
+         case 'EHOSTUNREACH':
+           console.log('[ERROR] ✗ Host is unreachable (network issue)');
+           console.log('[ERROR] → Check network connectivity and firewall rules');
+           break;
+         case 'ENETUNREACH':
+           console.log('[ERROR] ✗ Network is unreachable');
+           console.log('[ERROR] → Check network connectivity');
+           break;
+         default:
+           console.log(`[ERROR] ✗ Unhandled error type: ${errorCode}`);
+           console.log(`[ERROR] Message: ${errorMsg}`);
+       }
+
+       // Don't crash - let auto-reconnect handle it
+       // The bot.on('end') handler will trigger reconnection
+     });
   });
   
   return bot;
