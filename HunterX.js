@@ -19883,6 +19883,24 @@ async function launchBot(username, role = 'fighter') {
 
   
   bot.loadPlugin(pvp);
+  
+  // Fix deprecated physicTick event in mineflayer-pvp plugin
+  // Replace physicTick listeners with physicsTick to avoid deprecation warnings
+  setTimeout(() => {
+    if (bot.pvp) {
+      // Remove the deprecated physicTick listener and add physicsTick
+      const originalListeners = bot.listeners('physicTick');
+      bot.removeAllListeners('physicTick');
+      
+      // Re-add the listeners with the correct event name
+      originalListeners.forEach(listener => {
+        bot.on('physicsTick', listener);
+      });
+      
+      console.log('[PVP] Fixed deprecated physicTick event -> physicsTick');
+    }
+  }, 100);
+  
   bot.loadPlugin(pathfinder);
   
   globalBot = bot;
@@ -19917,7 +19935,6 @@ async function launchBot(username, role = 'fighter') {
   // Store component references on bot for access
   bot.combatAI = combatAI;
   bot.combatLogger = combatLogger;
-  bot.schematicBuilder = schematicBuilder;
   bot.schematicLoader = schematicLoader;
   
   // Safe method calls with existence checks
