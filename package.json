@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "node HunterX.js",
-    "install-deps": "npm install --no-optional"
+    "install-deps": "npm install --no-optional",
+    "postinstall": "npm run check-optional-deps",
+    "check-optional-deps": "node -e \"try{require('brain.js')}catch(e){console.log('[INFO] Optional dependency brain.js not installed - bot will use fallback AI')}\""
   },
   "keywords": [
     "minecraft",

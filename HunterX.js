@@ -18,6 +18,18 @@
 // - Wind charge positioning combos
 // - Smart weapon switching based on combat situation
 // - Comprehensive accuracy metrics and performance tracking
+//
+// === NEURAL BRAIN - OPTIONAL WITH GRACEFUL FALLBACK ===
+// Brain.js neural learning is optional:
+// - With brain.js: Neural networks for combat, placement, dupe discovery, conversation
+// - Without brain.js: All systems work identically using hardcoded fallback logic
+// - Automatic detection at startup
+// - Training data collected regardless of neural availability
+// - Models saved/loaded when neural is available
+// Installation:
+// - Desktop/X11 systems: npm install (includes brain.js)
+// - Headless systems: npm install --no-optional (uses fallbacks)
+//
 // === WHITELIST & TRUST SYSTEM ===
 // The bot uses a tiered trust system stored in ./data/whitelist.json
 // Structure: { name: string, level: 'owner' | 'admin' | 'trusted' | 'guest' }
@@ -788,46 +800,204 @@ if (neuralNetworksAvailable) {
 }
 
 // === NEURAL NETWORK FALLBACK HELPERS ===
-function safeNeuralPredict(network, input, fallbackOutput = null) {
-  if (!neuralNetworksAvailable || !network) {
-    return fallbackOutput || Math.random(); // Simple random fallback
+
+// Unified interface for neural prediction - supports both network objects and named networks
+function safeNeuralPredict(networkOrName, input, fallbackOutput = null) {
+  if (!neuralNetworksAvailable) {
+    return fallbackOutput !== null ? fallbackOutput : null;
+  }
+  
+  let network = null;
+  
+  // Support both direct network objects and named network strings
+  if (typeof networkOrName === 'string') {
+    network = config.neural?.[networkOrName];
+  } else {
+    network = networkOrName;
+  }
+  
+  if (!network) {
+    return fallbackOutput !== null ? fallbackOutput : null;
   }
   
   try {
     return network.run(input);
   } catch (err) {
-    console.log('[NEURAL] Prediction failed, using fallback:', err.message);
-    return fallbackOutput || Math.random();
+    console.warn(`[NEURAL] Prediction failed: ${err.message}`);
+    return fallbackOutput !== null ? fallbackOutput : null;
   }
 }
 
-function safeNeuralTrain(network, data, options = {}) {
-  if (!neuralNetworksAvailable || !network) {
-    console.log('[NEURAL] Training skipped - neural networks not available');
-    return Promise.resolve();
+// Unified interface for neural training - supports both network objects and named networks
+function safeNeuralTrain(networkOrName, data, options = {}) {
+  if (!neuralNetworksAvailable) {
+    return Promise.resolve(false);
+  }
+  
+  let network = null;
+  let networkName = typeof networkOrName === 'string' ? networkOrName : 'unknown';
+  
+  // Support both direct network objects and named network strings
+  if (typeof networkOrName === 'string') {
+    network = config.neural?.[networkOrName];
+  } else {
+    network = networkOrName;
+  }
+  
+  if (!network) {
+    return Promise.resolve(false);
   }
   
   try {
-    return network.train(data, options);
+    const trainOptions = {
+      iterations: 1000,
+      errorThresh: 0.005,
+      log: false,
+      ...options
+    };
+    network.train(data, trainOptions);
+    return Promise.resolve(true);
   } catch (err) {
-    console.log('[NEURAL] Training failed:', err.message);
-    return Promise.resolve();
+    console.warn(`[NEURAL] Training failed on ${networkName}: ${err.message}`);
+    return Promise.resolve(false);
   }
 }
 
-function safeNeuralSave(network, filePath) {
-  if (!neuralNetworksAvailable || !network) {
-    console.log(`[NEURAL] Save skipped - neural networks not available: ${filePath}`);
+// Save a neural network to disk
+function safeNeuralSave(networkOrName, filePath = null) {
+  if (!neuralNetworksAvailable) {
+    return false;
+  }
+  
+  let network = null;
+  let networkName = typeof networkOrName === 'string' ? networkOrName : 'unknown';
+  
+  // Support both direct network objects and named network strings
+  if (typeof networkOrName === 'string') {
+    network = config.neural?.[networkOrName];
+    filePath = filePath || `./models/${networkOrName}_model.json`;
+  } else {
+    network = networkOrName;
+  }
+  
+  if (!network || !filePath) {
     return false;
   }
   
   try {
     const jsonData = network.toJSON();
-    return safeWriteJson(filePath, jsonData);
+    const result = safeWriteJson(filePath, jsonData);
+    if (result) {
+      console.log(`[NEURAL] ✓ Saved model: ${networkName}`);
+    }
+    return result;
   } catch (err) {
-    console.log(`[NEURAL] Save failed: ${filePath} - ${err.message}`);
+    console.warn(`[NEURAL] Save failed on ${networkName}: ${err.message}`);
     return false;
   }
+}
+
+// Load a neural network from disk
+function safeNeuralLoad(networkName, filePath = null) {
+  if (!neuralNetworksAvailable || !brain) {
+    return false;
+  }
+  
+  filePath = filePath || `./models/${networkName}_model.json`;
+  
+  try {
+    const modelData = safeReadJson(filePath);
+    if (!modelData) {
+      return false;
+    }
+    
+    // Create appropriate network type
+    let network;
+    if (networkName === 'dupe' || networkName === 'conversation') {
+      network = new brain.recurrent.LSTM();
+    } else {
+      network = new brain.NeuralNetwork();
+    }
+    
+    network.fromJSON(modelData);
+    config.neural[networkName] = network;
+    console.log(`[NEURAL] ✓ Loaded model: ${networkName}`);
+    return true;
+  } catch (err) {
+    console.warn(`[NEURAL] Load failed on ${networkName}: ${err.message}`);
+    return false;
+  }
+}
+
+// Initialize neural brain with better error handling
+async function initializeNeuralBrain() {
+  if (!neuralNetworksAvailable) {
+    console.log('[NEURAL] ⚠️ Brain.js not available - neural features disabled');
+    return false;
+  }
+  
+  try {
+    console.log('[NEURAL] ✓ Brain.js available - initializing neural networks...');
+    
+    // Initialize networks with appropriate architectures
+    if (!config.neural.combat) {
+      config.neural.combat = new brain.NeuralNetwork({ hiddenLayers: [256, 128, 64] });
+    }
+    if (!config.neural.placement) {
+      config.neural.placement = new brain.NeuralNetwork({ hiddenLayers: [128, 64, 32] });
+    }
+    if (!config.neural.dupe) {
+      config.neural.dupe = new brain.recurrent.LSTM({ hiddenLayers: [256, 128, 64] });
+    }
+    if (!config.neural.conversation) {
+      config.neural.conversation = new brain.recurrent.LSTM({ hiddenLayers: [128, 64] });
+    }
+    
+    // Load trained models if they exist
+    const networkNames = ['combat', 'placement', 'dupe', 'conversation'];
+    for (const name of networkNames) {
+      const modelPath = `./models/${name}_model.json`;
+      if (fs.existsSync(modelPath)) {
+        if (safeNeuralLoad(name, modelPath)) {
+          console.log(`[NEURAL] ✓ Loaded pre-trained ${name} model`);
+        }
+      }
+    }
+    
+    return true;
+  } catch (err) {
+    console.warn(`[NEURAL] Error during initialization: ${err.message}`);
+    neuralNetworksAvailable = false;
+    return false;
+  }
+}
+
+// Log system status regarding neural availability
+function logNeuralSystemStatus() {
+  console.log('\n=== NEURAL SYSTEM STATUS ===');
+  console.log(`Neural Brain: ${neuralNetworksAvailable ? '✓ ENABLED' : '⚠️ DISABLED (fallback active)'}`);
+  
+  if (neuralNetworksAvailable) {
+    console.log('Neural Networks Loaded:');
+    for (const [name, network] of Object.entries(config.neural || {})) {
+      if (name !== 'available' && network) {
+        console.log(`  - ${name}: ✓ Ready`);
+      }
+    }
+    const modelsDir = './models';
+    if (fs.existsSync(modelsDir)) {
+      const models = fs.readdirSync(modelsDir).filter(f => f.endsWith('_model.json'));
+      console.log(`  Models on disk: ${models.length} saved models`);
+    }
+  } else {
+    console.log('Fallback behavior:');
+    console.log('  - Combat: Hardcoded tactics only');
+    console.log('  - Prediction: Velocity-based only');
+    console.log('  - Training: Data collection only (no training)');
+    console.log('  - Learning: Models will not be improved');
+  }
+  
+  console.log('============================\n');
 }
 
 // Load whitelist with auto-migration from legacy format
@@ -22656,6 +22826,15 @@ async function initializeHunterX() {
     process.exit(1);
   }
   
+  // Initialize neural brain with graceful fallback
+  console.log('\n⚙️ Initializing neural systems...\n');
+  await initializeNeuralBrain();
+  logNeuralSystemStatus();
+  
+  // Initialize training data collector (always available)
+  global.trainingDataCollector = new TrainingDataCollector();
+  console.log('[TRAINING] ✓ Training data collector initialized\n');
+  
   // Load or create configuration
   const configLoaded = loadConfiguration();
   if (!configLoaded) {
@@ -23736,6 +23915,227 @@ class GlobalInventory {
     }
     
     return report;
+  }
+}
+
+// === TRAINING DATA COLLECTOR ===
+// Collects training data for neural networks regardless of availability
+class TrainingDataCollector {
+  constructor() {
+    this.trainingData = {
+      combat: [],
+      placement: [],
+      dupe: [],
+      conversation: []
+    };
+    this.maxBufferSize = 10000;
+    this.load();
+  }
+  
+  load() {
+    try {
+      const data = safeReadJson('./training/training_data.json', null);
+      if (data && data.trainingData) {
+        this.trainingData = data.trainingData;
+      }
+    } catch (err) {
+      console.log('[TRAINING] Could not load existing training data, starting fresh');
+    }
+  }
+  
+  save() {
+    try {
+      safeWriteJson('./training/training_data.json', {
+        trainingData: this.trainingData,
+        lastUpdated: new Date().toISOString(),
+        bufferSizes: Object.fromEntries(
+          Object.entries(this.trainingData).map(([k, v]) => [k, v.length])
+        )
+      });
+    } catch (err) {
+      console.warn('[TRAINING] Failed to save training data:', err.message);
+    }
+  }
+  
+  // Record combat outcome for training
+  recordCombatOutcome(state, action, reward, nextState) {
+    if (!this.trainingData.combat) {
+      this.trainingData.combat = [];
+    }
+    
+    this.trainingData.combat.push({
+      input: state,
+      output: { action, reward },
+      timestamp: Date.now()
+    });
+    
+    // Trigger periodic training if neural available
+    if (neuralNetworksAvailable && this.trainingData.combat.length % 100 === 0) {
+      this.trainCombatModel();
+    }
+    
+    // Keep buffer size in check
+    if (this.trainingData.combat.length > this.maxBufferSize) {
+      this.trainingData.combat = this.trainingData.combat.slice(-this.maxBufferSize);
+    }
+  }
+  
+  // Record placement prediction for training
+  recordPlacementOutcome(state, position, result) {
+    if (!this.trainingData.placement) {
+      this.trainingData.placement = [];
+    }
+    
+    this.trainingData.placement.push({
+      input: state,
+      output: { position, result },
+      timestamp: Date.now()
+    });
+    
+    // Trigger periodic training if neural available
+    if (neuralNetworksAvailable && this.trainingData.placement.length % 50 === 0) {
+      this.trainPlacementModel();
+    }
+    
+    // Keep buffer size in check
+    if (this.trainingData.placement.length > this.maxBufferSize) {
+      this.trainingData.placement = this.trainingData.placement.slice(-this.maxBufferSize);
+    }
+  }
+  
+  // Record dupe discovery for training
+  recordDupeAttempt(input, output, success) {
+    if (!this.trainingData.dupe) {
+      this.trainingData.dupe = [];
+    }
+    
+    this.trainingData.dupe.push({
+      input,
+      output: { action: output, success },
+      timestamp: Date.now()
+    });
+    
+    // Trigger periodic training if neural available
+    if (neuralNetworksAvailable && this.trainingData.dupe.length % 50 === 0) {
+      this.trainDupeModel();
+    }
+    
+    // Keep buffer size in check
+    if (this.trainingData.dupe.length > this.maxBufferSize) {
+      this.trainingData.dupe = this.trainingData.dupe.slice(-this.maxBufferSize);
+    }
+  }
+  
+  // Record conversation for training
+  recordConversation(input, output) {
+    if (!this.trainingData.conversation) {
+      this.trainingData.conversation = [];
+    }
+    
+    this.trainingData.conversation.push({
+      input,
+      output,
+      timestamp: Date.now()
+    });
+    
+    // Trigger periodic training if neural available
+    if (neuralNetworksAvailable && this.trainingData.conversation.length % 50 === 0) {
+      this.trainConversationModel();
+    }
+    
+    // Keep buffer size in check
+    if (this.trainingData.conversation.length > this.maxBufferSize) {
+      this.trainingData.conversation = this.trainingData.conversation.slice(-this.maxBufferSize);
+    }
+  }
+  
+  // Train combat model
+  async trainCombatModel() {
+    if (!neuralNetworksAvailable || this.trainingData.combat.length < 50) {
+      return false;
+    }
+    
+    try {
+      const success = await safeNeuralTrain('combat', this.trainingData.combat);
+      if (success) {
+        safeNeuralSave('combat');
+        console.log(`[TRAINING] Combat model updated with ${this.trainingData.combat.length} samples`);
+      }
+      return success;
+    } catch (err) {
+      console.warn('[TRAINING] Combat training error:', err.message);
+      return false;
+    }
+  }
+  
+  // Train placement model
+  async trainPlacementModel() {
+    if (!neuralNetworksAvailable || this.trainingData.placement.length < 30) {
+      return false;
+    }
+    
+    try {
+      const success = await safeNeuralTrain('placement', this.trainingData.placement);
+      if (success) {
+        safeNeuralSave('placement');
+        console.log(`[TRAINING] Placement model updated with ${this.trainingData.placement.length} samples`);
+      }
+      return success;
+    } catch (err) {
+      console.warn('[TRAINING] Placement training error:', err.message);
+      return false;
+    }
+  }
+  
+  // Train dupe model
+  async trainDupeModel() {
+    if (!neuralNetworksAvailable || this.trainingData.dupe.length < 30) {
+      return false;
+    }
+    
+    try {
+      const success = await safeNeuralTrain('dupe', this.trainingData.dupe);
+      if (success) {
+        safeNeuralSave('dupe');
+        console.log(`[TRAINING] Dupe model updated with ${this.trainingData.dupe.length} samples`);
+      }
+      return success;
+    } catch (err) {
+      console.warn('[TRAINING] Dupe training error:', err.message);
+      return false;
+    }
+  }
+  
+  // Train conversation model
+  async trainConversationModel() {
+    if (!neuralNetworksAvailable || this.trainingData.conversation.length < 30) {
+      return false;
+    }
+    
+    try {
+      const success = await safeNeuralTrain('conversation', this.trainingData.conversation);
+      if (success) {
+        safeNeuralSave('conversation');
+        console.log(`[TRAINING] Conversation model updated with ${this.trainingData.conversation.length} samples`);
+      }
+      return success;
+    } catch (err) {
+      console.warn('[TRAINING] Conversation training error:', err.message);
+      return false;
+    }
+  }
+  
+  getStats() {
+    return {
+      combat: this.trainingData.combat?.length || 0,
+      placement: this.trainingData.placement?.length || 0,
+      dupe: this.trainingData.dupe?.length || 0,
+      conversation: this.trainingData.conversation?.length || 0,
+      total: (this.trainingData.combat?.length || 0) + 
+             (this.trainingData.placement?.length || 0) + 
+             (this.trainingData.dupe?.length || 0) + 
+             (this.trainingData.conversation?.length || 0)
+    };
   }
 }
 
