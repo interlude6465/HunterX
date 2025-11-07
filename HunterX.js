@@ -21348,7 +21348,7 @@ async function launchBot(username, role = 'fighter') {
       
       // Register with global supply chain manager if not already done
       if (globalSupplyChainManager && !globalSupplyChainManager.activeBots.has(bot.username)) {
-        globalSupplyChainManager.registerBot(bot);
+        await globalSupplyChainManager.registerBot(bot);
       }
       
       // Initialize basic inventory and pathfinding for supply chain tasks
@@ -22062,7 +22062,9 @@ function launchSupplyChainManager() {
           // Register with supply chain manager after bot is ready
           if (bot) {
             bot.once('spawn', () => {
-              globalSupplyChainManager.registerBot(bot);
+              globalSupplyChainManager.registerBot(bot).catch(err => {
+                console.error(`[SUPPLY] Error registering bot ${bot.username}:`, err);
+              });
             });
           }
         }, i * 2000);
@@ -23458,7 +23460,7 @@ class SupplyChainManager {
     console.log('[SUPPLY] Supply Chain Manager initialized');
   }
   
-  registerBot(bot) {
+  async registerBot(bot) {
     if (!bot || !bot.username) {
       console.log('[SUPPLY] Invalid bot provided for registration');
       return false;
@@ -23498,7 +23500,7 @@ class SupplyChainManager {
     }
   }
   
-  assignTaskToBot(botUsername) {
+  async assignTaskToBot(botUsername) {
     const botInfo = this.activeBots.get(botUsername);
     if (!botInfo || botInfo.status !== 'idle') {
       return false;
@@ -23519,7 +23521,7 @@ class SupplyChainManager {
     return true;
   }
   
-  executeTask(botUsername, task) {
+  async executeTask(botUsername, task) {
     const botInfo = this.activeBots.get(botUsername);
     if (!botInfo) return;
     
@@ -23534,11 +23536,13 @@ class SupplyChainManager {
     
     // Simulate task execution
     setTimeout(() => {
-      this.completeTask(botUsername, task.id, true);
+      this.completeTask(botUsername, task.id, true).catch(err => {
+        console.error(`[SUPPLY] Error completing task for ${botUsername}:`, err);
+      });
     }, Math.random() * 10000 + 5000); // 5-15 seconds
   }
   
-  completeTask(botUsername, taskId, success = true) {
+  async completeTask(botUsername, taskId, success = true) {
     const botInfo = this.activeBots.get(botUsername);
     if (!botInfo || !botInfo.currentTask || botInfo.currentTask.id !== taskId) {
       return;
@@ -23582,7 +23586,9 @@ class SupplyChainManager {
       // Try to assign tasks to idle bots
       for (const [botUsername, botInfo] of this.activeBots) {
         if (botInfo.status === 'idle') {
-          this.assignTaskToBot(botUsername);
+          this.assignTaskToBot(botUsername).catch(err => {
+            console.error(`[SUPPLY] Error assigning task to ${botUsername}:`, err);
+          });
         }
       }
       
