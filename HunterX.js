@@ -8754,51 +8754,124 @@ class CombatAI {
       console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
       this.inCombat = true;
       this.currentTarget = attacker;
+      this.isCurrentlyFighting = true;
       
-      // Initialize crystal PvP if we have resources
-      const useCrystalPvP = this.hasCrystalResources();
+      // Initialize crystal PvP if we have resources and target is player
+      const useCrystalPvP = this.hasCrystalResources() && isPlayer;
       let crystalPvP = null;
       
       if (useCrystalPvP) {
         crystalPvP = this.getCrystalPvP();
         console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
         
-        // Evaluate combat situation and execute strategy
-        const strategy = await crystalPvP.evaluateCombatSituation(attacker);
-        console.log(`[COMBAT] Strategy: ${strategy}`);
-        
-        // Execute initial strategy
-        await crystalPvP.executeStrategy(strategy, attacker);
-      } else {
-        // Use smart weapon switching for optimal attack
-        console.log('[COMBAT] 🎯 Smart weapon switching enabled!');
-        await this.executeSmartCombat(attacker);
-        await this.executeOptimalAttack(attacker);
+        // Execute multi-crystal tactic
+        await crystalPvP.executeCrystalCombo(attacker);
       }
+      
+      // Enhanced tactical combat loop
+      const combatLoop = setInterval(async () => {
+        if (!this.isCurrentlyFighting || this.bot.health <= 0) {
+          clearInterval(combatLoop);
+          this.inCombat = false;
+          this.isCurrentlyFighting = false;
+          console.log('[COMBAT] Combat ended');
+          return;
+        }
+        
+        // Check if target is still valid
+        if (!attacker || attacker.health <= 0) {
+          console.log(`[COMBAT] Target defeated`);
+          clearInterval(combatLoop);
+          this.inCombat = false;
+          this.isCurrentlyFighting = false;
+          
+          // Log combat performance
+          if (crystalPvP) {
+            const metrics = crystalPvP.getPerformanceMetrics();
+            console.log(`[COMBAT] Crystal PvP Stats: ${metrics.crystalsPlaced} crystals, ${metrics.damageDealt.toFixed(1)} damage dealt`);
+          }
+          
+          // Collect loot
+          await this.collectNearbyLoot();
+          return;
+        }
+        
+        const distance = this.bot.entity.position.distanceTo(attacker.position);
+        
+        // Use shield when low health
+        if (this.bot.health < 8) {
+          console.log(`[COMBAT] Raising shield for defense`);
+          await this.raiseShield();
+        }
+        
+        // Eat food to heal if available
+        if (this.bot.health < 10) {
+          const food = this.bot.inventory.items().find(i => i.foodProperty);
+          if (food) {
+            await this.eatFood(food);
+          }
+        }
+        
+        // Move closer if too far
+        if (distance > 3) {
+          console.log(`[COMBAT] Moving closer (${distance.toFixed(1)}m)`);
+          await this.moveToward(attacker);
+        }
+        
+        // Attack with best weapon
+        await this.executeSmartCombat(attacker);
+        
+        // Continue crystal PvP if resources available and target is player
+        if (useCrystalPvP && crystalPvP && isPlayer) {
+          const hasResources = this.hasCrystalResources();
+          if (hasResources && Math.random() < 0.3) { // 30% chance to continue crystal attacks
+            await crystalPvP.executeCrystalCombo(attacker);
+          }
+        }
+        
+      }, 200); // Update every 200ms
+      
+      // Store combat loop reference for cleanup
+      this.combatCheck = combatLoop;
+      
     } catch (err) {
       console.log(`[COMBAT] handleCombat failed: ${err.message}`);
       this.inCombat = false;
+      this.isCurrentlyFighting = false;
       return;
     }
-    
-    // Monitor combat with smart weapon switching
-    const combatCheck = setInterval(async () => {
-      if (!attacker || attacker.isValid === false) {
-        clearInterval(combatCheck);
-        this.inCombat = false;
-        console.log('[COMBAT] Target eliminated or escaped');
-        
-        // Log all combat performance
-        this.logAllCombatMetrics();
-        
-        // Loot drops
-        await sleep(1000);
-        await this.collectNearbyLoot();
-        return;
-      }
-      
-      // Continue monitoring combat...
-    }, 500);
+  }
+  
+  async raiseShield() {
+    const shield = this.bot.inventory.items().find(i => i.name === 'shield');
+    if (shield) {
+      await this.bot.equip(shield, 'off-hand');
+      console.log('[COMBAT] Shield equipped in off-hand');
+    }
+  }
+  
+  async eatFood(food) {
+    console.log(`[COMBAT] Eating: ${food.name}`);
+    await this.bot.equip(food, 'hand');
+    await this.bot.consume();
+    console.log(`[COMBAT] Health restored to ${this.bot.health}/20`);
+  }
+  
+  async moveToward(target) {
+    try {
+      await this.bot.pathfinder.goto(new goals.GoalNear(
+        target.position.x,
+        target.position.y,
+        target.position.z,
+        2
+      ));
+    } catch (e) {
+      // Couldn't pathfind, use direct movement as fallback
+      const dir = target.position.minus(this.bot.entity.position).normalize();
+      this.bot.setControlState('forward', true);
+      await sleep(100);
+      this.bot.setControlState('forward', false);
+    }
   }
   
   async collectNearbyLoot() {
@@ -9257,14 +9330,7 @@ class CrystalPvP {
     const startTime = Date.now();
     
     try {
-      // Find optimal placement position
-      const placement = await this.calculateOptimalPlacement(enemy);
-      if (!placement) {
-        console.log('[CRYSTAL] No valid placement found');
-        return false;
-      }
-      
-      console.log(`[CRYSTAL] 💎 Executing combo on ${enemy.username || 'target'}`);
+      console.log(`[CRYSTAL] 💎 Starting multi-crystal combo on ${enemy.username || 'target'}`);
       
       // Get resources
       const obsidian = this.bot.inventory.items().find(i => i.name === 'obsidian');
@@ -9275,47 +9341,78 @@ class CrystalPvP {
         return false;
       }
       
-      // Humanization: Add slight reaction jitter
-      const reactionDelay = this.calculateReactionTime();
-      await sleep(reactionDelay);
-      
-      // Step 1: Equip and place obsidian
-      await this.bot.equip(obsidian, 'hand');
-      await sleep(jitter(30, 0.2)); // ~30ms with jitter
-      
-      const obsidianBlock = this.bot.blockAt(placement.obsidianPos);
-      if (!obsidianBlock || obsidianBlock.name === 'air') {
-        await this.bot.placeBlock(this.bot.blockAt(placement.obsidianPos.offset(0, -1, 0)), new Vec3(0, 1, 0));
-        await sleep(jitter(25, 0.2)); // ~25ms
+      // Strategy: Place multiple crystals around target
+      const placements = [];
+      for (let i = 0; i < 3; i++) {
+        console.log(`[CRYSTAL] Placement ${i + 1}/3`);
+        
+        // Find good placement spot
+        const placement = this.findCrystalPlacement(enemy, i);
+        if (!placement) {
+          console.log(`[CRYSTAL] No valid placement found for position ${i + 1}`);
+          continue;
+        }
+        
+        // Humanization: Add slight reaction jitter
+        const reactionDelay = this.calculateReactionTime();
+        await sleep(reactionDelay);
+        
+        // Move to placement spot
+        try {
+          await this.bot.pathfinder.goto(new goals.GoalNear(
+            placement.x,
+            placement.y,
+            placement.z,
+            1
+          ));
+        } catch (e) {
+          console.log(`[CRYSTAL] Couldn't reach placement spot ${i + 1}`);
+          continue;
+        }
+        
+        // Place obsidian
+        const block = this.bot.blockAt(new Vec3(placement.x, placement.y, placement.z));
+        if (block && block.name === 'air') {
+          // Check block below for placing surface
+          const belowBlock = this.bot.blockAt(new Vec3(placement.x, placement.y - 1, placement.z));
+          if (belowBlock && belowBlock.name !== 'air') {
+            await this.bot.equip(obsidian, 'hand');
+            await this.bot.placeBlock(belowBlock, new Vec3(0, 1, 0));
+            console.log(`[CRYSTAL] ✓ Placed obsidian at ${placement.x} ${placement.y} ${placement.z}`);
+            
+            // Wait a moment
+            await sleep(100);
+            
+            // Place crystal on top
+            const crystalBlock = this.bot.blockAt(new Vec3(placement.x, placement.y + 1, placement.z));
+            if (crystalBlock && crystalBlock.name === 'air') {
+              await this.bot.equip(crystal, 'hand');
+              await this.bot.placeBlock(crystalBlock, new Vec3(0, 0, 0));
+              console.log(`[CRYSTAL] ✓ Placed crystal on top`);
+              
+              placements.push({
+                x: placement.x,
+                y: placement.y + 1,
+                z: placement.z
+              });
+              
+              this.metrics.crystalsPlaced++;
+            }
+          }
+        }
+        
+        // Move away from crystal for detonation
+        await this.moveAwayFromCrystal(placement);
+        
+        // Small delay between placements
+        await sleep(200);
       }
       
-      // Step 2: Equip and place crystal
-      await this.bot.equip(crystal, 'hand');
-      await sleep(jitter(25, 0.2));
+      // Wait for target to get close to crystals
+      await sleep(500);
       
-      const crystalBlock = this.bot.blockAt(placement.obsidianPos);
-      await this.bot.placeBlock(crystalBlock, new Vec3(0, 1, 0));
-      await sleep(jitter(20, 0.2)); // ~20ms
-      
-      this.metrics.crystalsPlaced++;
-      
-      // Step 3: Instantly detonate crystal
-      const placedCrystal = this.findNearestCrystal(placement.crystalPos);
-      if (placedCrystal) {
-        // Instant break - superhuman speed
-        await sleep(Math.random() < this.perfectTimingChance ? this.minReactionTime : jitter(75, 0.3));
-        await this.bot.attack(placedCrystal);
-        this.metrics.crystalsHit++;
-        this.metrics.damageDealt += placement.enemyDamage;
-        this.metrics.damageTaken += placement.selfDamage;
-      }
-      
-      // Step 4: Quick switch to sword for follow-up
-      const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
-      if (sword) {
-        await sleep(jitter(30, 0.2));
-        await this.bot.equip(sword, 'hand');
-      }
+      // Detonate all crystals placed
+      await this.detonateCrystals(placements);
       
       // Record combo
       this.metrics.combos++;
@@ -9328,101 +9425,71 @@ class CrystalPvP {
       this.metrics.avgReactionTime = 
         this.metrics.reactionTimes.reduce((a, b) => a + b, 0) / this.metrics.reactionTimes.length;
       
-      console.log(`[CRYSTAL] ⚡ Combo executed in ${comboTime}ms (Enemy: ${placement.enemyDamage.toFixed(1)} dmg, Self: ${placement.selfDamage.toFixed(1)} dmg)`);
+      console.log(`[CRYSTAL] ⚡ Multi-crystal combo executed in ${comboTime}ms (${placements.length} crystals)`);
       
-      // Train neural network
-      this.trainFromCombat(placement, true);
-      
-      return true;
+      return placements.length > 0;
     } catch (err) {
       console.log(`[CRYSTAL] Combo failed: ${err.message}`);
       return false;
     }
+  }
+  
+  findCrystalPlacement(target, index) {
+    const distance = 4;
+    const angle = (Math.PI * 2 / 3) * index; // 120 degrees apart
     
-    // Base monitoring commands
-    if (lower.includes('base monitor status') || lower.includes('monitor status')) {
-      if (this.bot.baseMonitor) {
-        const stats = this.bot.baseMonitor.getStats();
-        this.bot.chat(`🏠 Base Monitor: ${stats.enabled ? '✅ Active' : '❌ Disabled'} | Events: ${stats.totalEvents} | Suspects: ${stats.suspectPlayers.length}`);
-        if (stats.suspectPlayers.length > 0) {
-          const topSuspect = stats.suspectPlayers[0];
-          this.bot.chat(`⚠️ Top suspect: ${topSuspect.username} (score: ${topSuspect.score})`);
-        }
-      } else {
-        this.bot.chat("Base monitor not active. Set a home base first!");
-      }
-      return;
+    return {
+      x: Math.floor(target.position.x + Math.cos(angle) * distance),
+      y: Math.floor(target.position.y),
+      z: Math.floor(target.position.z + Math.sin(angle) * distance)
+    };
+  }
+  
+  async moveAwayFromCrystal(crystalPos) {
+    const distance = 6;
+    const angle = Math.atan2(
+      this.bot.entity.position.z - crystalPos.z,
+      this.bot.entity.position.x - crystalPos.x
+    );
+    
+    const safePos = {
+      x: crystalPos.x + Math.cos(angle) * distance,
+      y: crystalPos.y,
+      z: crystalPos.z + Math.sin(angle) * distance
+    };
+    
+    try {
+      await this.bot.pathfinder.goto(new goals.GoalBlock(
+        safePos.x,
+        safePos.y,
+        safePos.z
+      ));
+    } catch (e) {
+      console.log(`[CRYSTAL] Couldn't move away from crystal`);
     }
+  }
+  
+  async detonateCrystals(placements) {
+    console.log(`[CRYSTAL] Detonating ${placements.length} crystals`);
     
-    if (lower.includes('enable monitor') || lower.includes('start monitor')) {
-      if (this.bot.baseMonitor) {
-        this.bot.baseMonitor.enable();
-        this.bot.chat("🏠 Base monitoring enabled!");
-      } else if (config.homeBase.coords) {
-        globalBaseMonitor = new BaseMonitor(this.bot);
-        this.bot.baseMonitor = globalBaseMonitor;
-        this.bot.chat("🏠 Base monitor initialized and enabled!");
-      } else {
-        this.bot.chat("Please set a home base first with 'set home here'");
+    // Hit each crystal entity to detonate
+    for (const pos of placements) {
+      // Find crystal entity at this position
+      const nearby = Object.values(this.bot.entities);
+      const crystal = nearby.find(e =>
+        e.name === 'end_crystal' &&
+        Math.abs(e.position.x - pos.x) < 1 &&
+        Math.abs(e.position.y - pos.y) < 1 &&
+        Math.abs(e.position.z - pos.z) < 1
+      );
+      
+      if (crystal) {
+        // Punch the crystal
+        await this.bot.attack(crystal);
+        console.log(`[CRYSTAL] ✓ Detonated crystal`);
+        this.metrics.crystalsHit++;
+        await sleep(100);
       }
-      return;
-    }
-    
-    if (lower.includes('disable monitor') || lower.includes('stop monitor')) {
-      if (this.bot.baseMonitor) {
-        this.bot.baseMonitor.disable();
-        this.bot.chat("🏠 Base monitoring disabled.");
-      } else {
-        this.bot.chat("Base monitor is not running.");
-      }
-      return;
-    }
-    
-    if (lower.includes('toggle monitor')) {
-      if (this.bot.baseMonitor) {
-        const enabled = this.bot.baseMonitor.toggle();
-        this.bot.chat(`🏠 Base monitoring ${enabled ? 'enabled' : 'disabled'}!`);
-      } else {
-        this.bot.chat("Base monitor not initialized. Set a home base first!");
-      }
-      return;
-    }
-    
-    if (lower.includes('base incidents') || lower.includes('recent incidents')) {
-      if (this.bot.baseMonitor) {
-        const stats = this.bot.baseMonitor.getStats();
-        const recentCount = Math.min(5, stats.recentIncidents.length);
-        this.bot.chat(`🏠 Recent incidents (${stats.totalEvents} total):`);
-        
-        if (recentCount > 0) {
-          for (let i = stats.recentIncidents.length - recentCount; i < stats.recentIncidents.length; i++) {
-            const event = stats.recentIncidents[i];
-            this.bot.chat(`- ${event.action} by ${event.actor}: ${event.blockName || event.itemName || 'unknown'}`);
-          }
-        } else {
-          this.bot.chat("No incidents recorded yet.");
-        }
-      } else {
-        this.bot.chat("Base monitor not active.");
-      }
-      return;
-    }
-    
-    if (lower.includes('suspect list') || lower.includes('suspicious players')) {
-      if (this.bot.baseMonitor) {
-        const suspects = this.bot.baseMonitor.getSuspectPlayers();
-        if (suspects.length > 0) {
-          this.bot.chat(`⚠️ Suspicious players (${suspects.length}):`);
-          for (let i = 0; i < Math.min(5, suspects.length); i++) {
-            this.bot.chat(`${i + 1}. ${suspects[i].username} - Score: ${suspects[i].score}`);
-          }
-        } else {
-          this.bot.chat("No suspicious activity detected!");
-        }
-      } else {
-        this.bot.chat("Base monitor not active.");
-      }
-      return;
     }
   }
   
@@ -9917,6 +9984,10 @@ class CrystalPvP {
     safeAppendFile('./logs/crystal_pvp.log', 
       `\n[${new Date().toISOString()}]\n${report}`);
     
+    return this.metrics;
+  }
+  
+  getPerformanceMetrics() {
     return this.metrics;
   }
 }
