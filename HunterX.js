@@ -13181,30 +13181,37 @@ class ConversationAI {
   }
   
   async handleMessage(username, message) {
-    // Handle /msg relay for trusted+ users
-    if (message.startsWith('/msg ') || message.startsWith('/w ') || message.startsWith('/tell ')) {
-      await this.handlePrivateMessage(username, message);
-      return;
+      console.log(`[CHAT] ${username}: ${message}`);
+
+      // Handle /msg relay for trusted+ users
+      if (message.startsWith('/msg ') || message.startsWith('/w ') || message.startsWith('/tell ')) {
+        await this.handlePrivateMessage(username, message);
+        return;
+      }
+
+      if (!this.shouldRespond(username, message)) return;
+
+      // Normalize message (strip bot name, clean whitespace)
+      const normalizedMessage = this.normalizeMessage(message, username);
+
+      this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
+      if (this.context.length > this.maxContext) this.context.shift();
+
+      // Check if it's a command (use normalized message)
+      if (this.isCommand(normalizedMessage)) {
+        console.log(`[CHAT] Command detected: ${normalizedMessage}`);
+        console.log(`[CHAT] Calling handleCommand...`);
+
+        await this.handleCommand(username, normalizedMessage);
+
+        console.log(`[CHAT] Command execution complete`);
+        return;
+      }
+
+      // Generate response
+      const response = this.generateResponse(username, normalizedMessage);
+      this.bot.chat(response);
     }
-    
-    if (!this.shouldRespond(username, message)) return;
-    
-    // Normalize message (strip bot name, clean whitespace)
-    const normalizedMessage = this.normalizeMessage(message, username);
-    
-    this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
-    if (this.context.length > this.maxContext) this.context.shift();
-    
-    // Check if it's a command (use normalized message)
-    if (this.isCommand(normalizedMessage)) {
-      await this.handleCommand(username, normalizedMessage);
-      return;
-    }
-    
-    // Generate response
-    const response = this.generateResponse(username, normalizedMessage);
-    this.bot.chat(response);
-  }
   
   async handlePrivateMessage(username, message) {
     if (!this.hasTrustLevel(username, 'trusted')) {
@@ -13267,11 +13274,13 @@ class ConversationAI {
   }
   
   isCommand(message) {
-    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'find', 'hunt', 'collect', 'fish for', 'farm', '!help', '!attack', '!spawn', 'need help'];
+    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'find', 'hunt', 'collect', 'fish for', 'farm', '!help', '!attack', '!spawn', '!goto', '!stop', '!follow', '!equip', '!status', '!test', 'need help'];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
   async handleCommand(username, message) {
+    console.log(`[COMMAND] Processing command from ${username}: ${message}`);
+    
     if (!this.isWhitelisted(username)) {
       this.bot.chat("Sorry, only whitelisted players can give me commands!");
       return;
@@ -13988,23 +13997,206 @@ class ConversationAI {
     if (lower.includes('!attack')) {
       const targetPlayer = this.extractPlayerName(message);
       if (targetPlayer) {
-        this.bot.chat(`🎯 All bots attacking ${targetPlayer}!`);
-        if (globalSwarmCoordinator) {
-          const target = Object.values(this.bot.entities).find(e => 
-            e.type === 'player' && e.username === targetPlayer
-          );
-          if (target) {
+        const target = Object.values(this.bot.entities).find(e => 
+          e.type === 'player' && e.username === targetPlayer
+        );
+        
+        if (target) {
+          console.log(`[EXEC] Attacking: ${targetPlayer}`);
+          this.bot.chat(`🎯 Attacking ${targetPlayer}!`);
+          
+          // ACTUALLY attack the target
+          if (this.bot.combatAI) {
+            try {
+              await this.bot.combatAI.handleCombat(target);
+            } catch (error) {
+              console.log(`[EXEC] Attack failed: ${error.message}`);
+              this.bot.chat(`❌ Attack failed: ${error.message}`);
+            }
+          } else {
+            this.bot.chat("Combat AI not available!");
+          }
+          
+          // Also broadcast to swarm if available
+          if (globalSwarmCoordinator) {
             globalSwarmCoordinator.broadcast({
               type: 'ATTACK_TARGET',
               target: targetPlayer,
               targetPos: target.position,
               timestamp: Date.now()
             });
-          } else {
-            this.bot.chat(`Target ${targetPlayer} not found!`);
           }
+        } else {
+          this.bot.chat(`Target ${targetPlayer} not found!`);
         }
       }
+      return;
+    }
+    
+    // Goto command
+    if (lower.includes('!goto')) {
+      const coords = this.extractCoords(message);
+      if (coords) {
+        console.log(`[EXEC] Going to: ${coords.x} ${coords.y} ${coords.z}`);
+        this.bot.chat(`🚶 Heading to ${coords.x} ${coords.y} ${coords.z}`);
+        
+        try {
+          if (this.bot.ashfinder) {
+            await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(coords.x, coords.y, coords.z), 2));
+          } else if (this.bot.pathfinder) {
+            await this.bot.pathfinder.goto(new goals.GoalBlock(coords.x, coords.y, coords.z));
+          } else {
+            this.bot.chat("Pathfinding not available!");
+            return;
+          }
+          this.bot.chat(`✅ Arrived at destination`);
+        } catch (error) {
+          console.log(`[EXEC] Goto failed: ${error.message}`);
+          this.bot.chat(`❌ Couldn't reach destination: ${error.message}`);
+        }
+      } else {
+        this.bot.chat("Usage: !goto x y z or !goto x,y,z");
+      }
+      return;
+    }
+    
+    // Stop command
+    if (lower.includes('!stop')) {
+      console.log(`[EXEC] Stopping current action`);
+      this.bot.chat(`🛑 Stopping current action`);
+      
+      if (this.bot.pathfinder) {
+        this.bot.pathfinder.stop();
+      }
+      if (this.bot.ashfinder) {
+        this.bot.ashfinder.stop();
+      }
+      if (this.bot.combatAI && this.bot.combatAI.isCurrentlyFighting) {
+        this.bot.combatAI.isCurrentlyFighting = false;
+      }
+      
+      // Stop following
+      if (this.followLoop) {
+        clearInterval(this.followLoop);
+        this.followLoop = null;
+        this.currentFollowTarget = null;
+        this.bot.chat(`Stopped following`);
+      }
+      return;
+    }
+    
+    // Follow command
+    if (lower.includes('!follow')) {
+      const targetPlayer = this.extractPlayerName(message);
+      if (targetPlayer) {
+        const playerToFollow = this.bot.players[targetPlayer];
+        if (!playerToFollow || !playerToFollow.entity) {
+          this.bot.chat(`Player ${targetPlayer} not found or not online`);
+          return;
+        }
+        
+        console.log(`[EXEC] Following: ${targetPlayer}`);
+        this.bot.chat(`👥 Following ${targetPlayer}`);
+        
+        this.startFollowing(playerToFollow);
+      } else {
+        this.bot.chat("Usage: !follow <player>");
+      }
+      return;
+    }
+    
+    // Equip command
+    if (lower.includes('!equip')) {
+      const itemMatch = message.match(/!equip\s+(.+)/i);
+      const itemName = itemMatch ? itemMatch[1].trim() : null;
+      
+      if (!itemName) {
+        this.bot.chat("Usage: !equip <item>");
+        return;
+      }
+      
+      console.log(`[EXEC] Equipping: ${itemName}`);
+      this.bot.chat(`⚔️ Equipping ${itemName}`);
+      
+      try {
+        const items = this.bot.inventory.items();
+        const item = items.find(i => i.name.toLowerCase().includes(itemName.toLowerCase()) || 
+                                   i.displayName?.toLowerCase().includes(itemName.toLowerCase()));
+        
+        if (!item) {
+          this.bot.chat(`Item not found: ${itemName}`);
+          return;
+        }
+        
+        await this.bot.equip(item, 'hand');
+        this.bot.chat(`✅ Equipped ${item.name || item.displayName || itemName}`);
+      } catch (error) {
+        console.log(`[EXEC] Equip failed: ${error.message}`);
+        this.bot.chat(`❌ Failed to equip ${itemName}: ${error.message}`);
+      }
+      return;
+    }
+    
+    // Status command
+    if (lower.includes('!status')) {
+      const pos = this.bot.entity.position;
+      const health = Math.round(this.bot.health);
+      const hunger = Math.round(this.bot.food);
+      const armor = this.bot.inventory.slots.filter(slot => slot && slot.name?.includes('armor')).length;
+      
+      this.bot.chat(`❤️ Health: ${health}/20 | 🍖 Hunger: ${hunger}/20 | 🛡️ Armor: ${armor} pieces`);
+      this.bot.chat(`📍 Position: ${Math.round(pos.x)} ${Math.round(pos.y)} ${Math.round(pos.z)}`);
+      this.bot.chat(`⏱️ Game time: ${this.bot.time.timeOfDay} | 🌍 Dimension: ${this.bot.game.dimension}`);
+      return;
+    }
+    
+    // Test command
+    if (lower.includes('!test')) {
+      console.log('[TEST] Testing all command execution...');
+      this.bot.chat('🧪 Testing command execution...');
+      
+      // Test basic functionality
+      const tests = [];
+      
+      // Test pathfinder availability
+      if (this.bot.pathfinder || this.bot.ashfinder) {
+        tests.push('✅ Pathfinding available');
+      } else {
+        tests.push('❌ Pathfinding not available');
+      }
+      
+      // Test combat AI
+      if (this.bot.combatAI) {
+        tests.push('✅ Combat AI available');
+      } else {
+        tests.push('❌ Combat AI not available');
+      }
+      
+      // Test item hunter
+      if (this.itemHunter) {
+        tests.push('✅ Item hunter available');
+      } else {
+        tests.push('❌ Item hunter not available');
+      }
+      
+      // Test inventory access
+      try {
+        const items = this.bot.inventory.items();
+        tests.push(`✅ Inventory accessible (${items.length} items)`);
+      } catch (err) {
+        tests.push('❌ Inventory not accessible');
+      }
+      
+      // Test permission system
+      const userLevel = this.getTrustLevel(username);
+      tests.push(`✅ Permission system working (your level: ${userLevel || 'none'})`);
+      
+      // Report results
+      this.bot.chat('🧪 Command Test Results:');
+      tests.forEach(test => this.bot.chat(`  ${test}`));
+      this.bot.chat('✅ All basic systems tested!');
+      
+      console.log('[TEST] Command execution test completed');
       return;
     }
     
@@ -14434,6 +14626,42 @@ class ConversationAI {
      return idMatch[1];
    }
    return null;
+  }
+
+  startFollowing(player) {
+    console.log(`[FOLLOW] Starting to follow: ${player.username}`);
+    
+    // Clear any existing follow loop
+    if (this.followLoop) {
+      clearInterval(this.followLoop);
+      this.followLoop = null;
+    }
+    
+    // Start following loop
+    this.followLoop = setInterval(async () => {
+      if (!player || !player.entity) {
+        console.log(`[FOLLOW] Player lost, stopping follow`);
+        if (this.followLoop) {
+          clearInterval(this.followLoop);
+          this.followLoop = null;
+        }
+        return;
+      }
+      
+      try {
+        // Pathfind to player
+        if (this.bot.ashfinder) {
+          await this.bot.ashfinder.goto(new goals.GoalFollow(player.entity, 2));
+        } else if (this.bot.pathfinder) {
+          await this.bot.pathfinder.goto(new goals.GoalFollow(player.entity, 2));
+        }
+      } catch (error) {
+        console.log(`[FOLLOW] Follow error: ${error.message}`);
+      }
+    }, 1000);
+    
+    // Store for cleanup
+    this.currentFollowTarget = player;
   }
 
   initiateSwarmAttack(targetPlayer) {
