@@ -580,15 +580,17 @@ const config = {
    autoLoot: true,
    smartEquip: true,
    autoEngagement: {
-     autoEngageHostileMobs: true,
-     engagementDistance: 2,
-     monitorInterval: 200,
-     minHealthToFight: 4,
-     requireMinHealth: true,
-     avoidInWater: true,
-     requireArmor: true,
-     focusSingleMob: true
-   },
+      autoEngageHostileMobs: true,
+      engagementDistance: 3,
+      monitorInterval: 300,
+      minHealthToFight: 4,
+      requireMinHealth: true,
+      avoidInWater: true,
+      requireArmor: true,
+      focusSingleMob: true,
+      neverAttackPlayers: true,
+      autoRetaliate: true
+    },
    logger: {
      enabled: true,
      healthThreshold: 6,
@@ -8438,7 +8440,7 @@ class HostileMobDetector {
       'enderman', 'witch', 'wither_skeleton', 'blaze', 'ghast',
       'magma_cube', 'silverfish', 'endermite', 'evoker', 'vindicator',
       'pillager', 'ravager', 'drowned', 'husk', 'stray',
-      'piglin', 'piglin_brute', 'zoglin', 'phantom'
+      'piglin', 'piglin_brute', 'zoglin', 'phantom', 'shulker'
     ];
   }
   
@@ -8446,7 +8448,17 @@ class HostileMobDetector {
     if (!entity || !entity.name) return false;
     
     const mobName = entity.name.toLowerCase();
-    return this.HOSTILE_MOBS.some(hostile => mobName.includes(hostile));
+    const entityType = entity.type ? entity.type.toLowerCase() : '';
+    
+    // Check both name and type
+    return this.HOSTILE_MOBS.some(hostile => 
+      mobName.includes(hostile) || entityType.includes(hostile)
+    );
+  }
+  
+  isPlayer(entity) {
+    if (!entity) return false;
+    return entity.type === 'player' || entity.username !== undefined;
   }
   
   isPlayerAttacking(player) {
@@ -8658,8 +8670,26 @@ class CombatAI {
       return;
     }
     
+    // CRITICAL SAFETY CHECK: Never attack players if configured
+    if (this.hostileMobDetector && this.hostileMobDetector.isPlayer(attacker)) {
+      if (config.combat.autoEngagement?.neverAttackPlayers) {
+        console.log(`[COMBAT] ❌ SAFETY: Target is a player (${attacker.username}), aborting combat!`);
+        this.bot.chat(`I don't attack players!`);
+        return;
+      }
+      console.log(`[COMBAT] ⚠️ Warning: Engaging player ${attacker.username}`);
+    }
+    
+    // Safety check: Verify target is hostile
+    if (this.hostileMobDetector && !this.hostileMobDetector.isHostileMob(attacker) && !this.hostileMobDetector.isPlayer(attacker)) {
+      console.log(`[COMBAT] ❌ SAFETY: Target is not hostile (${attacker.name}), aborting combat!`);
+      return;
+    }
+    
     try {
-      console.log(`[COMBAT] ⚔️ Engaged with ${attacker.username}!`);
+      const targetName = attacker.username || attacker.name || 'Unknown';
+      const targetType = this.hostileMobDetector && this.hostileMobDetector.isPlayer(attacker) ? 'player' : 'mob';
+      console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
       this.inCombat = true;
       this.currentTarget = attacker;
       
@@ -9000,15 +9030,6 @@ class CombatAI {
               break; // Focus on one mob at a time
             }
           }
-          
-          // Check if player is attacking us
-          if (entity.type === 'player' && distance <= engagementDistance) {
-            if (this.hostileMobDetector && this.hostileMobDetector.isPlayerAttacking(entity)) {
-              console.log(`[COMBAT] ⚠️ Player ${entity.username} attacking at ${distance.toFixed(1)} blocks!`);
-              await this.autoEngageMob(entity);
-              break;
-            }
-          }
         }
       } catch (err) {
         console.log(`[COMBAT] Mob monitoring error: ${err.message}`);
@@ -9019,6 +9040,20 @@ class CombatAI {
   async autoEngageMob(mobEntity) {
     if (this.isCurrentlyFighting) {
       console.log('[COMBAT] Already fighting, ignoring new mob');
+      return;
+    }
+    
+    // CRITICAL SAFETY: Never attack players if configured
+    if (this.hostileMobDetector && this.hostileMobDetector.isPlayer(mobEntity)) {
+      if (config.combat.autoEngagement?.neverAttackPlayers) {
+        console.log(`[COMBAT] ⚠️ Target is a player (${mobEntity.username}), not engaging`);
+        return;
+      }
+    }
+    
+    // Safety: Only engage hostile mobs, not passive entities
+    if (this.hostileMobDetector && !this.hostileMobDetector.isHostileMob(mobEntity) && !this.hostileMobDetector.isPlayer(mobEntity)) {
+      console.log(`[COMBAT] ⚠️ Target is not hostile (${mobEntity.name}), not engaging`);
       return;
     }
     
@@ -22738,19 +22773,52 @@ async function launchBot(username, role = 'fighter') {
     // Combat handler
     bot.on('entityHurt', async (entity) => {
       if (entity === bot.entity) {
-        const attacker = Object.values(bot.entities).find(e => 
-          e.type === 'player' && 
-          e.position.distanceTo(bot.entity.position) < 5
+        // Find the actual attacker - prioritize hostile mobs over players to prevent friendly fire
+        let attacker = null;
+        let closestDistance = Infinity;
+        const attackRange = 5; // blocks
+        
+        const nearbyEntities = Object.values(bot.entities).filter(e => 
+          e && e.position && e.position.distanceTo(bot.entity.position) < attackRange
         );
         
-        if (attacker) {
-          combatLogger.noteAttacker(attacker);
-          
-          // Auto-retaliation logging
-          console.log(`[COMBAT] Bot damaged by ${attacker.username} - retaliating!`);
+        // First, check for hostile mobs (priority to prevent attacking players)
+        for (const e of nearbyEntities) {
+          const distance = e.position.distanceTo(bot.entity.position);
+          if (combatAI.hostileMobDetector && combatAI.hostileMobDetector.isHostileMob(e) && distance < closestDistance) {
+            closestDistance = distance;
+            attacker = e;
+          }
         }
         
-        if (attacker && combatAI && !combatAI.inCombat) {
+        // If no hostile mobs found and neverAttackPlayers is false, check for players
+        if (!attacker && !config.combat.autoEngagement?.neverAttackPlayers) {
+          for (const e of nearbyEntities) {
+            const distance = e.position.distanceTo(bot.entity.position);
+            if (e.type === 'player' && distance < closestDistance) {
+              closestDistance = distance;
+              attacker = e;
+            }
+          }
+        }
+        
+        if (attacker) {
+          const isPlayer = combatAI.hostileMobDetector && combatAI.hostileMobDetector.isPlayer(attacker);
+          const isMob = combatAI.hostileMobDetector && combatAI.hostileMobDetector.isHostileMob(attacker);
+          const attackerName = attacker.username || attacker.name || 'Unknown';
+          const attackerType = isPlayer ? 'player' : (isMob ? 'hostile mob' : 'entity');
+          
+          console.log(`[COMBAT] 💢 Damaged by ${attackerType}: ${attackerName} (${closestDistance.toFixed(1)}m away)`);
+          
+          if (isPlayer) {
+            combatLogger.noteAttacker(attacker);
+            console.log(`[COMBAT] Bot damaged by player ${attacker.username} - retaliating!`);
+          } else if (isMob) {
+            console.log(`[COMBAT] Bot damaged by hostile mob ${attackerName} - auto-engaging!`);
+          }
+        }
+        
+        if (attacker && combatAI && !combatAI.inCombat && config.combat.autoEngagement?.autoRetaliate) {
           // Switch to combat equipment
           if (bot.equipmentManager) {
             await bot.equipmentManager.switchToCombatMode();
@@ -22762,8 +22830,8 @@ async function launchBot(username, role = 'fighter') {
             bot.currentBuilder.pause();
           }
           
-          // Record home defense incident if near home
-          if (globalHomeDefense && config.homeBase.coords) {
+          // Record home defense incident if near home (only for players)
+          if (globalHomeDefense && config.homeBase.coords && attacker.type === 'player') {
             const distanceToHome = bot.entity.position.distanceTo(config.homeBase.coords);
             if (distanceToHome < config.homeDefense.alertRadius) {
               const damageDealt = bot.health < 20 ? (20 - bot.health) : 0;
@@ -22775,9 +22843,10 @@ async function launchBot(username, role = 'fighter') {
           // Proximity-based swarm help: Alert swarm for bots within 200 blocks
           if (wsClient && wsClient.readyState === WebSocket.OPEN) {
             const helpRadius = config.swarm.combat?.helpRadius || 200;
+            const attackerName = attacker.username || attacker.name || 'Unknown';
             wsClient.send(JSON.stringify({
               type: 'ATTACK_ALERT',
-              attacker: attacker.username,
+              attacker: attackerName,
               victim: username,
               location: bot.entity.position,
               helpRadius: helpRadius,
