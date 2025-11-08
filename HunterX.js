@@ -21980,7 +21980,7 @@ async function launchBot(username, role = 'fighter') {
   const schematicLoader = new SchematicLoader(bot);
 
   // Set up cross-references between systems
-  conversationAI.setCombatAI(combatAI);
+  bot.combatAI = combatAI;
   const intelligenceDB = new IntelligenceDatabase(bot);
   let stashScanner = null;
   let dupeFramework = null;
