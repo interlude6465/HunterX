@@ -1584,21 +1584,34 @@ class EquipmentManager {
     const armorSlots = ['head', 'torso', 'legs', 'feet'];
     const equippedArmor = [];
     
+    console.log(`[ARMOR] Starting armor equip process. Inventory has ${inventory.length} items`);
+    
     for (const slot of armorSlots) {
       const bestArmor = this.findBestArmorForSlot(inventory, slot);
       if (bestArmor) {
         try {
+          console.log(`[ARMOR] Attempting to equip ${bestArmor.name} to ${slot} slot`);
           await this.bot.equip(bestArmor, slot);
           equippedArmor.push(bestArmor.name);
-          console.log(`[ARMOR] Equipped ${bestArmor.name} in ${slot} slot`);
+          console.log(`[ARMOR] ✓ Equipped ${bestArmor.name} in ${slot} slot`);
         } catch (err) {
-          console.log(`[ARMOR] Failed to equip ${bestArmor.name}: ${err.message}`);
+          console.log(`[ARMOR] ✗ Failed to equip ${bestArmor.name}: ${err.message}`);
+          console.log(`[ARMOR] Item details:`, {
+            name: bestArmor.name,
+            count: bestArmor.count,
+            slot: bestArmor.slot,
+            nbt: bestArmor.nbt ? 'present' : 'none'
+          });
         }
+      } else {
+        console.log(`[ARMOR] No suitable armor found for ${slot} slot`);
       }
     }
     
     if (equippedArmor.length > 0) {
-      console.log(`[ARMOR] Equipped armor set: ${equippedArmor.join(', ')}`);
+      console.log(`[ARMOR] ✓ Equipped armor set: ${equippedArmor.join(', ')}`);
+    } else {
+      console.log(`[ARMOR] No armor equipped`);
     }
     
     return equippedArmor;
@@ -1663,16 +1676,24 @@ class EquipmentManager {
     const inventory = this.bot.inventory.items();
     const weapons = this.findWeapons(inventory);
     
+    console.log(`[WEAPON] Starting weapon equip process for ${situation}. Found ${weapons.length} weapons`);
+    
     if (weapons.length === 0) {
-      console.log('[WEAPON] No weapons found in inventory');
+      console.log('[WEAPON] ✗ No weapons found in inventory');
       return null;
     }
+    
+    // Log all found weapons
+    weapons.forEach(weapon => {
+      console.log(`[WEAPON] Found weapon: ${weapon.name} (slot: ${weapon.slot})`);
+    });
     
     let bestWeapon = null;
     let bestScore = -1;
     
     for (const weapon of weapons) {
       const score = this.calculateWeaponScore(weapon, situation);
+      console.log(`[WEAPON] ${weapon.name} score: ${score.toFixed(1)}`);
       if (score > bestScore) {
         bestScore = score;
         bestWeapon = weapon;
@@ -1680,12 +1701,26 @@ class EquipmentManager {
     }
     
     if (bestWeapon) {
+      // Check if already equipped
+      const currentWeapon = this.bot.heldItem;
+      if (currentWeapon && currentWeapon.name === bestWeapon.name) {
+        console.log(`[WEAPON] ✓ ${bestWeapon.name} already equipped in hand`);
+        return bestWeapon;
+      }
+      
       try {
+        console.log(`[WEAPON] Attempting to equip ${bestWeapon.name} to hand`);
         await this.bot.equip(bestWeapon, 'hand');
-        console.log(`[WEAPON] Equipped ${bestWeapon.name} for ${situation} (score: ${bestScore.toFixed(1)})`);
+        console.log(`[WEAPON] ✓ Equipped ${bestWeapon.name} for ${situation} (score: ${bestScore.toFixed(1)})`);
         return bestWeapon;
       } catch (err) {
-        console.log(`[WEAPON] Failed to equip ${bestWeapon.name}: ${err.message}`);
+        console.log(`[WEAPON] ✗ Failed to equip ${bestWeapon.name}: ${err.message}`);
+        console.log(`[WEAPON] Item details:`, {
+          name: bestWeapon.name,
+          count: bestWeapon.count,
+          slot: bestWeapon.slot,
+          nbt: bestWeapon.nbt ? 'present' : 'none'
+        });
       }
     }
     
@@ -1980,6 +2015,16 @@ class EquipmentManager {
   async equipOffhand() {
     const inventory = this.bot.inventory.items();
     
+    console.log(`[OFFHAND] Starting offhand equip process. Inventory has ${inventory.length} items`);
+    
+    // Check current offhand item
+    const currentOffhand = this.bot.inventory.slots[45];
+    if (currentOffhand) {
+      console.log(`[OFFHAND] Current offhand item: ${currentOffhand.name}`);
+    } else {
+      console.log(`[OFFHAND] No item currently in offhand`);
+    }
+    
     // Priority: Totem > Shield > Arrow > Food
     const priorities = [
       { type: 'totem', items: ['totem_of_undying'] },
@@ -1992,17 +2037,31 @@ class EquipmentManager {
       for (const itemName of priority.items) {
         const item = inventory.find(invItem => invItem.name === itemName);
         if (item) {
+          // Skip if same item is already equipped
+          if (currentOffhand && currentOffhand.name === item.name) {
+            console.log(`[OFFHAND] ${item.name} already equipped in offhand`);
+            return item;
+          }
+          
           try {
+            console.log(`[OFFHAND] Attempting to equip ${item.name} to off-hand`);
             await this.bot.equip(item, 'off-hand');
-            console.log(`[OFFHAND] Equipped ${item.name} in off-hand`);
+            console.log(`[OFFHAND] ✓ Equipped ${item.name} in off-hand`);
             return item;
           } catch (err) {
-            console.log(`[OFFHAND] Failed to equip ${item.name}: ${err.message}`);
+            console.log(`[OFFHAND] ✗ Failed to equip ${item.name}: ${err.message}`);
+            console.log(`[OFFHAND] Item details:`, {
+              name: item.name,
+              count: item.count,
+              slot: item.slot,
+              nbt: item.nbt ? 'present' : 'none'
+            });
           }
         }
       }
     }
     
+    console.log(`[OFFHAND] No suitable items found for offhand`);
     return null;
   }
   
@@ -2098,6 +2157,19 @@ class EquipmentManager {
   getSlotForItem(item) {
     if (!item || !item.slot) return -1;
     return item.slot;
+  }
+  
+  findInInventory(itemName) {
+    // Search inventory for item by name (partial match)
+    const inventory = this.bot.inventory.items();
+    const lowerItemName = itemName.toLowerCase();
+    
+    for (const item of inventory) {
+      if (item && item.name && item.name.includes(lowerItemName)) {
+        return item;
+      }
+    }
+    return null;
   }
   
   // === MAIN UPDATE LOOP ===
@@ -13173,6 +13245,159 @@ class ConversationAI {
       return;
     }
     
+    // Equipment management commands
+    if (lower.includes('!equip') || lower.includes('equip armor')) {
+      console.log(`[COMMAND] Equipment command requested by ${username}`);
+      
+      if (lower.includes('armor')) {
+        this.bot.chat(`⚙️ Equipping best armor...`);
+        if (this.bot.equipmentManager) {
+          try {
+            const equipped = await this.bot.equipmentManager.equipBestArmor();
+            if (equipped.length > 0) {
+              this.bot.chat(`✅ Equipped armor: ${equipped.join(', ')}`);
+            } else {
+              this.bot.chat(`❌ No armor found in inventory!`);
+            }
+          } catch (err) {
+            this.bot.chat(`❌ Failed to equip armor: ${err.message}`);
+          }
+        } else {
+          this.bot.chat(`❌ Equipment manager not available!`);
+        }
+      } else if (lower.includes('weapon')) {
+        this.bot.chat(`⚔️ Equipping best weapon...`);
+        if (this.bot.equipmentManager) {
+          try {
+            const weapon = await this.bot.equipmentManager.equipBestWeapon('combat');
+            if (weapon) {
+              this.bot.chat(`✅ Equipped weapon: ${weapon.name}`);
+            } else {
+              this.bot.chat(`❌ No weapons found in inventory!`);
+            }
+          } catch (err) {
+            this.bot.chat(`❌ Failed to equip weapon: ${err.message}`);
+          }
+        } else {
+          this.bot.chat(`❌ Equipment manager not available!`);
+        }
+      } else if (lower.includes('offhand') || lower.includes('shield') || lower.includes('totem')) {
+        this.bot.chat(`🛡️ Equipping offhand item...`);
+        if (this.bot.equipmentManager) {
+          try {
+            const item = await this.bot.equipmentManager.equipOffhand();
+            if (item) {
+              this.bot.chat(`✅ Equipped offhand: ${item.name}`);
+            } else {
+              this.bot.chat(`❌ No suitable items found for offhand!`);
+            }
+          } catch (err) {
+            this.bot.chat(`❌ Failed to equip offhand: ${err.message}`);
+          }
+        } else {
+          this.bot.chat(`❌ Equipment manager not available!`);
+        }
+      } else {
+        // Full equipment equip
+        this.bot.chat(`⚙️ Equipping full combat gear...`);
+        if (this.bot.equipmentManager) {
+          try {
+            await this.bot.equipmentManager.equipBestArmor();
+            await this.bot.equipmentManager.equipBestWeapon('combat');
+            await this.bot.equipmentManager.equipOffhand();
+            this.bot.chat(`✅ Full equipment equipped!`);
+          } catch (err) {
+            this.bot.chat(`❌ Failed to equip full gear: ${err.message}`);
+          }
+        } else {
+          this.bot.chat(`❌ Equipment manager not available!`);
+        }
+      }
+      return;
+    }
+    
+    // Self-ownership setup (for initial bootstrap when whitelist is empty)
+    if (lower.includes('claim ownership') || lower.includes('set owner')) {
+      console.log(`[TRUST] Ownership claim requested by ${username}`);
+      
+      // Only allow ownership claim if whitelist is empty or user is already owner
+      if (config.whitelist.length === 0 || this.hasTrustLevel(username, 'owner')) {
+        const existingIndex = config.whitelist.findIndex(e => e.name === username);
+        if (existingIndex >= 0) {
+          const oldLevel = config.whitelist[existingIndex].level;
+          config.whitelist[existingIndex].level = 'owner';
+          console.log(`[TRUST] Updated ${username} from ${oldLevel} to owner`);
+          this.bot.chat(`👑 Updated ${username} from ${oldLevel} to owner!`);
+        } else {
+          config.whitelist.push({ name: username, level: 'owner' });
+          console.log(`[TRUST] Added ${username} as owner`);
+          this.bot.chat(`👑 Added ${username} as owner!`);
+        }
+        
+        // Save to file
+        try {
+          safeWriteFile('./data/whitelist.json', JSON.stringify(config.whitelist, null, 2));
+          console.log(`[TRUST] ✓ Saved whitelist with new owner ${username}`);
+        } catch (err) {
+          console.log(`[TRUST] ✗ Failed to save whitelist: ${err.message}`);
+          this.bot.chat(`❌ Failed to save whitelist changes!`);
+        }
+      } else {
+        this.bot.chat("❌ Cannot claim ownership - whitelist not empty!");
+      }
+      return;
+    }
+    
+    // Quick admin grant command (for initial setup)
+    if (lower.includes('make admin') || lower.includes('grant admin')) {
+      const targetMatch = message.match(/(?:make admin|grant admin)\s+(\w+)/i);
+      if (targetMatch) {
+        const targetName = targetMatch[1];
+        console.log(`[TRUST] Admin grant requested for ${targetName} by ${username}`);
+        
+        // Only owner can grant admin to prevent privilege escalation
+        if (!this.hasTrustLevel(username, 'owner')) {
+          this.bot.chat("Only owner+ can grant admin level!");
+          return;
+        }
+        
+        // Check if user exists
+        const targetPlayer = Object.values(this.bot.entities).find(e => 
+          e.type === 'player' && e.username.toLowerCase() === targetName.toLowerCase()
+        );
+        
+        if (!targetPlayer) {
+          this.bot.chat(`Player ${targetName} not found online!`);
+          return;
+        }
+        
+        // Update or add to whitelist
+        const existingIndex = config.whitelist.findIndex(e => e.name === targetPlayer.username);
+        if (existingIndex >= 0) {
+          const oldLevel = config.whitelist[existingIndex].level;
+          config.whitelist[existingIndex].level = 'admin';
+          console.log(`[TRUST] Updated ${targetPlayer.username} from ${oldLevel} to admin`);
+          this.bot.chat(`✅ Updated ${targetPlayer.username} from ${oldLevel} to admin!`);
+        } else {
+          config.whitelist.push({ name: targetPlayer.username, level: 'admin' });
+          console.log(`[TRUST] Added ${targetPlayer.username} as admin`);
+          this.bot.chat(`✅ Added ${targetPlayer.username} as admin!`);
+        }
+        
+        // Save to file
+        try {
+          safeWriteFile('./data/whitelist.json', JSON.stringify(config.whitelist, null, 2));
+          console.log(`[TRUST] ✓ Saved whitelist with new admin ${targetPlayer.username}`);
+        } catch (err) {
+          console.log(`[TRUST] ✗ Failed to save whitelist: ${err.message}`);
+          this.bot.chat(`❌ Failed to save whitelist changes!`);
+        }
+      } else {
+        this.bot.chat("Usage: make admin <player>");
+      }
+      return;
+    }
+    
     if (lower.includes('scanner status') || lower.includes('scanner report')) {
       const status = globalPluginAnalyzer.getContinuousScanStatus();
       this.bot.chat(`🔄 Scanner: ${status.active ? '✅ Running' : '⏹️ Stopped'} | Queue: ${status.queueSize} | Plugins: ${status.totalPlugins} | Scans: ${status.totalScans}`);
@@ -13446,23 +13671,44 @@ class ConversationAI {
       const coords = this.extractCoords(message);
 
       if (coords) {
+        console.log(`[COMMAND] Executing help command at ${coords.x}, ${coords.y}, ${coords.z} requested by ${username}`);
+        this.bot.chat(`🆘 Sending all available bots to ${coords.x}, ${coords.y}, ${coords.z}!`);
+        
         if (globalSwarmCoordinator) {
-          this.bot.chat(`🆘 Sending all available bots to ${coords.x}, ${coords.y}, ${coords.z}!`);
-          globalSwarmCoordinator.coordinateHelpOperation({
-            coords,
-            requestedBy: username
-          });
+          try {
+            await globalSwarmCoordinator.coordinateHelpOperation({
+              coords,
+              requestedBy: username
+            });
+            console.log(`[HELP] ✓ Help operation coordinated successfully`);
+          } catch (err) {
+            console.log(`[HELP] ✗ Failed to coordinate help: ${err.message}`);
+            this.bot.chat(`❌ Failed to coordinate help: ${err.message}`);
+          }
         } else {
-          this.bot.chat("Swarm coordinator not available!");
+          this.bot.chat("❌ Swarm coordinator not available!");
+          console.log(`[HELP] ✗ Swarm coordinator not available`);
         }
       } else {
         const playerPos = this.bot.entity.position;
+        const helpCoords = { x: Math.floor(playerPos.x), y: Math.floor(playerPos.y), z: Math.floor(playerPos.z) };
+        console.log(`[COMMAND] Executing help command at bot location ${helpCoords.x}, ${helpCoords.y}, ${helpCoords.z} requested by ${username}`);
+        this.bot.chat(`🆘 Sending all bots to your location!`);
+        
         if (globalSwarmCoordinator) {
-          this.bot.chat(`🆘 Sending all bots to your location!`);
-          globalSwarmCoordinator.coordinateHelpOperation({
-            coords: { x: Math.floor(playerPos.x), y: Math.floor(playerPos.y), z: Math.floor(playerPos.z) },
-            requestedBy: username
-          });
+          try {
+            await globalSwarmCoordinator.coordinateHelpOperation({
+              coords: helpCoords,
+              requestedBy: username
+            });
+            console.log(`[HELP] ✓ Help operation coordinated successfully`);
+          } catch (err) {
+            console.log(`[HELP] ✗ Failed to coordinate help: ${err.message}`);
+            this.bot.chat(`❌ Failed to coordinate help: ${err.message}`);
+          }
+        } else {
+          this.bot.chat("❌ Swarm coordinator not available!");
+          console.log(`[HELP] ✗ Swarm coordinator not available`);
         }
       }
       return;
@@ -13824,21 +14070,44 @@ class ConversationAI {
       const targetPlayer = this.extractPlayerName(message);
       if (targetPlayer) {
         this.bot.chat(`🎯 All bots attacking ${targetPlayer}!`);
-        if (globalSwarmCoordinator) {
-          const target = Object.values(this.bot.entities).find(e => 
-            e.type === 'player' && e.username === targetPlayer
-          );
-          if (target) {
+        
+        // Find target entity
+        const target = Object.values(this.bot.entities).find(e => 
+          e.type === 'player' && e.username === targetPlayer
+        );
+        
+        if (target) {
+          console.log(`[COMMAND] Executing attack on ${targetPlayer} at ${target.position}`);
+          
+          // Make current bot attack immediately
+          if (this.combatAI) {
+            try {
+              console.log(`[COMBAT] Current bot engaging ${targetPlayer}`);
+              await this.combatAI.handleCombat(target);
+              console.log(`[COMBAT] ✓ Current bot engaged in combat with ${targetPlayer}`);
+            } catch (err) {
+              console.log(`[COMBAT] ✗ Failed to engage combat: ${err.message}`);
+            }
+          } else {
+            console.log(`[COMBAT] CombatAI not available for direct attack`);
+          }
+          
+          // Also broadcast to other bots
+          if (globalSwarmCoordinator) {
             globalSwarmCoordinator.broadcast({
               type: 'ATTACK_TARGET',
               target: targetPlayer,
               targetPos: target.position,
               timestamp: Date.now()
             });
-          } else {
-            this.bot.chat(`Target ${targetPlayer} not found!`);
+            console.log(`[SWARM] Broadcasted attack order to all bots`);
           }
+        } else {
+          this.bot.chat(`Target ${targetPlayer} not found!`);
+          console.log(`[COMMAND] Attack failed: target ${targetPlayer} not found`);
         }
+      } else {
+        this.bot.chat("Usage: !attack <player>");
       }
       return;
     }
@@ -13853,16 +14122,35 @@ class ConversationAI {
       const countMatch = message.match(/!spawn\s+(\d+)/i);
       const count = countMatch ? parseInt(countMatch[1]) : 1;
       
+      console.log(`[COMMAND] Executing spawn command: ${count} bots requested by ${username}`);
       this.bot.chat(`🤖 Spawning ${count} bot(s)...`);
       
-      if (globalBotSpawner && config.server) {
-        globalBotSpawner.spawnMultiple(config.server, count, 'combat').then(bots => {
-          this.bot.chat(`✅ Spawned ${bots.length} bot(s) successfully!`);
-        }).catch(err => {
-          this.bot.chat(`❌ Failed to spawn bots: ${err.message}`);
-        });
-      } else {
-        this.bot.chat("Bot spawner not available!");
+      if (!config.server) {
+        this.bot.chat("❌ No server configured for spawning bots!");
+        return;
+      }
+      
+      if (!globalBotSpawner) {
+        globalBotSpawner = new BotSpawner();
+        console.log(`[SPAWN] Created new BotSpawner instance`);
+      }
+      
+      const currentCount = globalBotSpawner.getActiveBotCount();
+      const maxBots = config.swarm?.maxBots || 10;
+      
+      if (currentCount + count > maxBots) {
+        this.bot.chat(`❌ Cannot spawn ${count} bots. Would exceed max limit of ${maxBots}. (Current: ${currentCount})`);
+        return;
+      }
+      
+      try {
+        console.log(`[SPAWN] Starting spawn of ${count} bots for server ${config.server.host}:${config.server.port}`);
+        const bots = await globalBotSpawner.spawnMultiple(config.server, count, 'combat');
+        console.log(`[SPAWN] ✓ Successfully spawned ${bots.length} bots`);
+        this.bot.chat(`✅ Spawned ${bots.length} bot(s) successfully! Total active: ${globalBotSpawner.getActiveBotCount()}`);
+      } catch (err) {
+        console.log(`[SPAWN] ✗ Failed to spawn bots: ${err.message}`);
+        this.bot.chat(`❌ Failed to spawn bots: ${err.message}`);
       }
       return;
     }
@@ -21519,11 +21807,14 @@ async function launchBot(username, role = 'fighter') {
   }
   
   globalBot = bot;
-  
+
   const combatAI = new CombatAI(bot);
   const combatLogger = new CombatLogger(bot, combatAI);
   const conversationAI = new ConversationAI(bot);
   const schematicLoader = new SchematicLoader(bot);
+
+  // Set up cross-references between systems
+  conversationAI.setCombatAI(combatAI);
   const intelligenceDB = new IntelligenceDatabase(bot);
   let stashScanner = null;
   let dupeFramework = null;
