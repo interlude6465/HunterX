@@ -162,6 +162,70 @@ function safeWriteJson(filePath, data) {
   return safeWriteFile(filePath, JSON.stringify(data, null, 2));
 }
 
+// === VERSION EXTRACTION AND SERVER DETECTION HELPERS ===
+function extractVersionFromError(errorMessage) {
+  // Parse: "This server is version X.Y.Z, you are using version A.B.C"
+  const versionMatch = errorMessage.match(/This server is version ([\d.]+)/i);
+  
+  if (versionMatch && versionMatch[1]) {
+    console.log(`[DETECTION] Extracted server version: ${versionMatch[1]}`);
+    return versionMatch[1];
+  }
+  
+  return null;
+}
+
+function extractVersionFromPing(response) {
+  // Parse version from server ping response
+  if (response?.version?.name) {
+    console.log(`[DETECTION] Ping detected version: ${response.version.name}`);
+    return response.version.name;
+  }
+  
+  return null;
+}
+
+async function pingServer(serverIP) {
+  // Parse server IP and port
+  let host = serverIP;
+  let port = 25565;
+  
+  if (serverIP.includes(':')) {
+    [host, port] = serverIP.split(':');
+    port = parseInt(port);
+  }
+  
+  try {
+    // Try to use mc-query if available
+    let mcquery;
+    try {
+      mcquery = require('mc-query');
+    } catch (err) {
+      console.log('[DETECTION] mc-query not available, skipping ping');
+      throw new Error('mc-query not available');
+    }
+    
+    const result = await mcquery.ping({
+      host: host,
+      port: port,
+      timeout: 5000
+    });
+    
+    console.log(`[DETECTION] Ping response: ${result.description?.text || 'No description'}`);
+    
+    // Parse version from ping
+    if (result.version) {
+      return { version: result.version };
+    }
+    
+    return result;
+    
+  } catch (error) {
+    console.log(`[DETECTION] Ping failed: ${error.message}`);
+    throw error;
+  }
+}
+
 // === SAFE BOT METHOD WRAPPERS ===
 function safeBotQuit(bot, reason = 'Disconnected') {
   if (!bot) {
@@ -781,14 +845,17 @@ const config = {
   // Bot spawning configuration
   bot: {
     name: 'HunterX',
-    defaultProtocolVersion: '1.19.2',
+    defaultProtocolVersion: '1.21.4',
     supportedVersions: [
       '1.19.2',
       '1.20',
       '1.20.1',
-      '1.20.4'
+      '1.20.4',
+      '1.21',
+      '1.21.1',
+      '1.21.4'
     ],
-    fallbackVersion: '1.19.2',
+    fallbackVersion: '1.21.4',
     connectionTimeout: 10000,
     maxRetries: 3
   }
@@ -18189,8 +18256,22 @@ class BotSpawner {
   
   async detectServerType(serverIP) {
     console.log('[DETECTION] Testing server type...');
-
+    let detectedVersion = null;
+    
     try {
+      // First, try to ping and get version
+      try {
+        const pingResponse = await pingServer(serverIP);
+        detectedVersion = extractVersionFromPing(pingResponse);
+      } catch (pingError) {
+        console.log('[DETECTION] Ping failed, will extract from connection attempt');
+      }
+      
+      // Use detected version or default
+      const versionToTry = detectedVersion || config.bot.defaultProtocolVersion;
+      
+      console.log(`[DETECTION] Testing connection with version: ${versionToTry}`);
+      
       const [host, portStr] = serverIP.split(':');
       const port = parseInt(portStr) || 25565;
 
@@ -18202,7 +18283,7 @@ class BotSpawner {
           port,
           username: `TestBot_${Date.now().toString(36)}`,
           auth: 'offline',
-          version: config.bot.defaultProtocolVersion, // Use default version
+          version: versionToTry,
           hideErrors: true,
           checkTimeoutInterval: 30000,
           closeTimeout: 60000
@@ -18210,7 +18291,13 @@ class BotSpawner {
       } catch (createError) {
         console.error('[DETECTION] Failed to create test bot:', createError.message);
         // Default to cracked mode if we can't even create a bot
-        return { cracked: true, useProxy: true, version: config.bot.defaultProtocolVersion, error: createError.message };
+        return { 
+          cracked: true, 
+          useProxy: true, 
+          version: detectedVersion || config.bot.defaultProtocolVersion,
+          detectedVersion: detectedVersion,
+          error: createError.message 
+        };
       }
 
       return new Promise((resolve, reject) => {
@@ -18232,46 +18319,95 @@ class BotSpawner {
         };
 
         testBot.once('spawn', () => {
-          const detectedVersion = testBot.version || config.bot.defaultProtocolVersion;
+          const finalVersion = testBot.version || versionToTry;
           safeCleanup();
-          console.log(`[DETECTION] ✓ Server is CRACKED - will use proxies (version: ${detectedVersion})`);
-          resolve({ cracked: true, useProxy: true, version: detectedVersion });
+          console.log(`[DETECTION] ✓ Server is CRACKED - will use proxies (version: ${finalVersion})`);
+          resolve({ 
+            cracked: true, 
+            useProxy: true, 
+            version: finalVersion,
+            detectedVersion: detectedVersion || finalVersion
+          });
         });
 
         testBot.once('error', (err) => {
-          const detectedVersion = testBot.version || config.bot.defaultProtocolVersion;
+          const finalVersion = testBot.version || versionToTry;
           safeCleanup();
+          
+          // Try to extract version from error message
+          const extractedVersion = extractVersionFromError(err.message);
+          if (extractedVersion) {
+            console.log(`[DETECTION] ✓ Extracted version from error: ${extractedVersion}`);
+            detectedVersion = extractedVersion;
+          }
 
           if (err.message.includes('authentication') ||
               err.message.includes('premium') ||
               err.message.includes('Session') ||
               err.message.includes('authenticate')) {
-            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (version: ${detectedVersion})`);
-            resolve({ cracked: false, useProxy: false, version: detectedVersion });
-          } else if (err.message.includes('ECONNRESET') || err.message.includes('reset')) {
-            console.log(`[DETECTION] Connection reset - assuming CRACKED server (version: ${detectedVersion})`);
-            resolve({ cracked: true, useProxy: true, version: detectedVersion });
+            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (version: ${detectedVersion || finalVersion})`);
+            resolve({ 
+              cracked: false, 
+              useProxy: false, 
+              version: detectedVersion || finalVersion,
+              detectedVersion: detectedVersion
+            });
+          } else if (err.message.includes('reset') || err.message.includes('ECONNREFUSED')) {
+            console.log(`[DETECTION] ✓ Server is CRACKED (connection reset) - version: ${detectedVersion || finalVersion}`);
+            resolve({ 
+              cracked: true, 
+              useProxy: true, 
+              version: detectedVersion || finalVersion,
+              detectedVersion: detectedVersion
+            });
           } else {
             console.error('[DETECTION] Detection error:', err.message);
-            // Default to cracked mode on unknown errors
-            resolve({ cracked: true, useProxy: true, version: detectedVersion, error: err.message });
+            // Even if we can't determine server type, return extracted version
+            console.log(`[DETECTION] ⚠️ Uncertain, assuming CRACKED - version: ${detectedVersion || finalVersion}`);
+            resolve({ 
+              cracked: true, 
+              useProxy: true, 
+              version: detectedVersion || finalVersion,
+              detectedVersion: detectedVersion,
+              error: err.message 
+            });
           }
         });
 
         testBot.once('kicked', (reason) => {
-          const detectedVersion = testBot.version || config.bot.defaultProtocolVersion;
+          const finalVersion = testBot.version || versionToTry;
           safeCleanup();
-
+          
           const reasonStr = typeof reason === 'string' ? reason : JSON.stringify(reason);
+          
+          // Try to extract version from kick reason
+          const extractedVersion = extractVersionFromError(reasonStr);
+          if (extractedVersion) {
+            console.log(`[DETECTION] ✓ Extracted version from kick: ${extractedVersion}`);
+            detectedVersion = extractedVersion;
+          }
+          
           if (reasonStr.includes('authentication') ||
               reasonStr.includes('premium') ||
               reasonStr.includes('Session')) {
-            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (version: ${detectedVersion})`);
-            resolve({ cracked: false, useProxy: false, version: detectedVersion });
+            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (version: ${detectedVersion || finalVersion})`);
+            resolve({ 
+              cracked: false, 
+              useProxy: false, 
+              version: detectedVersion || finalVersion,
+              detectedVersion: detectedVersion,
+              kickReason: reasonStr
+            });
           } else {
-            console.log(`[DETECTION] Kicked for unknown reason: ${reasonStr} (version: ${detectedVersion})`);
+            console.log(`[DETECTION] Kicked for: ${reasonStr} - version: ${detectedVersion || finalVersion}`);
             // Default to cracked mode on unknown kicks
-            resolve({ cracked: true, useProxy: true, version: detectedVersion, kickReason: reasonStr });
+            resolve({ 
+              cracked: true, 
+              useProxy: true, 
+              version: detectedVersion || finalVersion,
+              detectedVersion: detectedVersion,
+              kickReason: reasonStr
+            });
           }
         });
 
@@ -18285,51 +18421,74 @@ class BotSpawner {
       });
     } catch (error) {
       console.error('[DETECTION] Critical error:', error.message);
+      
+      // Try to extract version from error message
+      const extractedVersion = extractVersionFromError(error.message);
+      if (extractedVersion) {
+        console.log(`[DETECTION] ✓ Extracted version from critical error: ${extractedVersion}`);
+        detectedVersion = extractedVersion;
+      }
+      
       // Default to cracked mode on critical errors
-      return { cracked: true, useProxy: true, version: config.bot.defaultProtocolVersion, error: error.message };
+      return { 
+        cracked: true, 
+        useProxy: true, 
+        version: detectedVersion || config.bot.defaultProtocolVersion,
+        detectedVersion: detectedVersion,
+        error: error.message 
+      };
     }
   }
   
   async spawnBot(serverIP, options = {}) {
-    // Always specify version - never let it be undefined
-    if (!options.version) {
-      options.version = config.bot.defaultProtocolVersion;
-    }
-
-    if (!this.serverType) {
-      try {
+    try {
+      if (!this.serverType) {
         this.serverType = await this.detectServerType(serverIP);
-        config.swarm.serverType = this.serverType;
-      } catch (err) {
-        console.error('[DETECTION] Failed to detect server type:', err.message);
-        console.log('[DETECTION] Defaulting to cracked server mode');
-        this.serverType = { cracked: true, useProxy: true, version: config.bot.defaultProtocolVersion };
-        config.swarm.serverType = this.serverType;
       }
-    }
-
-    // Ensure serverType has a version
-    if (!this.serverType.version) {
-      this.serverType.version = config.bot.defaultProtocolVersion;
-    }
-
-    console.log(`[SPAWNER] Server type: ${this.serverType.cracked ? 'CRACKED' : 'PREMIUM'}`);
-    console.log(`[SPAWNER] Using: ${this.serverType.useProxy ? 'Proxy' : 'Local Account'}`);
-    console.log(`[SPAWNER] Protocol version: ${options.version}`);
-
-    if (this.serverType.cracked) {
-      if (this.getActiveBotCount() >= this.maxBots) {
-        throw new Error(`Cannot spawn more bots - max limit ${this.maxBots} reached`);
+      
+      // Use detected version if available, otherwise use provided or default
+      let versionToUse = this.serverType.detectedVersion || 
+                        options.version || 
+                        config.bot.defaultProtocolVersion;
+      
+      console.log(`[SPAWNER] Server type: ${this.serverType.cracked ? 'CRACKED' : 'PREMIUM'}`);
+      console.log(`[SPAWNER] Using: ${this.serverType.useProxy ? 'Proxy' : 'Local Account'}`);
+      console.log(`[SPAWNER] Protocol version: ${versionToUse}`);
+      
+      options.version = versionToUse;
+      
+      if (this.serverType.cracked) {
+        if (this.getActiveBotCount() >= this.maxBots) {
+          throw new Error(`Cannot spawn more bots - max limit ${this.maxBots} reached`);
+        }
+        return await this.createProxyBot(serverIP, options);
       }
-      return await this.createProxyBot(serverIP, options);
+      
+      // Premium servers - only one local account bot allowed
+      if (this.activeBots.some(info => info.type === 'local')) {
+        throw new Error('Local account bot already running');
+      }
+      
+      return await this.createLocalBot(serverIP, options);
+      
+    } catch (error) {
+      console.error('[SPAWNER] Error in spawnBot:', error.message);
+      
+      // Try to extract version and retry once
+      const extractedVersion = extractVersionFromError(error.message);
+      if (extractedVersion && extractedVersion !== options.version) {
+        console.log(`[SPAWNER] Retrying with extracted version: ${extractedVersion}`);
+        options.version = extractedVersion;
+        
+        if (this.serverType && this.serverType.cracked) {
+          return await this.createProxyBot(serverIP, options);
+        } else {
+          return await this.createLocalBot(serverIP, options);
+        }
+      }
+      
+      throw error;
     }
-
-    // Premium servers - only one local account bot allowed
-    if (this.activeBots.some(info => info.type === 'local')) {
-      throw new Error('Local account bot already running');
-    }
-
-    return await this.createLocalBot(serverIP, options);
   }
   
   async createProxyBot(serverIP, options) {
@@ -18341,7 +18500,8 @@ class BotSpawner {
     }
 
     const username = options.username || this.generateRandomUsername();
-    const version = options.version || this.serverType.version || config.bot.defaultProtocolVersion;
+    const initialVersion = options.version || this.serverType.version || config.bot.defaultProtocolVersion;
+    let version = initialVersion;
 
     // Validate protocol version
     if (!version || version === 'unknown') {
@@ -18408,28 +18568,42 @@ class BotSpawner {
       this.registerBot(bot, username, 'proxy', options.role);
       return bot;
     } catch (error) {
-      console.error(`[SPAWNER] Failed to create proxy bot with version ${version}: ${error.message}`);
-
-      // Try alternative versions if there's a protocol error
-      if (error.message.includes('protocol') || error.message.includes('version')) {
-        console.log('[SPAWNER] Trying alternative versions...');
-
-        for (const altVersion of config.bot.supportedVersions) {
-          if (altVersion === version) continue; // Already tried
-
-          try {
-            console.log(`[SPAWNER] Attempting version: ${altVersion}`);
-            const bot = await createBotWithVersion(altVersion);
-            console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
-            this.registerBot(bot, username, 'proxy', options.role);
-            return bot;
-          } catch (altError) {
-            console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
-            continue;
-          }
+      console.error(`[SPAWNER] Failed with version ${version}: ${error.message}`);
+      
+      // Extract version from error
+      const extractedVersion = extractVersionFromError(error.message);
+      
+      if (extractedVersion && extractedVersion !== version) {
+        console.log(`[SPAWNER] 🔄 Retrying with extracted version: ${extractedVersion}`);
+        
+        try {
+          const bot = await createBotWithVersion(extractedVersion);
+          console.log(`[SPAWNER] ✓ Success with extracted version: ${extractedVersion}`);
+          this.registerBot(bot, username, 'proxy', options.role);
+          return bot;
+        } catch (retryError) {
+          console.error(`[SPAWNER] Retry failed: ${retryError.message}`);
         }
       }
-
+      
+      // Try alternative versions if extraction didn't work
+      console.log('[SPAWNER] Trying alternative versions...');
+      
+      for (const altVersion of config.bot.supportedVersions) {
+        if (altVersion === version || altVersion === extractedVersion) continue;
+        
+        try {
+          console.log(`[SPAWNER] Attempting version: ${altVersion}`);
+          const bot = await createBotWithVersion(altVersion);
+          console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
+          this.registerBot(bot, username, 'proxy', options.role);
+          return bot;
+        } catch (altError) {
+          console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
+          continue;
+        }
+      }
+      
       throw error;
     }
   }
@@ -18443,7 +18617,8 @@ class BotSpawner {
       throw new Error('Local account credentials not configured');
     }
 
-    const version = options.version || this.serverType.version || config.bot.defaultProtocolVersion;
+    const initialVersion = options.version || this.serverType.version || config.bot.defaultProtocolVersion;
+    let version = initialVersion;
 
     // Validate protocol version
     if (!version || version === 'unknown') {
@@ -18512,28 +18687,42 @@ class BotSpawner {
       this.registerBot(bot, username, 'local', options.role);
       return bot;
     } catch (error) {
-      console.error(`[SPAWNER] Failed to create local bot with version ${version}: ${error.message}`);
-
-      // Try alternative versions if there's a protocol error
-      if (error.message.includes('protocol') || error.message.includes('version')) {
-        console.log('[SPAWNER] Trying alternative versions...');
-
-        for (const altVersion of config.bot.supportedVersions) {
-          if (altVersion === version) continue;
-
-          try {
-            console.log(`[SPAWNER] Attempting version: ${altVersion}`);
-            const bot = await createBotWithVersion(altVersion);
-            console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
-            this.registerBot(bot, username, 'local', options.role);
-            return bot;
-          } catch (altError) {
-            console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
-            continue;
-          }
+      console.error(`[SPAWNER] Failed with version ${version}: ${error.message}`);
+      
+      // Extract version from error
+      const extractedVersion = extractVersionFromError(error.message);
+      
+      if (extractedVersion && extractedVersion !== version) {
+        console.log(`[SPAWNER] 🔄 Retrying with extracted version: ${extractedVersion}`);
+        
+        try {
+          const bot = await createBotWithVersion(extractedVersion);
+          console.log(`[SPAWNER] ✓ Success with extracted version: ${extractedVersion}`);
+          this.registerBot(bot, username, 'local', options.role);
+          return bot;
+        } catch (retryError) {
+          console.error(`[SPAWNER] Retry failed: ${retryError.message}`);
         }
       }
-
+      
+      // Try alternative versions
+      console.log('[SPAWNER] Trying alternative versions...');
+      
+      for (const altVersion of config.bot.supportedVersions) {
+        if (altVersion === version || altVersion === extractedVersion) continue;
+        
+        try {
+          console.log(`[SPAWNER] Attempting version: ${altVersion}`);
+          const bot = await createBotWithVersion(altVersion);
+          console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
+          this.registerBot(bot, username, 'local', options.role);
+          return bot;
+        } catch (altError) {
+          console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
+          continue;
+        }
+      }
+      
       throw error;
     }
   }
