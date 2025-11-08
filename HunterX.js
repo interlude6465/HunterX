@@ -54,16 +54,572 @@ const pvp = require('mineflayer-pvp').plugin;
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const Vec3 = require('vec3').Vec3;
 
-// Neural network support with graceful fallback
-let brain = null;
+// === ENHANCED NEURAL BRAIN SYSTEM WITH MULTIPLE FALLBACKS ===
+// Supports ml5.js, brain.js, synaptic, tensorflow with graceful fallbacks
+
+class NeuralBrainManager {
+  constructor() {
+    this.brain = null;
+    this.type = null;
+    this.models = {};
+    this.initialized = false;
+    this.libraries = {
+      ml5: null,
+      brain: null,
+      synaptic: null,
+      tensorflow: null
+    };
+    
+    this.initializeBrain();
+  }
+  
+  initializeBrain() {
+    console.log('[NEURAL] Initializing neural brain system...');
+    
+    // Try each option in order of preference
+    const options = [
+      { name: 'ml5', init: () => this.initML5() },
+      { name: 'brain.js', init: () => this.initBrainJS() },
+      { name: 'synaptic', init: () => this.initSynaptic() },
+      { name: 'tensorflow', init: () => this.initTensorFlow() }
+    ];
+    
+    for (const option of options) {
+      try {
+        console.log(`[NEURAL] Trying ${option.name}...`);
+        const success = option.init();
+        if (success) {
+          this.type = option.name;
+          this.initialized = true;
+          console.log(`[NEURAL] ✓ Using ${option.name}`);
+          break;
+        }
+      } catch (error) {
+        console.log(`[NEURAL] ${option.name} failed: ${error.message}`);
+      }
+    }
+    
+    if (!this.initialized) {
+      console.log('[NEURAL] ⚠️ No neural library available, using fallback AI');
+      this.type = 'fallback';
+      this.initializeFallbackModels();
+    }
+    
+    console.log(`[NEURAL] System initialized with: ${this.type}`);
+  }
+  
+  initML5() {
+    try {
+      this.libraries.ml5 = require('ml5');
+      console.log('[NEURAL] ✓ ml5.js loaded');
+      
+      // Create neural networks with ml5
+      this.models.combat = {
+        network: null,
+        type: 'regression',
+        initialized: false
+      };
+      
+      this.models.placement = {
+        network: null,
+        type: 'regression', 
+        initialized: false
+      };
+      
+      this.models.dupe = {
+        network: null,
+        type: 'classification',
+        initialized: false
+      };
+      
+      this.models.conversation = {
+        network: null,
+        type: 'classification',
+        initialized: false
+      };
+      
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  initBrainJS() {
+    try {
+      this.libraries.brain = require('brain.js');
+      console.log('[NEURAL] ✓ brain.js loaded');
+      
+      // Create neural networks with brain.js
+      this.models.combat = {
+        network: new this.libraries.brain.NeuralNetwork({ hiddenLayers: [256, 128, 64] }),
+        type: 'brainjs'
+      };
+      
+      this.models.placement = {
+        network: new this.libraries.brain.NeuralNetwork({ hiddenLayers: [128, 64, 32] }),
+        type: 'brainjs'
+      };
+      
+      this.models.dupe = {
+        network: new this.libraries.brain.recurrent.LSTM({ hiddenLayers: [256, 128, 64] }),
+        type: 'brainjs-lstm'
+      };
+      
+      this.models.conversation = {
+        network: new this.libraries.brain.recurrent.LSTM({ hiddenLayers: [128, 64] }),
+        type: 'brainjs-lstm'
+      };
+      
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  initSynaptic() {
+    try {
+      const Synaptic = require('synaptic');
+      this.libraries.synaptic = Synaptic;
+      const { Neuron, Layer, Network, Trainer } = Synaptic;
+      
+      console.log('[NEURAL] ✓ Synaptic loaded');
+      
+      // Create networks for each model
+      const createSynapticNetwork = (inputSize, hiddenSizes, outputSize) => {
+        const layers = [];
+        
+        // Input layer
+        const inputLayer = new Layer(inputSize);
+        layers.push(inputLayer);
+        
+        // Hidden layers
+        let prevLayer = inputLayer;
+        for (const size of hiddenSizes) {
+          const hiddenLayer = new Layer(size);
+          prevLayer.project(hiddenLayer);
+          layers.push(hiddenLayer);
+          prevLayer = hiddenLayer;
+        }
+        
+        // Output layer
+        const outputLayer = new Layer(outputSize);
+        prevLayer.project(outputLayer);
+        layers.push(outputLayer);
+        
+        const network = new Network({
+          input: inputLayer,
+          hidden: layers.slice(1, -1),
+          output: outputLayer
+        });
+        
+        const trainer = new Trainer(network);
+        
+        return { network, trainer };
+      };
+      
+      this.models.combat = createSynapticNetwork(10, [256, 128, 64], 5);
+      this.models.placement = createSynapticNetwork(8, [128, 64, 32], 3);
+      this.models.dupe = createSynapticNetwork(15, [256, 128, 64], 8);
+      this.models.conversation = createSynapticNetwork(20, [128, 64], 10);
+      
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  initTensorFlow() {
+    try {
+      const tf = require('@tensorflow/tfjs');
+      require('@tensorflow/tfjs-node');
+      this.libraries.tensorflow = tf;
+      
+      console.log('[NEURAL] ✓ TensorFlow.js loaded');
+      
+      // Create models with TensorFlow
+      const createTFModel = (inputShape, outputSize) => {
+        const model = tf.sequential();
+        
+        model.add(tf.layers.dense({ inputShape: [inputShape], units: 256, activation: 'relu' }));
+        model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
+        model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
+        model.add(tf.layers.dense({ units: outputSize, activation: 'softmax' }));
+        
+        model.compile({
+          optimizer: 'adam',
+          loss: 'categoricalCrossentropy',
+          metrics: ['accuracy']
+        });
+        
+        return model;
+      };
+      
+      this.models.combat = { network: createTFModel(10, 5), type: 'tensorflow' };
+      this.models.placement = { network: createTFModel(8, 3), type: 'tensorflow' };
+      this.models.dupe = { network: createTFModel(15, 8), type: 'tensorflow' };
+      this.models.conversation = { network: createTFModel(20, 10), type: 'tensorflow' };
+      
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  initializeFallbackModels() {
+    // Initialize fallback models (hardcoded logic)
+    this.models.combat = { type: 'fallback' };
+    this.models.placement = { type: 'fallback' };
+    this.models.dupe = { type: 'fallback' };
+    this.models.conversation = { type: 'fallback' };
+  }
+  
+  async initializeML5Model(modelName) {
+    if (this.type !== 'ml5' || !this.libraries.ml5) return false;
+    
+    try {
+      const model = this.models[modelName];
+      if (model.initialized) return true;
+      
+      model.network = await this.libraries.ml5.neuralNetwork({
+        task: model.type,
+        debug: false
+      });
+      
+      model.initialized = true;
+      console.log(`[NEURAL] ✓ ml5 ${modelName} model initialized`);
+      return true;
+    } catch (error) {
+      console.warn(`[NEURAL] Failed to initialize ml5 ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async predict(modelName, input, fallbackOutput = null) {
+    if (this.type === 'fallback') {
+      return this.fallbackPrediction(modelName, input, fallbackOutput);
+    }
+    
+    try {
+      const model = this.models[modelName];
+      if (!model) {
+        return fallbackOutput !== null ? fallbackOutput : null;
+      }
+      
+      // Handle ml5 lazy initialization
+      if (this.type === 'ml5' && !model.initialized) {
+        await this.initializeML5Model(modelName);
+      }
+      
+      switch (this.type) {
+        case 'ml5':
+          return await model.network.predict(input);
+          
+        case 'brain.js':
+        case 'brainjs-lstm':
+          return model.network.run(input);
+          
+        case 'synaptic':
+          return model.network.activate(input);
+          
+        case 'tensorflow':
+          const tensor = this.libraries.tensorflow.tensor2d([input]);
+          const result = model.network.predict(tensor);
+          const output = result.dataSync();
+          result.dispose();
+          tensor.dispose();
+          return output;
+          
+        default:
+          return fallbackOutput !== null ? fallbackOutput : null;
+      }
+    } catch (error) {
+      console.warn(`[NEURAL] Prediction failed on ${modelName}: ${error.message}`);
+      return fallbackOutput !== null ? fallbackOutput : null;
+    }
+  }
+  
+  async train(modelName, data, options = {}) {
+    if (this.type === 'fallback') {
+      console.log(`[NEURAL] Training ${modelName} with ${data.length} samples (fallback mode - data collected only)`);
+      return true;
+    }
+    
+    try {
+      const model = this.models[modelName];
+      if (!model) {
+        return false;
+      }
+      
+      // Handle ml5 lazy initialization
+      if (this.type === 'ml5' && !model.initialized) {
+        await this.initializeML5Model(modelName);
+      }
+      
+      console.log(`[NEURAL] Training ${modelName} with ${data.length} samples using ${this.type}`);
+      
+      switch (this.type) {
+        case 'ml5':
+          const ml5Options = {
+            epochs: options.iterations || 1000,
+            batchSize: 32,
+            ...options
+          };
+          await model.network.train(data, ml5Options);
+          break;
+          
+        case 'brain.js':
+        case 'brainjs-lstm':
+          const brainOptions = {
+            iterations: options.iterations || 1000,
+            errorThresh: options.errorThresh || 0.005,
+            log: false,
+            ...options
+          };
+          model.network.train(data, brainOptions);
+          break;
+          
+        case 'synaptic':
+          const synapticOptions = {
+            rate: 0.1,
+            iterations: options.iterations || 1000,
+            error: 0.005,
+            shuffle: true,
+            log: 0,
+            ...options
+          };
+          model.trainer.train(data, synapticOptions);
+          break;
+          
+        case 'tensorflow':
+          const tfInputs = this.libraries.tensorflow.tensor2d(data.map(d => d.input));
+          const tfOutputs = this.libraries.tensorflow.tensor2d(data.map(d => d.output));
+          
+          const tfOptions = {
+            epochs: options.iterations || 50,
+            verbose: 0,
+            batchSize: 32,
+            ...options
+          };
+          
+          await model.network.fit(tfInputs, tfOutputs, tfOptions);
+          
+          tfInputs.dispose();
+          tfOutputs.dispose();
+          break;
+      }
+      
+      console.log(`[NEURAL] ✓ Training complete for ${modelName}`);
+      return true;
+    } catch (error) {
+      console.warn(`[NEURAL] Training failed on ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  save(modelName, filePath = null) {
+    if (this.type === 'fallback') {
+      return false;
+    }
+    
+    try {
+      const model = this.models[modelName];
+      if (!model) {
+        return false;
+      }
+      
+      filePath = filePath || `./models/${modelName}_model.json`;
+      
+      let jsonData;
+      
+      switch (this.type) {
+        case 'ml5':
+          // ml5 doesn't have direct toJSON, use brain.js format if possible
+          console.log(`[NEURAL] ml5 model saving not directly supported - skipping ${modelName}`);
+          return false;
+          
+        case 'brain.js':
+        case 'brainjs-lstm':
+          jsonData = model.network.toJSON();
+          break;
+          
+        case 'synaptic':
+          // Synaptic networks can be serialized
+          jsonData = model.network.toJSON();
+          break;
+          
+        case 'tensorflow':
+          // TensorFlow models need special handling
+          return this.saveTensorFlowModel(modelName, filePath);
+          
+        default:
+          return false;
+      }
+      
+      const result = safeWriteJson(filePath, jsonData);
+      if (result) {
+        console.log(`[NEURAL] ✓ Saved model: ${modelName}`);
+      }
+      return result;
+    } catch (error) {
+      console.warn(`[NEURAL] Save failed on ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async saveTensorFlowModel(modelName, filePath) {
+    try {
+      const model = this.models[modelName];
+      // TensorFlow needs a directory structure, not a single file
+      const savePath = filePath.replace(/\.json$/, '');
+      await model.network.save(`file://${savePath}`);
+      console.log(`[NEURAL] ✓ Saved TensorFlow model: ${modelName}`);
+      return true;
+    } catch (error) {
+      console.warn(`[NEURAL] TensorFlow save failed on ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async load(modelName, filePath = null) {
+    if (this.type === 'fallback') {
+      return false;
+    }
+    
+    try {
+      filePath = filePath || `./models/${modelName}_model.json`;
+      const model = this.models[modelName];
+      if (!model) {
+        return false;
+      }
+      
+      switch (this.type) {
+        case 'brain.js':
+        case 'brainjs-lstm':
+        case 'synaptic':
+          const modelData = safeReadJson(filePath);
+          if (!modelData) {
+            return false;
+          }
+          model.network.fromJSON(modelData);
+          break;
+          
+        case 'tensorflow':
+          // TensorFlow loading needs async handling
+          return await this.loadTensorFlowModel(modelName, filePath);
+          
+        default:
+          return false;
+      }
+      
+      console.log(`[NEURAL] ✓ Loaded model: ${modelName}`);
+      return true;
+    } catch (error) {
+      console.warn(`[NEURAL] Load failed on ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async loadTensorFlowModel(modelName, filePath) {
+    try {
+      const model = this.models[modelName];
+      // TensorFlow needs the model.json file path
+      const loadPath = filePath.replace(/\.json$/, '/model.json');
+      const loadedModel = await this.libraries.tensorflow.loadLayersModel(`file://${loadPath}`);
+      this.models[modelName].network = loadedModel;
+      console.log(`[NEURAL] ✓ Loaded TensorFlow model: ${modelName}`);
+      return true;
+    } catch (error) {
+      console.warn(`[NEURAL] TensorFlow load failed on ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  fallbackPrediction(modelName, input, fallbackOutput = null) {
+    // Simple heuristics for fallback mode
+    switch (modelName) {
+      case 'combat':
+        return this.fallbackCombatPrediction(input);
+        
+      case 'placement':
+        return this.fallbackPlacementPrediction(input);
+        
+      case 'dupe':
+        return this.fallbackDupePrediction(input);
+        
+      case 'conversation':
+        return this.fallbackConversationPrediction(input);
+        
+      default:
+        return fallbackOutput !== null ? fallbackOutput : null;
+    }
+  }
+  
+  fallbackCombatPrediction(input) {
+    // Simple combat heuristics
+    const healthRatio = input[0] || 1.0;
+    const enemyDistance = input[1] || 10;
+    const hasTotem = input[2] || false;
+    
+    if (healthRatio < 0.25) return [0.8, 0.1, 0.05, 0.03, 0.02]; // heal
+    if (enemyDistance > 8) return [0.1, 0.8, 0.05, 0.03, 0.02]; // chase
+    if (hasTotem && healthRatio < 0.5) return [0.05, 0.05, 0.8, 0.05, 0.05]; // pop_totem
+    return [0.7, 0.1, 0.1, 0.05, 0.05]; // attack
+  }
+  
+  fallbackPlacementPrediction(input) {
+    // Simple placement heuristics
+    const enemyDistance = input[0] || 10;
+    const hasObsidian = input[1] || false;
+    
+    if (enemyDistance < 3 && hasObsidian) return [0.8, 0.1, 0.1]; // trap
+    if (enemyDistance < 6) return [0.1, 0.8, 0.1]; // surround
+    return [0.1, 0.1, 0.8]; // none
+  }
+  
+  fallbackDupePrediction(input) {
+    // Simple dupe detection heuristics
+    const suspiciousBlock = input[0] || 0;
+    const weirdBehavior = input[1] || 0;
+    
+    if (suspiciousBlock > 0.7 && weirdBehavior > 0.5) return [0.9, 0.1]; // dupe_likely
+    return [0.1, 0.9]; // normal
+  }
+  
+  fallbackConversationPrediction(input) {
+    // Simple conversation heuristics
+    const hasQuestion = input[0] || 0;
+    const hasGreeting = input[1] || 0;
+    
+    if (hasGreeting > 0.7) return [0.8, 0.1, 0.1]; // greeting
+    if (hasQuestion > 0.7) return [0.1, 0.8, 0.1]; // answer
+    return [0.1, 0.1, 0.8]; // casual
+  }
+  
+  getStatus() {
+    return {
+      type: this.type,
+      initialized: this.initialized,
+      models: Object.keys(this.models),
+      available: this.initialized
+    };
+  }
+}
+
+// Global neural brain manager instance
+let neuralBrainManager = null;
 let neuralNetworksAvailable = false;
-try {
-  brain = require('brain.js');
-  neuralNetworksAvailable = true;
-  console.log('[NEURAL] Brain.js loaded successfully');
-} catch (err) {
-  console.log('[NEURAL] Brain.js not available, neural features disabled:', err.message);
-  console.log('[NEURAL] This is normal on headless systems or when gl package fails to build');
+
+// Initialize the neural brain system
+function initializeNeuralSystem() {
+  neuralBrainManager = new NeuralBrainManager();
+  neuralNetworksAvailable = neuralBrainManager.initialized;
+  
+  // Set up global brain variable for backward compatibility
+  if (neuralBrainManager.type === 'brain.js' && neuralBrainManager.libraries.brain) {
+    global.brain = neuralBrainManager.libraries.brain;
+  }
+  
+  return neuralBrainManager.getStatus();
 }
 const fs = require('fs');
 const path = require('path');
@@ -656,13 +1212,15 @@ const config = {
     keywords: ['lifesteal']
   },
   
-  // Neural networks (with fallback support)
+  // Enhanced neural networks (multi-library support with fallbacks)
   neural: {
-    combat: neuralNetworksAvailable ? new brain.NeuralNetwork({ hiddenLayers: [256, 128, 64] }) : null,
-    placement: neuralNetworksAvailable ? new brain.NeuralNetwork({ hiddenLayers: [128, 64, 32] }) : null,
-    dupe: neuralNetworksAvailable ? new brain.recurrent.LSTM({ hiddenLayers: [256, 128, 64] }) : null,
-    conversation: neuralNetworksAvailable ? new brain.recurrent.LSTM({ hiddenLayers: [128, 64] }) : null,
-    available: neuralNetworksAvailable
+    combat: null, // Will be initialized by NeuralBrainManager
+    placement: null, // Will be initialized by NeuralBrainManager
+    dupe: null, // Will be initialized by NeuralBrainManager
+    conversation: null, // Will be initialized by NeuralBrainManager
+    available: false, // Will be updated by NeuralBrainManager
+    type: 'fallback', // Will be updated by NeuralBrainManager
+    manager: null // Will be set to NeuralBrainManager instance
   },
   
   // Conversation
@@ -939,169 +1497,161 @@ if (neuralNetworksAvailable) {
 
 // === NEURAL NETWORK FALLBACK HELPERS ===
 
-// Unified interface for neural prediction - supports both network objects and named networks
-function safeNeuralPredict(networkOrName, input, fallbackOutput = null) {
-  if (!neuralNetworksAvailable) {
+// Unified interface for neural prediction - enhanced with multi-library support
+async function safeNeuralPredict(networkOrName, input, fallbackOutput = null) {
+  if (!neuralBrainManager || !neuralBrainManager.initialized) {
     return fallbackOutput !== null ? fallbackOutput : null;
   }
   
-  let network = null;
+  let modelName = null;
   
   // Support both direct network objects and named network strings
   if (typeof networkOrName === 'string') {
-    network = config.neural?.[networkOrName];
-  } else {
-    network = networkOrName;
+    modelName = networkOrName;
+  } else if (networkOrName && typeof networkOrName === 'object') {
+    // Legacy support - try to match with existing models
+    for (const [name, model] of Object.entries(neuralBrainManager.models)) {
+      if (model.network === networkOrName || model === networkOrName) {
+        modelName = name;
+        break;
+      }
+    }
   }
   
-  if (!network) {
+  if (!modelName) {
     return fallbackOutput !== null ? fallbackOutput : null;
   }
   
   try {
-    return network.run(input);
+    return await neuralBrainManager.predict(modelName, input, fallbackOutput);
   } catch (err) {
     console.warn(`[NEURAL] Prediction failed: ${err.message}`);
     return fallbackOutput !== null ? fallbackOutput : null;
   }
 }
 
-// Unified interface for neural training - supports both network objects and named networks
-function safeNeuralTrain(networkOrName, data, options = {}) {
-  if (!neuralNetworksAvailable) {
-    return Promise.resolve(false);
+// Unified interface for neural training - enhanced with multi-library support
+async function safeNeuralTrain(networkOrName, data, options = {}) {
+  if (!neuralBrainManager || !neuralBrainManager.initialized) {
+    return false;
   }
   
-  let network = null;
-  let networkName = typeof networkOrName === 'string' ? networkOrName : 'unknown';
+  let modelName = null;
   
   // Support both direct network objects and named network strings
   if (typeof networkOrName === 'string') {
-    network = config.neural?.[networkOrName];
-  } else {
-    network = networkOrName;
+    modelName = networkOrName;
+  } else if (networkOrName && typeof networkOrName === 'object') {
+    // Legacy support - try to match with existing models
+    for (const [name, model] of Object.entries(neuralBrainManager.models)) {
+      if (model.network === networkOrName || model === networkOrName) {
+        modelName = name;
+        break;
+      }
+    }
   }
   
-  if (!network) {
-    return Promise.resolve(false);
+  if (!modelName) {
+    return false;
   }
   
   try {
-    const trainOptions = {
-      iterations: 1000,
-      errorThresh: 0.005,
-      log: false,
-      ...options
-    };
-    network.train(data, trainOptions);
-    return Promise.resolve(true);
+    return await neuralBrainManager.train(modelName, data, options);
   } catch (err) {
-    console.warn(`[NEURAL] Training failed on ${networkName}: ${err.message}`);
-    return Promise.resolve(false);
+    console.warn(`[NEURAL] Training failed on ${modelName}: ${err.message}`);
+    return false;
   }
 }
 
-// Save a neural network to disk
+// Save a neural network to disk - enhanced with multi-library support
 function safeNeuralSave(networkOrName, filePath = null) {
-  if (!neuralNetworksAvailable) {
+  if (!neuralBrainManager || !neuralBrainManager.initialized) {
     return false;
   }
   
-  let network = null;
-  let networkName = typeof networkOrName === 'string' ? networkOrName : 'unknown';
+  let modelName = null;
   
   // Support both direct network objects and named network strings
   if (typeof networkOrName === 'string') {
-    network = config.neural?.[networkOrName];
+    modelName = networkOrName;
     filePath = filePath || `./models/${networkOrName}_model.json`;
-  } else {
-    network = networkOrName;
+  } else if (networkOrName && typeof networkOrName === 'object') {
+    // Legacy support - try to match with existing models
+    for (const [name, model] of Object.entries(neuralBrainManager.models)) {
+      if (model.network === networkOrName || model === networkOrName) {
+        modelName = name;
+        filePath = filePath || `./models/${name}_model.json`;
+        break;
+      }
+    }
   }
   
-  if (!network || !filePath) {
+  if (!modelName) {
     return false;
   }
   
   try {
-    const jsonData = network.toJSON();
-    const result = safeWriteJson(filePath, jsonData);
+    return neuralBrainManager.save(modelName, filePath);
+  } catch (err) {
+    console.warn(`[NEURAL] Save failed on ${modelName}: ${err.message}`);
+    return false;
+  }
+}
+
+// Load a neural network from disk - enhanced with multi-library support
+async function safeNeuralLoad(networkName, filePath = null) {
+  if (!neuralBrainManager || !neuralBrainManager.initialized) {
+    return false;
+  }
+  
+  try {
+    const result = await neuralBrainManager.load(networkName, filePath);
     if (result) {
-      console.log(`[NEURAL] ✓ Saved model: ${networkName}`);
+      // Update config for backward compatibility
+      if (neuralBrainManager.models[networkName]) {
+        config.neural[networkName] = neuralBrainManager.models[networkName].network || neuralBrainManager.models[networkName];
+      }
     }
     return result;
-  } catch (err) {
-    console.warn(`[NEURAL] Save failed on ${networkName}: ${err.message}`);
-    return false;
-  }
-}
-
-// Load a neural network from disk
-function safeNeuralLoad(networkName, filePath = null) {
-  if (!neuralNetworksAvailable || !brain) {
-    return false;
-  }
-  
-  filePath = filePath || `./models/${networkName}_model.json`;
-  
-  try {
-    const modelData = safeReadJson(filePath);
-    if (!modelData) {
-      return false;
-    }
-    
-    // Create appropriate network type
-    let network;
-    if (networkName === 'dupe' || networkName === 'conversation') {
-      network = new brain.recurrent.LSTM();
-    } else {
-      network = new brain.NeuralNetwork();
-    }
-    
-    network.fromJSON(modelData);
-    config.neural[networkName] = network;
-    console.log(`[NEURAL] ✓ Loaded model: ${networkName}`);
-    return true;
   } catch (err) {
     console.warn(`[NEURAL] Load failed on ${networkName}: ${err.message}`);
     return false;
   }
 }
 
-// Initialize neural brain with better error handling
+// Initialize neural brain with enhanced multi-library support
 async function initializeNeuralBrain() {
-  if (!neuralNetworksAvailable) {
-    console.log('[NEURAL] ⚠️ Brain.js not available - neural features disabled');
-    return false;
-  }
-  
   try {
-    console.log('[NEURAL] ✓ Brain.js available - initializing neural networks...');
+    console.log('[NEURAL] Initializing enhanced neural brain system...');
     
-    // Initialize networks with appropriate architectures
-    if (!config.neural.combat) {
-      config.neural.combat = new brain.NeuralNetwork({ hiddenLayers: [256, 128, 64] });
-    }
-    if (!config.neural.placement) {
-      config.neural.placement = new brain.NeuralNetwork({ hiddenLayers: [128, 64, 32] });
-    }
-    if (!config.neural.dupe) {
-      config.neural.dupe = new brain.recurrent.LSTM({ hiddenLayers: [256, 128, 64] });
-    }
-    if (!config.neural.conversation) {
-      config.neural.conversation = new brain.recurrent.LSTM({ hiddenLayers: [128, 64] });
+    // Initialize the neural brain manager
+    const status = initializeNeuralSystem();
+    
+    // Update config for backward compatibility
+    config.neural.available = status.available;
+    config.neural.type = status.type;
+    config.neural.manager = neuralBrainManager;
+    
+    // Map models to config for legacy compatibility
+    for (const modelName of status.models) {
+      const model = neuralBrainManager.models[modelName];
+      if (model && model.network) {
+        config.neural[modelName] = model.network;
+      }
     }
     
-    // Load trained models if they exist
+    // Load pre-trained models if they exist
     const networkNames = ['combat', 'placement', 'dupe', 'conversation'];
     for (const name of networkNames) {
       const modelPath = `./models/${name}_model.json`;
       if (fs.existsSync(modelPath)) {
-        if (safeNeuralLoad(name, modelPath)) {
+        if (await safeNeuralLoad(name, modelPath)) {
           console.log(`[NEURAL] ✓ Loaded pre-trained ${name} model`);
         }
       }
     }
     
+    console.log(`[NEURAL] ✓ Neural brain initialized with ${status.type}`);
     return true;
   } catch (err) {
     console.warn(`[NEURAL] Error during initialization: ${err.message}`);
@@ -1110,32 +1660,44 @@ async function initializeNeuralBrain() {
   }
 }
 
-// Log system status regarding neural availability
+// Log enhanced system status regarding neural availability
 function logNeuralSystemStatus() {
-  console.log('\n=== NEURAL SYSTEM STATUS ===');
-  console.log(`Neural Brain: ${neuralNetworksAvailable ? '✓ ENABLED' : '⚠️ DISABLED (fallback active)'}`);
+  console.log('\n=== ENHANCED NEURAL SYSTEM STATUS ===');
   
-  if (neuralNetworksAvailable) {
+  if (neuralBrainManager && neuralBrainManager.initialized) {
+    console.log(`Neural Brain: ✓ ENABLED (${neuralBrainManager.type})`);
+    console.log(`Available Libraries: ${Object.keys(neuralBrainManager.libraries).filter(k => neuralBrainManager.libraries[k]).join(', ') || 'none'}`);
     console.log('Neural Networks Loaded:');
-    for (const [name, network] of Object.entries(config.neural || {})) {
-      if (name !== 'available' && network) {
-        console.log(`  - ${name}: ✓ Ready`);
-      }
+    
+    for (const modelName of Object.keys(neuralBrainManager.models)) {
+      const model = neuralBrainManager.models[modelName];
+      const status = model.type || 'unknown';
+      console.log(`  - ${modelName}: ✓ Ready (${status})`);
     }
+    
     const modelsDir = './models';
     if (fs.existsSync(modelsDir)) {
       const models = fs.readdirSync(modelsDir).filter(f => f.endsWith('_model.json'));
       console.log(`  Models on disk: ${models.length} saved models`);
     }
+    
+    console.log(`Features:`);
+    console.log(`  - Prediction: ✓ Neural learning`);
+    console.log(`  - Training: ✓ Model improvement`);
+    console.log(`  - Saving/Loading: ✓ Persistent models`);
+    console.log(`  - Fallback: ✓ Graceful degradation`);
+    
   } else {
+    console.log(`Neural Brain: ⚠️ DISABLED (fallback active)`);
     console.log('Fallback behavior:');
-    console.log('  - Combat: Hardcoded tactics only');
-    console.log('  - Prediction: Velocity-based only');
-    console.log('  - Training: Data collection only (no training)');
-    console.log('  - Learning: Models will not be improved');
+    console.log('  - Combat: Heuristic-based tactics');
+    console.log('  - Prediction: Rule-based logic');
+    console.log('  - Training: Data collection only');
+    console.log('  - Learning: No model improvement');
+    console.log('  - All systems: Fully functional with hardcoded AI');
   }
   
-  console.log('============================\n');
+  console.log('=====================================\n');
 }
 
 // Load whitelist with auto-migration from legacy format
@@ -9683,7 +10245,7 @@ class CrystalPvP {
     
     // Get strategy from neural network
     try {
-      const output = safeNeuralPredict(this.neuralNet, input, 0.5);
+      const output = await safeNeuralPredict(this.neuralNet, input, 0.5);
       const strategyScore = Array.isArray(output) ? output[0] : output;
       
       // Determine strategy
