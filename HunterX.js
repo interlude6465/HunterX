@@ -580,17 +580,15 @@ const config = {
    autoLoot: true,
    smartEquip: true,
    autoEngagement: {
-      autoEngageHostileMobs: true,
-      engagementDistance: 3,
-      monitorInterval: 300,
-      minHealthToFight: 4,
-      requireMinHealth: true,
-      avoidInWater: true,
-      requireArmor: true,
-      focusSingleMob: true,
-      neverAttackPlayers: true,
-      autoRetaliate: true
-    },
+     autoEngageHostileMobs: true,
+     engagementDistance: 2,
+     monitorInterval: 200,
+     minHealthToFight: 4,
+     requireMinHealth: true,
+     avoidInWater: true,
+     requireArmor: true,
+     focusSingleMob: true
+   },
    logger: {
      enabled: true,
      healthThreshold: 6,
@@ -1588,54 +1586,6 @@ class EquipmentManager {
     this.equipmentCheckInterval = 5000; // Check every 5 seconds
     
     console.log('[EQUIPMENT] Equipment Manager initialized');
-    
-    // Set up inventory change listener for auto-equipping
-    this.setupInventoryListener();
-  }
-  
-  // === INVENTORY LISTENER FOR AUTO-EQUIP ===
-  setupInventoryListener() {
-    // Set up listeners after bot spawns to ensure inventory is ready
-    if (this.bot.inventory) {
-      // Listen for inventory updates to auto-equip armor
-      this.bot.inventory.on('updateSlot', async (oldItem, newItem) => {
-        if (newItem && this.isArmorItem(newItem.name)) {
-          console.log(`[EQUIPMENT] Detected armor pickup: ${newItem.name}`);
-          await this.autoEquipArmor(newItem);
-        }
-      });
-      
-      console.log('[EQUIPMENT] Inventory listener setup complete');
-    } else {
-      // If inventory not ready, set up a listener for when it becomes available
-      this.bot.once('spawn', () => {
-        setTimeout(() => {
-          this.setupInventoryListener();
-        }, 1000); // Wait a second after spawn for inventory to initialize
-      });
-    }
-    
-    // Listen for entity drops (items dropped by players/entities)
-    this.bot.on('entitySpawn', (entity) => {
-      if (entity.name === 'item') {
-        console.log('[EQUIPMENT] Item dropped nearby');
-        // Check if it's armor that we might pick up
-        if (entity.metadata && entity.metadata[8] && entity.metadata[8].itemId) {
-          const itemName = entity.metadata[8].itemId;
-          if (this.isArmorItem(itemName)) {
-            console.log(`[EQUIPMENT] Armor item detected nearby: ${itemName}`);
-          }
-        }
-      }
-    });
-    
-    // Listen for player drop events
-    this.bot.on('playerCollect', (collector, collectedEntity) => {
-      if (collector.username === this.bot.username && collectedEntity.name === 'item') {
-        console.log('[EQUIPMENT] Bot collected an item');
-        // Inventory updateSlot event will handle auto-equip
-      }
-    });
   }
   
   // === AUTOMATIC ARMOR EQUIPPING ===
@@ -1644,34 +1594,21 @@ class EquipmentManager {
     const armorSlots = ['head', 'torso', 'legs', 'feet'];
     const equippedArmor = [];
     
-    console.log(`[ARMOR] Starting armor equip process. Inventory has ${inventory.length} items`);
-    
     for (const slot of armorSlots) {
       const bestArmor = this.findBestArmorForSlot(inventory, slot);
       if (bestArmor) {
         try {
-          console.log(`[ARMOR] Attempting to equip ${bestArmor.name} to ${slot} slot`);
           await this.bot.equip(bestArmor, slot);
           equippedArmor.push(bestArmor.name);
-          console.log(`[ARMOR] ✓ Equipped ${bestArmor.name} in ${slot} slot`);
+          console.log(`[ARMOR] Equipped ${bestArmor.name} in ${slot} slot`);
         } catch (err) {
-          console.log(`[ARMOR] ✗ Failed to equip ${bestArmor.name}: ${err.message}`);
-          console.log(`[ARMOR] Item details:`, {
-            name: bestArmor.name,
-            count: bestArmor.count,
-            slot: bestArmor.slot,
-            nbt: bestArmor.nbt ? 'present' : 'none'
-          });
+          console.log(`[ARMOR] Failed to equip ${bestArmor.name}: ${err.message}`);
         }
-      } else {
-        console.log(`[ARMOR] No suitable armor found for ${slot} slot`);
       }
     }
     
     if (equippedArmor.length > 0) {
-      console.log(`[ARMOR] ✓ Equipped armor set: ${equippedArmor.join(', ')}`);
-    } else {
-      console.log(`[ARMOR] No armor equipped`);
+      console.log(`[ARMOR] Equipped armor set: ${equippedArmor.join(', ')}`);
     }
     
     return equippedArmor;
@@ -1736,24 +1673,16 @@ class EquipmentManager {
     const inventory = this.bot.inventory.items();
     const weapons = this.findWeapons(inventory);
     
-    console.log(`[WEAPON] Starting weapon equip process for ${situation}. Found ${weapons.length} weapons`);
-    
     if (weapons.length === 0) {
-      console.log('[WEAPON] ✗ No weapons found in inventory');
+      console.log('[WEAPON] No weapons found in inventory');
       return null;
     }
-    
-    // Log all found weapons
-    weapons.forEach(weapon => {
-      console.log(`[WEAPON] Found weapon: ${weapon.name} (slot: ${weapon.slot})`);
-    });
     
     let bestWeapon = null;
     let bestScore = -1;
     
     for (const weapon of weapons) {
       const score = this.calculateWeaponScore(weapon, situation);
-      console.log(`[WEAPON] ${weapon.name} score: ${score.toFixed(1)}`);
       if (score > bestScore) {
         bestScore = score;
         bestWeapon = weapon;
@@ -1761,26 +1690,12 @@ class EquipmentManager {
     }
     
     if (bestWeapon) {
-      // Check if already equipped
-      const currentWeapon = this.bot.heldItem;
-      if (currentWeapon && currentWeapon.name === bestWeapon.name) {
-        console.log(`[WEAPON] ✓ ${bestWeapon.name} already equipped in hand`);
-        return bestWeapon;
-      }
-      
       try {
-        console.log(`[WEAPON] Attempting to equip ${bestWeapon.name} to hand`);
         await this.bot.equip(bestWeapon, 'hand');
-        console.log(`[WEAPON] ✓ Equipped ${bestWeapon.name} for ${situation} (score: ${bestScore.toFixed(1)})`);
+        console.log(`[WEAPON] Equipped ${bestWeapon.name} for ${situation} (score: ${bestScore.toFixed(1)})`);
         return bestWeapon;
       } catch (err) {
-        console.log(`[WEAPON] ✗ Failed to equip ${bestWeapon.name}: ${err.message}`);
-        console.log(`[WEAPON] Item details:`, {
-          name: bestWeapon.name,
-          count: bestWeapon.count,
-          slot: bestWeapon.slot,
-          nbt: bestWeapon.nbt ? 'present' : 'none'
-        });
+        console.log(`[WEAPON] Failed to equip ${bestWeapon.name}: ${err.message}`);
       }
     }
     
@@ -2075,16 +1990,6 @@ class EquipmentManager {
   async equipOffhand() {
     const inventory = this.bot.inventory.items();
     
-    console.log(`[OFFHAND] Starting offhand equip process. Inventory has ${inventory.length} items`);
-    
-    // Check current offhand item
-    const currentOffhand = this.bot.inventory.slots[45];
-    if (currentOffhand) {
-      console.log(`[OFFHAND] Current offhand item: ${currentOffhand.name}`);
-    } else {
-      console.log(`[OFFHAND] No item currently in offhand`);
-    }
-    
     // Priority: Totem > Shield > Arrow > Food
     const priorities = [
       { type: 'totem', items: ['totem_of_undying'] },
@@ -2097,31 +2002,17 @@ class EquipmentManager {
       for (const itemName of priority.items) {
         const item = inventory.find(invItem => invItem.name === itemName);
         if (item) {
-          // Skip if same item is already equipped
-          if (currentOffhand && currentOffhand.name === item.name) {
-            console.log(`[OFFHAND] ${item.name} already equipped in offhand`);
-            return item;
-          }
-          
           try {
-            console.log(`[OFFHAND] Attempting to equip ${item.name} to off-hand`);
             await this.bot.equip(item, 'off-hand');
-            console.log(`[OFFHAND] ✓ Equipped ${item.name} in off-hand`);
+            console.log(`[OFFHAND] Equipped ${item.name} in off-hand`);
             return item;
           } catch (err) {
-            console.log(`[OFFHAND] ✗ Failed to equip ${item.name}: ${err.message}`);
-            console.log(`[OFFHAND] Item details:`, {
-              name: item.name,
-              count: item.count,
-              slot: item.slot,
-              nbt: item.nbt ? 'present' : 'none'
-            });
+            console.log(`[OFFHAND] Failed to equip ${item.name}: ${err.message}`);
           }
         }
       }
     }
     
-    console.log(`[OFFHAND] No suitable items found for offhand`);
     return null;
   }
   
@@ -2219,19 +2110,6 @@ class EquipmentManager {
     return item.slot;
   }
   
-  findInInventory(itemName) {
-    // Search inventory for item by name (partial match)
-    const inventory = this.bot.inventory.items();
-    const lowerItemName = itemName.toLowerCase();
-    
-    for (const item of inventory) {
-      if (item && item.name && item.name.includes(lowerItemName)) {
-        return item;
-      }
-    }
-    return null;
-  }
-  
   // === MAIN UPDATE LOOP ===
   async update() {
     const now = Date.now();
@@ -2273,114 +2151,6 @@ class EquipmentManager {
     await this.organizeHotbar();
     
     console.log('[EQUIPMENT] Equipment system initialization complete');
-  }
-  
-  // === ADDITIONAL METHODS FOR AUTO-EQUIP FUNCTIONALITY ===
-  
-  // Auto-equip armor when picked up
-  async autoEquipArmor(item) {
-    const slot = this.getSlotForItem(item.name);
-    if (!slot) return;
-    
-    try {
-      console.log(`[EQUIPMENT] Auto-equipping: ${item.name} to ${slot}`);
-      
-      // Method 1: Use bot.equip
-      if (this.bot.equip && typeof this.bot.equip === 'function') {
-        await this.bot.equip(item, slot);
-        console.log(`[EQUIPMENT] ✓ Equipped ${item.name}`);
-      }
-      // Method 2: Direct equipment change
-      else if (this.bot.setEquipment) {
-        await this.bot.setEquipment(item, slot);
-        console.log(`[EQUIPMENT] ✓ Equipped ${item.name}`);
-      }
-      // Method 3: Inventory manipulation
-      else {
-        const inventorySlot = this.getInventorySlot(slot);
-        if (inventorySlot) {
-          this.bot.inventory.moveSlotItem(item.slot, inventorySlot);
-          console.log(`[EQUIPMENT] ✓ Moved ${item.name} to ${slot}`);
-        }
-      }
-    } catch (error) {
-      console.error(`[EQUIPMENT] Failed to equip ${item.name}:`, error.message);
-    }
-  }
-  
-  isArmorItem(itemName) {
-    const armorItems = [
-      'helmet', 'chestplate', 'leggings', 'boots', 'shield', 'totem'
-    ];
-    return armorItems.some(armor => itemName.toLowerCase().includes(armor));
-  }
-  
-  getSlotForItem(itemName) {
-    const lower = itemName.toLowerCase();
-    
-    if (lower.includes('helmet')) return 'head';
-    if (lower.includes('chestplate')) return 'torso';
-    if (lower.includes('leggings')) return 'legs';
-    if (lower.includes('boots')) return 'feet';
-    if (lower.includes('shield')) return 'off-hand';
-    if (lower.includes('totem')) return 'off-hand';
-    if (lower.includes('sword') || lower.includes('axe')) return 'hand';
-    
-    return null;
-  }
-  
-  getInventorySlot(equipmentSlot) {
-    // Map equipment slots to inventory positions
-    const slots = {
-      'head': 5,      // Helmet slot
-      'torso': 6,     // Chestplate slot
-      'legs': 7,      // Leggings slot
-      'feet': 8,      // Boots slot
-      'hand': 36,     // Main hand
-      'off-hand': 45  // Off hand
-    };
-    return slots[equipmentSlot] || null;
-  }
-  
-  // Manual equip command handler
-  async equipItem(itemName) {
-    const items = this.bot.inventory.items();
-    const toEquip = items.find(i => i.name.includes(itemName.toLowerCase()));
-    
-    if (toEquip) {
-      const slot = this.getSlotForItem(toEquip.name);
-      if (slot) {
-        await this.autoEquipArmor(toEquip);
-        this.bot.chat(`equipped ${toEquip.name}`);
-        return true;
-      } else {
-        this.bot.chat(`${toEquip.name} cannot be equipped`);
-        return false;
-      }
-    } else {
-      this.bot.chat(`${itemName} not found in inventory`);
-      return false;
-    }
-  }
-  
-  // Check current equipment status
-  checkEquipment() {
-    console.log('[EQUIPMENT] Current equipment:');
-    console.log('Head:', this.bot.inventory.slots[5]?.name || 'empty');
-    console.log('Chest:', this.bot.inventory.slots[6]?.name || 'empty');
-    console.log('Legs:', this.bot.inventory.slots[7]?.name || 'empty');
-    console.log('Feet:', this.bot.inventory.slots[8]?.name || 'empty');
-    console.log('Main hand:', this.bot.inventory.slots[36]?.name || 'empty');
-    console.log('Off hand:', this.bot.inventory.slots[45]?.name || 'empty');
-    
-    return {
-      head: this.bot.inventory.slots[5]?.name || null,
-      chest: this.bot.inventory.slots[6]?.name || null,
-      legs: this.bot.inventory.slots[7]?.name || null,
-      feet: this.bot.inventory.slots[8]?.name || null,
-      mainHand: this.bot.inventory.slots[36]?.name || null,
-      offHand: this.bot.inventory.slots[45]?.name || null
-    };
   }
 }
 
@@ -3384,38 +3154,6 @@ class SwarmCoordinator {
           type: 'GUARD_POSITION',
           position: message.position,
           initiator: message.initiator,
-          timestamp: Date.now()
-        });
-        break;
-        
-      case 'FORMATION':
-        console.log(`[SWARM] 📐 Formation ${message.formationType} at ${message.center.x}, ${message.center.y}, ${message.center.z}`);
-        this.broadcast({
-          type: 'FORM_FORMATION',
-          formationType: message.formationType,
-          center: message.center,
-          initiator: message.initiator,
-          timestamp: Date.now()
-        });
-        break;
-        
-      case 'SWARM_MINE':
-        console.log(`[SWARM] ⛏️ Swarm mining ${message.count} of ${message.resource}`);
-        this.broadcast({
-          type: 'MINE_RESOURCE',
-          resource: message.resource,
-          count: message.count,
-          initiator: message.initiator,
-          timestamp: Date.now()
-        });
-        break;
-        
-      case 'HELP_REQUEST':
-        console.log(`[SWARM] 🆘 Help request at ${message.position.x}, ${message.position.y}, ${message.position.z}`);
-        this.broadcast({
-          type: 'SEND_HELP',
-          position: message.position,
-          requester: message.requester,
           timestamp: Date.now()
         });
         break;
@@ -8628,7 +8366,7 @@ class HostileMobDetector {
       'enderman', 'witch', 'wither_skeleton', 'blaze', 'ghast',
       'magma_cube', 'silverfish', 'endermite', 'evoker', 'vindicator',
       'pillager', 'ravager', 'drowned', 'husk', 'stray',
-      'piglin', 'piglin_brute', 'zoglin', 'phantom', 'shulker'
+      'piglin', 'piglin_brute', 'zoglin', 'phantom'
     ];
   }
   
@@ -8636,17 +8374,7 @@ class HostileMobDetector {
     if (!entity || !entity.name) return false;
     
     const mobName = entity.name.toLowerCase();
-    const entityType = entity.type ? entity.type.toLowerCase() : '';
-    
-    // Check both name and type
-    return this.HOSTILE_MOBS.some(hostile => 
-      mobName.includes(hostile) || entityType.includes(hostile)
-    );
-  }
-  
-  isPlayer(entity) {
-    if (!entity) return false;
-    return entity.type === 'player' || entity.username !== undefined;
+    return this.HOSTILE_MOBS.some(hostile => mobName.includes(hostile));
   }
   
   isPlayerAttacking(player) {
@@ -8858,26 +8586,8 @@ class CombatAI {
       return;
     }
     
-    // CRITICAL SAFETY CHECK: Never attack players if configured
-    if (this.hostileMobDetector && this.hostileMobDetector.isPlayer(attacker)) {
-      if (config.combat.autoEngagement?.neverAttackPlayers) {
-        console.log(`[COMBAT] ❌ SAFETY: Target is a player (${attacker.username}), aborting combat!`);
-        this.bot.chat(`I don't attack players!`);
-        return;
-      }
-      console.log(`[COMBAT] ⚠️ Warning: Engaging player ${attacker.username}`);
-    }
-    
-    // Safety check: Verify target is hostile
-    if (this.hostileMobDetector && !this.hostileMobDetector.isHostileMob(attacker) && !this.hostileMobDetector.isPlayer(attacker)) {
-      console.log(`[COMBAT] ❌ SAFETY: Target is not hostile (${attacker.name}), aborting combat!`);
-      return;
-    }
-    
     try {
-      const targetName = attacker.username || attacker.name || 'Unknown';
-      const targetType = this.hostileMobDetector && this.hostileMobDetector.isPlayer(attacker) ? 'player' : 'mob';
-      console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
+      console.log(`[COMBAT] ⚔️ Engaged with ${attacker.username}!`);
       this.inCombat = true;
       this.currentTarget = attacker;
       
@@ -9218,6 +8928,15 @@ class CombatAI {
               break; // Focus on one mob at a time
             }
           }
+          
+          // Check if player is attacking us
+          if (entity.type === 'player' && distance <= engagementDistance) {
+            if (this.hostileMobDetector && this.hostileMobDetector.isPlayerAttacking(entity)) {
+              console.log(`[COMBAT] ⚠️ Player ${entity.username} attacking at ${distance.toFixed(1)} blocks!`);
+              await this.autoEngageMob(entity);
+              break;
+            }
+          }
         }
       } catch (err) {
         console.log(`[COMBAT] Mob monitoring error: ${err.message}`);
@@ -9228,20 +8947,6 @@ class CombatAI {
   async autoEngageMob(mobEntity) {
     if (this.isCurrentlyFighting) {
       console.log('[COMBAT] Already fighting, ignoring new mob');
-      return;
-    }
-    
-    // CRITICAL SAFETY: Never attack players if configured
-    if (this.hostileMobDetector && this.hostileMobDetector.isPlayer(mobEntity)) {
-      if (config.combat.autoEngagement?.neverAttackPlayers) {
-        console.log(`[COMBAT] ⚠️ Target is a player (${mobEntity.username}), not engaging`);
-        return;
-      }
-    }
-    
-    // Safety: Only engage hostile mobs, not passive entities
-    if (this.hostileMobDetector && !this.hostileMobDetector.isHostileMob(mobEntity) && !this.hostileMobDetector.isPlayer(mobEntity)) {
-      console.log(`[COMBAT] ⚠️ Target is not hostile (${mobEntity.name}), not engaging`);
       return;
     }
     
@@ -11346,16 +11051,6 @@ const CHEST_LOCATIONS = {
 // Natural Language Parser for item requests
 class ItemRequestParser {
   parseRequest(message) {
-    // Skip if message looks like a command
-    if (message.startsWith('!')) {
-      console.log(`[ITEM_PARSER] Skipping - starts with ! (command marker)`);
-      return null;
-    }
-    if (/^(?:go(?:to)?|come\s+to|travel\s+to|attack|help|spawn|equip|status|stop|follow|stay)/i.test(message)) {
-      console.log(`[ITEM_PARSER] Skipping - looks like a command pattern`);
-      return null;
-    }
-    
     // Skip if message contains bot name references (should have been stripped already)
     const botNames = ['hunter', 'bot', 'robot'];
     const lowerMessage = message.toLowerCase();
@@ -13340,449 +13035,6 @@ class AutoFisher {
   }
 }
 
-// === BARITONE-BASED BLOCK FINDER ===
-class BlockFinder {
-  constructor(bot) {
-    this.bot = bot;
-    this.baritone = null; // Baritone integration placeholder
-    this.netherBlocks = ['nether_wart_block', 'warped_wart_block', 'ancient_debris', 'nether_gold_ore'];
-    this.endBlocks = ['end_stone', 'purpur_block', 'dragon_egg', 'end_crystal'];
-  }
-  
-  async findAndReturnBlock(blockName, requesterUsername = null) {
-    console.log(`[FINDER] 🔍 Looking for: ${blockName}`);
-    
-    // Store starting position for return
-    const startPos = this.bot.entity.position.clone();
-    
-    // Normalize block name
-    const normalized = this.normalizeBlockName(blockName);
-    console.log(`[FINDER] 📝 Normalized: ${normalized}`);
-    
-    // Strategy 1: Search loaded chunks (fast, nearby)
-    console.log(`[FINDER] 🗺️ Strategy 1: Searching loaded chunks...`);
-    let result = await this.searchLoadedChunks(normalized);
-    if (result) {
-      // Get the block and return to player
-      const success = await this.retrieveBlockAndReturn(result, startPos, requesterUsername);
-      return success;
-    }
-    
-    // Strategy 2: Use smart exploration with pathfinding
-    console.log(`[FINDER] 🚶 Strategy 2: Using pathfinding exploration...`);
-    result = await this.searchWithPathfinding(normalized);
-    if (result) {
-      // Get the block and return to player
-      const success = await this.retrieveBlockAndReturn(result, startPos, requesterUsername);
-      return success;
-    }
-    
-    // Strategy 3: Check if it's in other dimensions
-    console.log(`[FINDER] 🌍 Strategy 3: Checking dimension requirements...`);
-    if (this.netherBlocks.includes(normalized)) {
-      this.bot.chat(`⚠️ That block is in the Nether, need to travel there!`);
-    } else if (this.endBlocks.includes(normalized)) {
-      this.bot.chat(`⚠️ That block is in the End, need to travel there!`);
-    } else {
-      this.bot.chat(`❌ Couldn't find ${blockName} in nearby areas`);
-    }
-    
-    return false;
-  }
-  
-  async retrieveBlockAndReturn(blockPos, startPos, requesterUsername = null) {
-    try {
-      // Pathfind to block
-      const reached = await this.pathfindToBlock(blockPos);
-      if (!reached) {
-        this.bot.chat(`❌ Couldn't reach the block`);
-        return false;
-      }
-      
-      // Dig the block
-      const dug = await this.digBlock(blockPos);
-      if (!dug) {
-        this.bot.chat(`❌ Failed to dig the block`);
-        return false;
-      }
-      
-      // Return to starting position or player
-      if (requesterUsername) {
-        const player = this.bot.players[requesterUsername];
-        if (player && player.entity) {
-          this.bot.chat(`🚶 Returning to ${requesterUsername}...`);
-          await this.bot.pathfinder.goto(new goals.GoalNear(player.entity.position, 3));
-        } else {
-          this.bot.chat(`🚶 Returning to starting position...`);
-          await this.bot.pathfinder.goto(new goals.GoalNear(startPos, 3));
-        }
-      } else {
-        this.bot.chat(`🚶 Returning to starting position...`);
-        await this.bot.pathfinder.goto(new goals.GoalNear(startPos, 3));
-      }
-      
-      return true;
-    } catch (error) {
-      console.log(`[FINDER] Error in retrieveBlockAndReturn: ${error.message}`);
-      this.bot.chat(`❌ Error: ${error.message}`);
-      return false;
-    }
-  }
-  
-  async findBlock(blockName) {
-    console.log(`[FINDER] 🔍 Looking for: ${blockName}`);
-    
-    // Normalize block name
-    const normalized = this.normalizeBlockName(blockName);
-    console.log(`[FINDER] 📝 Normalized: ${normalized}`);
-    
-    // Strategy 1: Search loaded chunks (fast, nearby)
-    console.log(`[FINDER] 🗺️ Strategy 1: Searching loaded chunks...`);
-    let result = await this.searchLoadedChunks(normalized);
-    if (result) return result;
-    
-    // Strategy 2: Use smart exploration with pathfinding
-    console.log(`[FINDER] 🚶 Strategy 2: Using pathfinding exploration...`);
-    result = await this.searchWithPathfinding(normalized);
-    if (result) return result;
-    
-    // Strategy 3: Check if it's in other dimensions
-    console.log(`[FINDER] 🌍 Strategy 3: Checking dimension requirements...`);
-    if (this.netherBlocks.includes(normalized)) {
-      this.bot.chat(`⚠️ That block is in the Nether, need to travel there!`);
-    } else if (this.endBlocks.includes(normalized)) {
-      this.bot.chat(`⚠️ That block is in the End, need to travel there!`);
-    } else {
-      this.bot.chat(`❌ Couldn't find ${blockName} in nearby areas`);
-    }
-    
-    return null;
-  }
-  
-  async searchLoadedChunks(blockName) {
-    const world = this.bot.world;
-    const playerPos = this.bot.entity.position;
-    
-    // Search in 100 block radius (loaded chunks)
-    const searchRadius = 100;
-    let foundBlocks = [];
-    
-    console.log(`[FINDER] 🗺️ Searching ${searchRadius}x${searchRadius}x${searchRadius} area around ${Math.floor(playerPos.x)},${Math.floor(playerPos.y)},${Math.floor(playerPos.z)}`);
-    
-    // Use step size for efficiency
-    const step = 3;
-    
-    for (let x = playerPos.x - searchRadius; x < playerPos.x + searchRadius; x += step) {
-      for (let y = Math.max(0, playerPos.y - 50); y < Math.min(256, playerPos.y + 50); y += step) {
-        for (let z = playerPos.z - searchRadius; z < playerPos.z + searchRadius; z += step) {
-          try {
-            const block = world.getBlock(new Vec3(Math.floor(x), Math.floor(y), Math.floor(z)));
-            
-            if (block && block.name === blockName) {
-              const distance = playerPos.distanceTo(block.position);
-              foundBlocks.push({ 
-                x: block.position.x, 
-                y: block.position.y, 
-                z: block.position.z,
-                distance: distance
-              });
-              console.log(`[FINDER] ✅ Found ${blockName} at ${block.position.x} ${block.position.y} ${block.position.z} (${distance.toFixed(1)} blocks away)`);
-            }
-          } catch (error) {
-            // Block not loaded, skip
-          }
-        }
-      }
-    }
-    
-    if (foundBlocks.length > 0) {
-      // Return the closest block
-      foundBlocks.sort((a, b) => a.distance - b.distance);
-      console.log(`[FINDER] 🎯 Found ${foundBlocks.length} instances, closest is ${foundBlocks[0].distance.toFixed(1)} blocks away`);
-      return foundBlocks[0];
-    }
-    
-    console.log(`[FINDER] ❌ No ${blockName} found in loaded chunks`);
-    return null;
-  }
-  
-  async searchWithPathfinding(blockName) {
-    console.log(`[FINDER] 🚶 Starting pathfinding search for ${blockName}`);
-    
-    // Since Baritone isn't available, use systematic exploration
-    const spiralPoints = this.generateSpiralSearchPoints(200, 30); // 200 block radius, 30 points (reduced for efficiency)
-    const startTime = Date.now();
-    const maxSearchTime = 60000; // 60 second timeout
-    
-    for (const point of spiralPoints) {
-      // Check timeout
-      if (Date.now() - startTime > maxSearchTime) {
-        console.log(`[FINDER] ⏰ Search timeout reached (${maxSearchTime/1000}s)`);
-        this.bot.chat(`⏰ Search timeout - couldn't find ${blockName} in time`);
-        return null;
-      }
-      
-      try {
-        console.log(`[FINDER] 🚶 Exploring point ${Math.floor(point.x)}, ${Math.floor(point.z)}...`);
-        
-        // Pathfind to the exploration point with timeout
-        const pathfindPromise = this.bot.pathfinder.goto(new goals.GoalNear(point.x, point.y, point.z, 5));
-        await Promise.race([
-          pathfindPromise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Pathfinding timeout')), 10000))
-        ]);
-        
-        // Search around this point
-        const found = await this.searchLoadedChunks(blockName);
-        if (found) {
-          console.log(`[FINDER] 🎯 Found ${blockName} during exploration!`);
-          return found;
-        }
-        
-        // Small delay to prevent overwhelming
-        await this.sleep(500);
-        
-      } catch (error) {
-        console.log(`[FINDER] ⚠️ Failed to reach exploration point: ${error.message}`);
-        continue;
-      }
-    }
-    
-    console.log(`[FINDER] ❌ Pathfinding search completed, no ${blockName} found`);
-    return null;
-  }
-  
-  generateSpiralSearchPoints(maxRadius, numPoints) {
-    const points = [];
-    const playerPos = this.bot.entity.position;
-    
-    for (let i = 0; i < numPoints; i++) {
-      const angle = (i / numPoints) * 2 * Math.PI;
-      const radius = (i / numPoints) * maxRadius;
-      
-      const x = playerPos.x + Math.cos(angle) * radius;
-      const z = playerPos.z + Math.sin(angle) * radius;
-      const y = playerPos.y; // Keep at current Y level for safety
-      
-      points.push({ x, y: Math.floor(y), z });
-    }
-    
-    return points;
-  }
-  
-  normalizeBlockName(name) {
-    // "diamond block" → "diamond_block"
-    // "obsidian" → "obsidian"
-    // "diamond ore" → "diamond_ore"
-    let normalized = name.toLowerCase()
-      .replace(/\s+/g, '_');
-    
-    // Handle special cases
-    if (normalized.endsWith('_ore')) {
-      return normalized; // Already correct
-    }
-    
-    if (normalized.includes('ore')) {
-      return normalized.replace(/_?ore/, '_ore');
-    }
-    
-    if (normalized.includes('block')) {
-      return normalized.replace(/_?block/, '_block');
-    }
-    
-    // Common ore mappings
-    const oreMap = {
-      'diamond': 'diamond_ore',
-      'coal': 'coal_ore',
-      'iron': 'iron_ore',
-      'gold': 'gold_ore',
-      'lapis': 'lapis_ore',
-      'redstone': 'redstone_ore',
-      'emerald': 'emerald_ore',
-      'copper': 'copper_ore'
-    };
-    
-    if (oreMap[normalized]) {
-      return oreMap[normalized];
-    }
-    
-    return normalized;
-  }
-  
-  async pathfindToBlock(blockPos) {
-    console.log(`[FINDER] 🚶 Pathfinding to ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
-    
-    try {
-      // Use pathfinder to go to the block
-      await this.bot.pathfinder.goto(new goals.GoalBlock(
-        blockPos.x,
-        blockPos.y,
-        blockPos.z
-      ));
-      
-      console.log(`[FINDER] ✅ Reached block location`);
-      return true;
-    } catch (error) {
-      console.error(`[FINDER] ❌ Failed to pathfind to block:`, error.message);
-      return false;
-    }
-  }
-  
-  async digBlock(blockPos) {
-    console.log(`[FINDER] ⛏️ Digging block at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
-    
-    const block = this.bot.blockAt(new Vec3(blockPos.x, blockPos.y, blockPos.z));
-    
-    if (!block) {
-      console.log(`[FINDER] ❌ Block not found at position`);
-      return false;
-    }
-    
-    if (block.name === 'air') {
-      console.log(`[FINDER] ❌ Block is already air`);
-      return false;
-    }
-    
-    // Safety checks
-    if (!this.isSafeToMine(block)) {
-      console.log(`[FINDER] ❌ Block is not safe to mine`);
-      this.bot.chat(`⚠️ That block looks dangerous to mine!`);
-      return false;
-    }
-    
-    try {
-      // Check if we have the right tool
-      const tool = this.getBestTool(block);
-      if (tool) {
-        await this.bot.equip(tool, 'hand');
-        console.log(`[FINDER] 🔧 Equipped ${tool.name} for mining`);
-      } else {
-        console.log(`[FINDER] ⚠️ Mining with hand (no suitable tool)`);
-        this.bot.chat(`⚠️ No suitable tool found, mining by hand...`);
-      }
-      
-      await this.bot.dig(block, true); // true = drop items
-      console.log(`[FINDER] ✅ Successfully dug ${block.name}`);
-      return true;
-    } catch (error) {
-      console.error(`[FINDER] ❌ Failed to dig ${block.name}:`, error.message);
-      this.bot.chat(`❌ Failed to dig ${block.name}: ${error.message}`);
-      return false;
-    }
-  }
-  
-  getBestTool(block) {
-    const tools = this.bot.inventory.items().filter(item => 
-      item.name.includes('pickaxe') || 
-      item.name.includes('axe') || 
-      item.name.includes('shovel') || 
-      item.name.includes('hoe')
-    );
-    
-    if (tools.length === 0) {
-      console.log(`[FINDER] ⚠️ No tools found in inventory`);
-      return null;
-    }
-    
-    // Determine best tool based on block type
-    let toolType = 'pickaxe'; // default
-    
-    if (block.name.includes('wood') || block.name.includes('log') || block.name.includes('planks')) {
-      toolType = 'axe';
-    } else if (block.name.includes('dirt') || block.name.includes('sand') || block.name.includes('gravel') || block.name.includes('grass')) {
-      toolType = 'shovel';
-    } else if (block.name.includes('leaves')) {
-      toolType = 'hoe';
-    }
-    
-    // Filter by tool type
-    const typeTools = tools.filter(tool => tool.name.includes(toolType));
-    const relevantTools = typeTools.length > 0 ? typeTools : tools;
-    
-    // Priority by material
-    const priority = ['diamond', 'iron', 'stone', 'wooden', 'golden'];
-    
-    for (const material of priority) {
-      const tool = relevantTools.find(t => t.name.startsWith(material + '_' + toolType));
-      if (tool) {
-        console.log(`[FINDER] 🔧 Selected ${tool.name} for mining ${block.name}`);
-        return tool;
-      }
-    }
-    
-    return relevantTools[0]; // Return any relevant tool
-  }
-  
-  isDangerousBlock(block) {
-    // Check for blocks that might be dangerous to mine
-    const dangerousBlocks = [
-      'lava', 'fire', 'magma_block', 'campfire',
-      ' TNT', 'tnt', 'monster_egg', 'spawner'
-    ];
-    
-    return dangerousBlocks.some(dangerous => 
-      block.name.toLowerCase().includes(dangerous.toLowerCase())
-    );
-  }
-  
-  isSafeToMine(block) {
-    // Check surroundings for dangerous conditions
-    const pos = block.position;
-    const surroundings = [
-      this.bot.blockAt(pos.offset(0, 1, 0)), // above
-      this.bot.blockAt(pos.offset(0, -1, 0)), // below
-      this.bot.blockAt(pos.offset(1, 0, 0)), // sides
-      this.bot.blockAt(pos.offset(-1, 0, 0)),
-      this.bot.blockAt(pos.offset(0, 0, 1)),
-      this.bot.blockAt(pos.offset(0, 0, -1))
-    ];
-    
-    for (const surrounding of surroundings) {
-      if (surrounding && this.isDangerousBlock(surrounding)) {
-        console.log(`[FINDER] ⚠️ Dangerous block detected nearby: ${surrounding.name}`);
-        return false;
-      }
-    }
-    
-    return true;
-  }
-  
-  toBlockName(itemName) {
-    // Convert item names to block names
-    const oreMap = {
-      'diamond': 'diamond_ore',
-      'coal': 'coal_ore',
-      'iron': 'iron_ore',
-      'gold': 'gold_ore',
-      'lapis': 'lapis_ore',
-      'redstone': 'redstone_ore',
-      'emerald': 'emerald_ore',
-      'copper': 'copper_ore'
-    };
-    
-    const lower = itemName.toLowerCase();
-    if (oreMap[lower]) {
-      return oreMap[lower];
-    }
-    
-    return lower + '_block';
-  }
-  
-  isBlock(name) {
-    // Check if it's a known block type
-    return name.includes('ore') || 
-           name.includes('block') || 
-           name.includes('stone') ||
-           name.includes('wood') ||
-           name.includes('log') ||
-           name.includes('planks');
-  }
-  
-  sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-}
-
 // === INTELLIGENT CONVERSATION SYSTEM ===
 class ConversationAI {
   constructor(bot) {
@@ -13791,42 +13043,6 @@ class ConversationAI {
     this.maxContext = 10;
     this.trustLevels = ['guest', 'trusted', 'admin', 'owner'];
     this.itemHunter = new ItemHunter(bot);
-    this.blockFinder = new BlockFinder(bot);
-    
-    // Command patterns for priority parsing
-    this.COMMAND_PATTERNS = {
-      // Navigation
-      goto: /^!?(?:go(?:to)?|come\s+to|travel\s+to)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)/i,
-      
-      // Combat
-      attack: /^!?(?:attack|kill)\s+(.+)/i,
-      help: /^!?help\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)/i,
-      
-      // Swarm Commands
-      coordinated_attack: /^!?(?:coordinated|swarm)\s+attack\s+(.+)/i,
-      swarm_help: /^!?(?:swarm|formation)\s+help\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)/i,
-      formation: /^!?formation\s+(circle|line|square)/i,
-      retreat: /^!?(?:retreat|fallback)/i,
-      swarm_mine: /^!?swarm\s+mine\s+(\d+)?\s*(.+)/i,
-      
-      // Spawning
-      spawn: /^!?spawn\s+(\d+)/i,
-      
-      // Items (explicit command forms)
-      find: /^!?(?:find|get)\s+(?:me\s+)?(?:a\s+|an\s+)?(.+)/i,
-      mine: /^!?mine\s+(.+)/i,
-      
-      // Status
-      status: /^!?(?:status|stats|swarm\s+status)/i,
-      
-      // Equipment
-      equip: /^!?equip\s+(.+)/i,
-      
-      // Other
-      stop: /^!?stop/i,
-      follow: /^!?follow\s+(.+)/i,
-      stay: /^!?stay/i,
-    };
   }
   
   // Strip bot name from message with various formats
@@ -13908,7 +13124,7 @@ class ConversationAI {
     
     // Check for help requests
     if (lower.includes('help') || lower.includes('what can you do')) {
-      return `I can help with: finding items, building, combat, spawning bots, swarm commands, and more! Try "find me diamonds", "attack playername", "coordinated attack player", "formation circle", "retreat", or "swarm status"`;
+      return `I can help with: finding items, building, combat, spawning bots, and more! Try "find me diamonds" or "attack playername"`;
     }
     
     // Default response
@@ -13964,94 +13180,7 @@ class ConversationAI {
     return mentioned || isWhitelisted;
   }
   
-  tryParseCommand(message) {
-    if (!message) return null;
-    
-    for (const [commandType, pattern] of Object.entries(this.COMMAND_PATTERNS)) {
-      const match = message.match(pattern);
-      if (match) {
-        console.log(`[COMMAND-PARSE] Matched pattern: ${commandType}`);
-        return this.buildCommand(commandType, match);
-      }
-    }
-    return null;
-  }
-  
-  buildCommand(type, match) {
-    switch (type) {
-      case 'goto':
-        return {
-          type: 'goto',
-          x: parseInt(match[1]),
-          y: parseInt(match[2]),
-          z: parseInt(match[3])
-        };
-      
-      case 'attack':
-        return { type: 'attack', target: match[1].trim() };
-      
-      case 'help':
-        return {
-          type: 'help',
-          x: parseInt(match[1]),
-          y: parseInt(match[2]),
-          z: parseInt(match[3])
-        };
-      
-      case 'coordinated_attack':
-        return { type: 'coordinated_attack', target: match[1].trim() };
-      
-      case 'swarm_help':
-        return {
-          type: 'swarm_help',
-          x: parseInt(match[1]),
-          y: parseInt(match[2]),
-          z: parseInt(match[3])
-        };
-      
-      case 'formation':
-        return { type: 'formation', formationType: match[1].trim() };
-      
-      case 'retreat':
-        return { type: 'retreat' };
-      
-      case 'swarm_mine':
-        const count = match[1] ? parseInt(match[1]) : 1;
-        const resource = match[2] ? match[2].trim() : 'stone';
-        return { type: 'swarm_mine', count, resource };
-      
-      case 'spawn':
-        return { type: 'spawn', count: parseInt(match[1]) };
-      
-      case 'find':
-        return { type: 'find', item: match[1].trim() };
-      
-      case 'mine':
-        return { type: 'mine', resource: match[1].trim() };
-      
-      case 'equip':
-        return { type: 'equip', item: match[1].trim() };
-      
-      case 'follow':
-        return { type: 'follow', player: match[1].trim() };
-      
-      case 'status':
-        return { type: 'status' };
-      
-      case 'stop':
-        return { type: 'stop' };
-      
-      case 'stay':
-        return { type: 'stay' };
-      
-      default:
-        return { type };
-    }
-  }
-  
   async handleMessage(username, message) {
-    console.log(`[CHAT] ${username}: ${message}`);
-    
     // Handle /msg relay for trusted+ users
     if (message.startsWith('/msg ') || message.startsWith('/w ') || message.startsWith('/tell ')) {
       await this.handlePrivateMessage(username, message);
@@ -14066,23 +13195,13 @@ class ConversationAI {
     this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
     if (this.context.length > this.maxContext) this.context.shift();
     
-    // Step 1: TRY COMMAND PARSING FIRST (priority over item lookup)
-    const command = this.tryParseCommand(normalizedMessage);
-    if (command) {
-      console.log(`[COMMAND] Recognized: ${command.type}`);
-      await this.handleCommand(username, normalizedMessage, command);
-      return;
-    }
-    
-    // Step 2: If not a pattern command, check legacy command system
+    // Check if it's a command (use normalized message)
     if (this.isCommand(normalizedMessage)) {
-      console.log(`[COMMAND] Recognized via legacy system`);
       await this.handleCommand(username, normalizedMessage);
       return;
     }
     
-    // Step 3: Fallback to other responses
-    console.log(`[CHAT] No pattern matched`);
+    // Generate response
     const response = this.generateResponse(username, normalizedMessage);
     this.bot.chat(response);
   }
@@ -14148,226 +13267,14 @@ class ConversationAI {
   }
   
   isCommand(message) {
-    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'formation', 'swarm mine', 'find', 'hunt', 'collect', 'fish for', 'farm', '!help', '!attack', '!spawn', 'need help'];
+    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'find', 'hunt', 'collect', 'fish for', 'farm', '!help', '!attack', '!spawn', 'need help'];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
-  async handleCommand(username, message, command) {
+  async handleCommand(username, message) {
     if (!this.isWhitelisted(username)) {
       this.bot.chat("Sorry, only whitelisted players can give me commands!");
       return;
-    }
-    
-    // Handle parsed command objects from pattern matching
-    if (command && command.type) {
-      console.log(`[COMMAND] Executing parsed command: ${command.type}`);
-      try {
-        switch (command.type) {
-          case 'goto':
-            console.log(`[GOTO] Navigating to ${command.x} ${command.y} ${command.z}`);
-            this.bot.chat(`heading to ${command.x} ${command.y} ${command.z}`);
-            if (this.bot.pathfinder && this.bot.entity) {
-              const goal = new goals.GoalNear(new Vec3(command.x, command.y, command.z), 1);
-              await this.bot.pathfinder.goto(goal).catch(err => {
-                console.error('[GOTO] Navigation error:', err.message);
-                this.bot.chat(`❌ Failed to navigate: ${err.message}`);
-              });
-            }
-            return;
-          
-          case 'attack':
-            console.log(`[ATTACK] Attacking ${command.target}`);
-            this.bot.chat(`attacking ${command.target}`);
-            const target = this.bot.players[command.target]?.entity;
-            if (target && this.bot.combatAI) {
-              await this.bot.combatAI.handleCombat(target).catch(err => {
-                console.error('[ATTACK] Combat error:', err.message);
-              });
-            } else {
-              this.bot.chat(`player not found: ${command.target}`);
-            }
-            return;
-          
-          case 'spawn':
-            console.log(`[SPAWN] Spawning ${command.count} bots`);
-            this.bot.chat(`spawning ${command.count} bots`);
-            if (this.bot.swarmCoordinator) {
-              await this.bot.swarmCoordinator.spawnBots(command.count).catch(err => {
-                console.error('[SPAWN] Spawn error:', err.message);
-                this.bot.chat(`❌ Failed to spawn bots: ${err.message}`);
-              });
-            } else {
-              this.bot.chat(`swarm coordinator not available`);
-            }
-            return;
-          
-          case 'help':
-            console.log(`[HELP] Help requested at ${command.x} ${command.y} ${command.z}`);
-            this.bot.chat(`sending help to ${command.x} ${command.y} ${command.z}`);
-            if (this.bot.swarmCoordinator) {
-              await this.bot.swarmCoordinator.sendHelp({
-                x: command.x,
-                y: command.y,
-                z: command.z
-              }).catch(err => {
-                console.error('[HELP] Error:', err.message);
-                this.bot.chat(`❌ Failed to send help: ${err.message}`);
-              });
-            }
-            return;
-          
-          case 'find':
-            console.log(`[FIND] Finding ${command.item}`);
-            this.bot.chat(`looking for ${command.item}`);
-            await this.handleItemFinderCommand(username, `find ${command.item}`);
-            return;
-          
-          case 'mine':
-            console.log(`[MINE] Mining ${command.resource}`);
-            this.bot.chat(`mining ${command.resource}`);
-            await this.handleItemFinderCommand(username, `mine ${command.resource}`);
-            return;
-          
-          case 'equip':
-            console.log(`[EQUIP] Equipping ${command.item}`);
-            this.bot.chat(`equipping ${command.item}`);
-            if (this.bot.equipmentManager) {
-              try {
-                const item = await this.bot.equipmentManager.equipBestArmor();
-                this.bot.chat(`✅ Equipped: ${command.item}`);
-              } catch (err) {
-                this.bot.chat(`❌ Failed to equip: ${err.message}`);
-              }
-            }
-            return;
-          
-          case 'follow':
-            console.log(`[FOLLOW] Following ${command.player}`);
-            this.bot.chat(`following ${command.player}`);
-            const followTarget = this.bot.players[command.player]?.entity;
-            if (followTarget) {
-              this.bot.pathfinder.setMovements(new Movements(this.bot));
-              const followGoal = new goals.GoalFollow(followTarget, 2);
-              await this.bot.pathfinder.goto(followGoal).catch(err => {
-                console.error('[FOLLOW] Error:', err.message);
-              });
-            } else {
-              this.bot.chat(`player not found: ${command.player}`);
-            }
-            return;
-          
-          case 'status':
-            console.log(`[STATUS] Reporting status`);
-            if (this.bot.entity) {
-              const pos = this.bot.entity.position;
-              this.bot.chat(`health: ${this.bot.health}/20, position: ${Math.round(pos.x)} ${Math.round(pos.y)} ${Math.round(pos.z)}`);
-            }
-            return;
-          
-          case 'stop':
-            console.log(`[STOP] Stopping current action`);
-            this.bot.chat(`stopping`);
-            if (this.bot.pathfinder) {
-              this.bot.pathfinder.stop();
-            }
-            return;
-          
-          case 'coordinated_attack':
-            console.log(`[COMMAND] Coordinated attack on ${command.target}`);
-            this.bot.chat(`coordinated attack on ${command.target}!`);
-            
-            // Broadcast to all bots
-            if (globalSwarmCoordinator) {
-              globalSwarmCoordinator.broadcast({
-                type: 'COORDINATED_ATTACK',
-                target: command.target,
-                initiator: this.bot.username,
-                timestamp: Date.now()
-              });
-              console.log(`[SWARM] Broadcasted coordinated attack on ${command.target}`);
-            } else {
-              this.bot.chat(`swarm coordinator not available`);
-            }
-            return;
-          
-          case 'swarm_help':
-            console.log(`[COMMAND] Swarm help at ${command.x} ${command.y} ${command.z}`);
-            this.bot.chat(`sending swarm help to ${command.x} ${command.y} ${command.z}`);
-            
-            if (globalSwarmCoordinator) {
-              globalSwarmCoordinator.broadcast({
-                type: 'HELP_REQUEST',
-                position: { x: command.x, y: command.y, z: command.z },
-                requester: this.bot.username,
-                timestamp: Date.now()
-              });
-              console.log(`[SWARM] Broadcasted help request to ${command.x} ${command.y} ${command.z}`);
-            } else {
-              this.bot.chat(`swarm coordinator not available`);
-            }
-            return;
-          
-          case 'formation':
-            console.log(`[COMMAND] Formation: ${command.formationType}`);
-            this.bot.chat(`forming ${command.formationType} formation`);
-            
-            if (globalSwarmCoordinator && this.bot.entity) {
-              globalSwarmCoordinator.broadcast({
-                type: 'FORMATION',
-                formationType: command.formationType,
-                center: this.bot.entity.position,
-                initiator: this.bot.username,
-                timestamp: Date.now()
-              });
-              console.log(`[SWARM] Broadcasted ${command.formationType} formation`);
-            } else {
-              this.bot.chat(`swarm coordinator not available`);
-            }
-            return;
-          
-          case 'retreat':
-            console.log(`[COMMAND] All bots retreat`);
-            this.bot.chat(`all bots retreat!`);
-            
-            if (globalSwarmCoordinator) {
-              globalSwarmCoordinator.broadcast({
-                type: 'RETREAT',
-                initiator: this.bot.username,
-                timestamp: Date.now()
-              });
-              console.log(`[SWARM] Broadcasted retreat command`);
-            } else {
-              this.bot.chat(`swarm coordinator not available`);
-            }
-            return;
-          
-          case 'swarm_mine':
-            console.log(`[COMMAND] Swarm mining: ${command.count} of ${command.resource}`);
-            this.bot.chat(`swarm mining ${command.count} of ${command.resource}`);
-            
-            if (globalSwarmCoordinator) {
-              globalSwarmCoordinator.broadcast({
-                type: 'SWARM_MINE',
-                resource: command.resource,
-                count: command.count,
-                initiator: this.bot.username,
-                timestamp: Date.now()
-              });
-              console.log(`[SWARM] Broadcasted swarm mining: ${command.count} of ${command.resource}`);
-            } else {
-              this.bot.chat(`swarm coordinator not available`);
-            }
-            return;
-          
-          default:
-            this.bot.chat(`unknown command: ${command.type}`);
-            return;
-        }
-      } catch (error) {
-        console.error(`[COMMAND] Error executing ${command.type}:`, error.message);
-        this.bot.chat(`error: ${error.message}`);
-        return;
-      }
     }
     
     const lower = message.toLowerCase();
@@ -14428,159 +13335,6 @@ class ConversationAI {
       }
       
       await this.handleTrustCommand(username, message);
-      return;
-    }
-    
-    // Equipment management commands
-    if (lower.includes('!equip') || lower.includes('equip armor')) {
-      console.log(`[COMMAND] Equipment command requested by ${username}`);
-      
-      if (lower.includes('armor')) {
-        this.bot.chat(`⚙️ Equipping best armor...`);
-        if (this.bot.equipmentManager) {
-          try {
-            const equipped = await this.bot.equipmentManager.equipBestArmor();
-            if (equipped.length > 0) {
-              this.bot.chat(`✅ Equipped armor: ${equipped.join(', ')}`);
-            } else {
-              this.bot.chat(`❌ No armor found in inventory!`);
-            }
-          } catch (err) {
-            this.bot.chat(`❌ Failed to equip armor: ${err.message}`);
-          }
-        } else {
-          this.bot.chat(`❌ Equipment manager not available!`);
-        }
-      } else if (lower.includes('weapon')) {
-        this.bot.chat(`⚔️ Equipping best weapon...`);
-        if (this.bot.equipmentManager) {
-          try {
-            const weapon = await this.bot.equipmentManager.equipBestWeapon('combat');
-            if (weapon) {
-              this.bot.chat(`✅ Equipped weapon: ${weapon.name}`);
-            } else {
-              this.bot.chat(`❌ No weapons found in inventory!`);
-            }
-          } catch (err) {
-            this.bot.chat(`❌ Failed to equip weapon: ${err.message}`);
-          }
-        } else {
-          this.bot.chat(`❌ Equipment manager not available!`);
-        }
-      } else if (lower.includes('offhand') || lower.includes('shield') || lower.includes('totem')) {
-        this.bot.chat(`🛡️ Equipping offhand item...`);
-        if (this.bot.equipmentManager) {
-          try {
-            const item = await this.bot.equipmentManager.equipOffhand();
-            if (item) {
-              this.bot.chat(`✅ Equipped offhand: ${item.name}`);
-            } else {
-              this.bot.chat(`❌ No suitable items found for offhand!`);
-            }
-          } catch (err) {
-            this.bot.chat(`❌ Failed to equip offhand: ${err.message}`);
-          }
-        } else {
-          this.bot.chat(`❌ Equipment manager not available!`);
-        }
-      } else {
-        // Full equipment equip
-        this.bot.chat(`⚙️ Equipping full combat gear...`);
-        if (this.bot.equipmentManager) {
-          try {
-            await this.bot.equipmentManager.equipBestArmor();
-            await this.bot.equipmentManager.equipBestWeapon('combat');
-            await this.bot.equipmentManager.equipOffhand();
-            this.bot.chat(`✅ Full equipment equipped!`);
-          } catch (err) {
-            this.bot.chat(`❌ Failed to equip full gear: ${err.message}`);
-          }
-        } else {
-          this.bot.chat(`❌ Equipment manager not available!`);
-        }
-      }
-      return;
-    }
-    
-    // Self-ownership setup (for initial bootstrap when whitelist is empty)
-    if (lower.includes('claim ownership') || lower.includes('set owner')) {
-      console.log(`[TRUST] Ownership claim requested by ${username}`);
-      
-      // Only allow ownership claim if whitelist is empty or user is already owner
-      if (config.whitelist.length === 0 || this.hasTrustLevel(username, 'owner')) {
-        const existingIndex = config.whitelist.findIndex(e => e.name === username);
-        if (existingIndex >= 0) {
-          const oldLevel = config.whitelist[existingIndex].level;
-          config.whitelist[existingIndex].level = 'owner';
-          console.log(`[TRUST] Updated ${username} from ${oldLevel} to owner`);
-          this.bot.chat(`👑 Updated ${username} from ${oldLevel} to owner!`);
-        } else {
-          config.whitelist.push({ name: username, level: 'owner' });
-          console.log(`[TRUST] Added ${username} as owner`);
-          this.bot.chat(`👑 Added ${username} as owner!`);
-        }
-        
-        // Save to file
-        try {
-          safeWriteFile('./data/whitelist.json', JSON.stringify(config.whitelist, null, 2));
-          console.log(`[TRUST] ✓ Saved whitelist with new owner ${username}`);
-        } catch (err) {
-          console.log(`[TRUST] ✗ Failed to save whitelist: ${err.message}`);
-          this.bot.chat(`❌ Failed to save whitelist changes!`);
-        }
-      } else {
-        this.bot.chat("❌ Cannot claim ownership - whitelist not empty!");
-      }
-      return;
-    }
-    
-    // Quick admin grant command (for initial setup)
-    if (lower.includes('make admin') || lower.includes('grant admin')) {
-      const targetMatch = message.match(/(?:make admin|grant admin)\s+(\w+)/i);
-      if (targetMatch) {
-        const targetName = targetMatch[1];
-        console.log(`[TRUST] Admin grant requested for ${targetName} by ${username}`);
-        
-        // Only owner can grant admin to prevent privilege escalation
-        if (!this.hasTrustLevel(username, 'owner')) {
-          this.bot.chat("Only owner+ can grant admin level!");
-          return;
-        }
-        
-        // Check if user exists
-        const targetPlayer = Object.values(this.bot.entities).find(e => 
-          e.type === 'player' && e.username.toLowerCase() === targetName.toLowerCase()
-        );
-        
-        if (!targetPlayer) {
-          this.bot.chat(`Player ${targetName} not found online!`);
-          return;
-        }
-        
-        // Update or add to whitelist
-        const existingIndex = config.whitelist.findIndex(e => e.name === targetPlayer.username);
-        if (existingIndex >= 0) {
-          const oldLevel = config.whitelist[existingIndex].level;
-          config.whitelist[existingIndex].level = 'admin';
-          console.log(`[TRUST] Updated ${targetPlayer.username} from ${oldLevel} to admin`);
-          this.bot.chat(`✅ Updated ${targetPlayer.username} from ${oldLevel} to admin!`);
-        } else {
-          config.whitelist.push({ name: targetPlayer.username, level: 'admin' });
-          console.log(`[TRUST] Added ${targetPlayer.username} as admin`);
-          this.bot.chat(`✅ Added ${targetPlayer.username} as admin!`);
-        }
-        
-        // Save to file
-        try {
-          safeWriteFile('./data/whitelist.json', JSON.stringify(config.whitelist, null, 2));
-          console.log(`[TRUST] ✓ Saved whitelist with new admin ${targetPlayer.username}`);
-        } catch (err) {
-          console.log(`[TRUST] ✗ Failed to save whitelist: ${err.message}`);
-          this.bot.chat(`❌ Failed to save whitelist changes!`);
-        }
-      } else {
-        this.bot.chat("Usage: make admin <player>");
-      }
       return;
     }
     
@@ -14857,116 +13611,24 @@ class ConversationAI {
       const coords = this.extractCoords(message);
 
       if (coords) {
-        console.log(`[COMMAND] Executing help command at ${coords.x}, ${coords.y}, ${coords.z} requested by ${username}`);
-        this.bot.chat(`🆘 Sending all available bots to ${coords.x}, ${coords.y}, ${coords.z}!`);
-        
         if (globalSwarmCoordinator) {
-          try {
-            await globalSwarmCoordinator.coordinateHelpOperation({
-              coords,
-              requestedBy: username
-            });
-            console.log(`[HELP] ✓ Help operation coordinated successfully`);
-          } catch (err) {
-            console.log(`[HELP] ✗ Failed to coordinate help: ${err.message}`);
-            this.bot.chat(`❌ Failed to coordinate help: ${err.message}`);
-          }
+          this.bot.chat(`🆘 Sending all available bots to ${coords.x}, ${coords.y}, ${coords.z}!`);
+          globalSwarmCoordinator.coordinateHelpOperation({
+            coords,
+            requestedBy: username
+          });
         } else {
-          this.bot.chat("❌ Swarm coordinator not available!");
-          console.log(`[HELP] ✗ Swarm coordinator not available`);
+          this.bot.chat("Swarm coordinator not available!");
         }
       } else {
         const playerPos = this.bot.entity.position;
-        const helpCoords = { x: Math.floor(playerPos.x), y: Math.floor(playerPos.y), z: Math.floor(playerPos.z) };
-        console.log(`[COMMAND] Executing help command at bot location ${helpCoords.x}, ${helpCoords.y}, ${helpCoords.z} requested by ${username}`);
-        this.bot.chat(`🆘 Sending all bots to your location!`);
-        
         if (globalSwarmCoordinator) {
-          try {
-            await globalSwarmCoordinator.coordinateHelpOperation({
-              coords: helpCoords,
-              requestedBy: username
-            });
-            console.log(`[HELP] ✓ Help operation coordinated successfully`);
-          } catch (err) {
-            console.log(`[HELP] ✗ Failed to coordinate help: ${err.message}`);
-            this.bot.chat(`❌ Failed to coordinate help: ${err.message}`);
-          }
-        } else {
-          this.bot.chat("❌ Swarm coordinator not available!");
-          console.log(`[HELP] ✗ Swarm coordinator not available`);
+          this.bot.chat(`🆘 Sending all bots to your location!`);
+          globalSwarmCoordinator.coordinateHelpOperation({
+            coords: { x: Math.floor(playerPos.x), y: Math.floor(playerPos.y), z: Math.floor(playerPos.z) },
+            requestedBy: username
+          });
         }
-      }
-      return;
-    }
-
-    // Block finding commands (NEW)
-    if (lower.includes('findblock') || lower.includes('getblock') || lower.includes('find block') || lower.includes('get block')) {
-      console.log(`[COMMAND] Block finding command: ${message}`);
-      
-      // Extract block name from message
-      const blockMatch = message.match(/(?:findblock|getblock|find block|get block)[\s]+(.+)/i);
-      if (!blockMatch) {
-        this.bot.chat("Usage: 'findblock diamond' or 'find block obsidian'");
-        return;
-      }
-      
-      const blockName = blockMatch[1].trim();
-      this.bot.chat(`🔍 Looking for ${blockName}...`);
-      
-      try {
-        const success = await this.blockFinder.findAndReturnBlock(blockName, username);
-        
-        if (success) {
-          this.bot.chat(`✅ Successfully found and returned with ${blockName}!`);
-        } else {
-          this.bot.chat(`❌ Failed to find ${blockName}`);
-        }
-      } catch (error) {
-        console.log(`[FINDER] Error: ${error.message}`);
-        this.bot.chat(`❌ Error finding ${blockName}: ${error.message}`);
-      }
-      return;
-    }
-    
-    // Enhanced find/get commands with block detection
-    if (lower.includes('find me') || lower.includes('get me')) {
-      console.log(`[COMMAND] Enhanced item/block request: ${message}`);
-      
-      // Extract item/block name
-      const itemMatch = message.match(/(?:find me|get me)[\s]+(.+)/i);
-      if (!itemMatch) {
-        this.bot.chat("Usage: 'find me diamonds' or 'get me 5 iron ore'");
-        return;
-      }
-      
-      const requestText = itemMatch[1].trim();
-      
-      // Check if it's actually a block
-      const blockName = this.blockFinder.toBlockName(requestText);
-      
-      if (this.blockFinder.isBlock(blockName) || requestText.includes('ore') || requestText.includes('block')) {
-        console.log(`[COMMAND] ${requestText} detected as block, using block finder`);
-        this.bot.chat(`🔍 Looking for ${requestText}...`);
-        
-        try {
-          const success = await this.blockFinder.findAndReturnBlock(blockName, username);
-          
-          if (success) {
-            this.bot.chat(`✅ Successfully found and returned with ${requestText}!`);
-          } else {
-            this.bot.chat(`❌ Couldn't find ${requestText}, trying item hunting...`);
-            // Fall back to item hunting
-            await this.handleItemFinderCommand(username, message);
-          }
-        } catch (error) {
-          console.log(`[FINDER] Error: ${error.message}`);
-          this.bot.chat(`❌ Error finding ${requestText}: ${error.message}`);
-        }
-      } else {
-        console.log(`[COMMAND] ${requestText} detected as item, using item hunter`);
-        // Use existing item hunting system
-        await this.handleItemFinderCommand(username, message);
       }
       return;
     }
@@ -15327,44 +13989,21 @@ class ConversationAI {
       const targetPlayer = this.extractPlayerName(message);
       if (targetPlayer) {
         this.bot.chat(`🎯 All bots attacking ${targetPlayer}!`);
-        
-        // Find target entity
-        const target = Object.values(this.bot.entities).find(e => 
-          e.type === 'player' && e.username === targetPlayer
-        );
-        
-        if (target) {
-          console.log(`[COMMAND] Executing attack on ${targetPlayer} at ${target.position}`);
-          
-          // Make current bot attack immediately
-          if (this.combatAI) {
-            try {
-              console.log(`[COMBAT] Current bot engaging ${targetPlayer}`);
-              await this.combatAI.handleCombat(target);
-              console.log(`[COMBAT] ✓ Current bot engaged in combat with ${targetPlayer}`);
-            } catch (err) {
-              console.log(`[COMBAT] ✗ Failed to engage combat: ${err.message}`);
-            }
-          } else {
-            console.log(`[COMBAT] CombatAI not available for direct attack`);
-          }
-          
-          // Also broadcast to other bots
-          if (globalSwarmCoordinator) {
+        if (globalSwarmCoordinator) {
+          const target = Object.values(this.bot.entities).find(e => 
+            e.type === 'player' && e.username === targetPlayer
+          );
+          if (target) {
             globalSwarmCoordinator.broadcast({
               type: 'ATTACK_TARGET',
               target: targetPlayer,
               targetPos: target.position,
               timestamp: Date.now()
             });
-            console.log(`[SWARM] Broadcasted attack order to all bots`);
+          } else {
+            this.bot.chat(`Target ${targetPlayer} not found!`);
           }
-        } else {
-          this.bot.chat(`Target ${targetPlayer} not found!`);
-          console.log(`[COMMAND] Attack failed: target ${targetPlayer} not found`);
         }
-      } else {
-        this.bot.chat("Usage: !attack <player>");
       }
       return;
     }
@@ -15379,35 +14018,16 @@ class ConversationAI {
       const countMatch = message.match(/!spawn\s+(\d+)/i);
       const count = countMatch ? parseInt(countMatch[1]) : 1;
       
-      console.log(`[COMMAND] Executing spawn command: ${count} bots requested by ${username}`);
       this.bot.chat(`🤖 Spawning ${count} bot(s)...`);
       
-      if (!config.server) {
-        this.bot.chat("❌ No server configured for spawning bots!");
-        return;
-      }
-      
-      if (!globalBotSpawner) {
-        globalBotSpawner = new BotSpawner();
-        console.log(`[SPAWN] Created new BotSpawner instance`);
-      }
-      
-      const currentCount = globalBotSpawner.getActiveBotCount();
-      const maxBots = config.swarm?.maxBots || 10;
-      
-      if (currentCount + count > maxBots) {
-        this.bot.chat(`❌ Cannot spawn ${count} bots. Would exceed max limit of ${maxBots}. (Current: ${currentCount})`);
-        return;
-      }
-      
-      try {
-        console.log(`[SPAWN] Starting spawn of ${count} bots for server ${config.server.host}:${config.server.port}`);
-        const bots = await globalBotSpawner.spawnMultiple(config.server, count, 'combat');
-        console.log(`[SPAWN] ✓ Successfully spawned ${bots.length} bots`);
-        this.bot.chat(`✅ Spawned ${bots.length} bot(s) successfully! Total active: ${globalBotSpawner.getActiveBotCount()}`);
-      } catch (err) {
-        console.log(`[SPAWN] ✗ Failed to spawn bots: ${err.message}`);
-        this.bot.chat(`❌ Failed to spawn bots: ${err.message}`);
+      if (globalBotSpawner && config.server) {
+        globalBotSpawner.spawnMultiple(config.server, count, 'combat').then(bots => {
+          this.bot.chat(`✅ Spawned ${bots.length} bot(s) successfully!`);
+        }).catch(err => {
+          this.bot.chat(`❌ Failed to spawn bots: ${err.message}`);
+        });
+      } else {
+        this.bot.chat("Bot spawner not available!");
       }
       return;
     }
@@ -15687,58 +14307,6 @@ class ConversationAI {
       return;
     }
     
-    // Equipment commands
-    if (lower.includes('equip')) {
-      const parts = message.toLowerCase().split(' ');
-      const itemName = parts[1];
-      
-      if (!itemName) {
-        this.bot.chat("Usage: 'equip <item>' - Example: 'equip diamond_sword'");
-        return;
-      }
-      
-      if (this.bot.equipmentManager) {
-        console.log(`[COMMAND] Equipping ${itemName}`);
-        const success = await this.bot.equipmentManager.equipItem(itemName);
-        if (success) {
-          this.bot.chat(`✅ Equipped ${itemName}`);
-        }
-      } else {
-        this.bot.chat("Equipment manager not available!");
-      }
-      return;
-    }
-    
-    if (lower.includes('check equip') || lower.includes('equipment status') || lower.includes('check equipment')) {
-      if (this.bot.equipmentManager) {
-        const equipment = this.bot.equipmentManager.checkEquipment();
-        const status = [
-          `🪖 Equipment Status:`,
-          `🎯 Head: ${equipment.head || 'empty'}`,
-          `👕 Chest: ${equipment.chest || 'empty'}`,
-          `👖 Legs: ${equipment.legs || 'empty'}`,
-          `👢 Feet: ${equipment.feet || 'empty'}`,
-          `⚔️ Main hand: ${equipment.mainHand || 'empty'}`,
-          `🛡️ Off hand: ${equipment.offHand || 'empty'}`
-        ].join('\n');
-        this.bot.chat(status);
-      } else {
-        this.bot.chat("Equipment manager not available!");
-      }
-      return;
-    }
-    
-    if (lower.includes('auto equip')) {
-      if (this.bot.equipmentManager) {
-        console.log('[COMMAND] Running auto-equip all armor');
-        await this.bot.equipmentManager.equipBestArmor();
-        this.bot.chat("✅ Auto-equipped best armor!");
-      } else {
-        this.bot.chat("Equipment manager not available!");
-      }
-      return;
-    }
-    
     // Default fallback for unrecognized commands
     this.bot.chat("I didn't understand that command. Try 'help' for options!");
   }
@@ -15947,167 +14515,8 @@ class ConversationAI {
    });
 
    console.log(`[SWARM] Guard duty started at ${coords.x}, ${coords.y}, ${coords.z}`);
-   }
-
-   // === SWARM EXECUTION METHODS ===
-   // These methods are called when bots receive swarm messages
-
-   async swarmAttack(targetName) {
-    console.log(`[SWARM] ${this.bot.username} received swarm attack on ${targetName}`);
-
-    const target = this.bot.players[targetName]?.entity;
-    if (!target) {
-      console.log(`[SWARM] Target not found: ${targetName}`);
-      return;
-    }
-
-    console.log(`[SWARM] ${this.bot.username} attacking ${targetName}`);
-    this.bot.chat(`attacking with swarm!`);
-
-    if (this.bot.combatAI) {
-      await this.bot.combatAI.handleCombat(target).catch(err => {
-        console.error(`[SWARM] Combat error:`, err.message);
-      });
-    }
-   }
-
-   async coordinatedAttack(targetName, botCount) {
-    console.log(`[SWARM] Coordinated attack on ${targetName} (${botCount} bots)`);
-
-    const target = this.bot.players[targetName]?.entity;
-    if (!target) {
-      console.log(`[SWARM] Target not found: ${targetName}`);
-      return;
-    }
-
-    // Coordinated tactics - spread out around target
-    const angle = (this.bot.username.charCodeAt(0) / 255) * Math.PI * 2;
-    const distance = 5;
-
-    const targetX = target.position.x + Math.cos(angle) * distance;
-    const targetZ = target.position.z + Math.sin(angle) * distance;
-
-    // Move to position
-    if (this.bot.pathfinder) {
-      const goal = new goals.GoalBlock(Math.floor(targetX), Math.floor(target.position.y), Math.floor(targetZ));
-      await this.bot.pathfinder.goto(goal).catch(err => {
-        console.error(`[SWARM] Movement error:`, err.message);
-      });
-    }
-
-    // Attack
-    if (this.bot.combatAI) {
-      await this.bot.combatAI.handleCombat(target).catch(err => {
-        console.error(`[SWARM] Combat error:`, err.message);
-      });
-    }
-   }
-
-   async sendHelp(coords) {
-    console.log(`[SWARM] ${this.bot.username} heading to help at ${coords.x} ${coords.y} ${coords.z}`);
-
-    // Navigate to coords
-    if (this.bot.pathfinder) {
-      const goal = new goals.GoalBlock(coords.x, coords.y, coords.z);
-      await this.bot.pathfinder.goto(goal).catch(err => {
-        console.error(`[SWARM] Navigation error:`, err.message);
-      });
-    }
-
-    this.bot.chat(`arrived to help!`);
-   }
-
-   async formFormation(formationType, center) {
-    console.log(`[SWARM] ${this.bot.username} forming ${formationType} formation`);
-
-    // Different formation patterns
-    const formations = {
-      circle: this.formCircle(center),
-      line: this.formLine(center),
-      square: this.formSquare(center)
-    };
-
-    const position = formations[formationType];
-    if (position && this.bot.pathfinder) {
-      const goal = new goals.GoalBlock(position.x, position.y, position.z);
-      await this.bot.pathfinder.goto(goal).catch(err => {
-        console.error(`[SWARM] Formation error:`, err.message);
-      });
-    }
-   }
-
-   formCircle(center) {
-    const angle = (this.bot.username.charCodeAt(0) / 255) * Math.PI * 2;
-    const radius = 8;
-    return {
-      x: Math.floor(center.x + Math.cos(angle) * radius),
-      y: Math.floor(center.y),
-      z: Math.floor(center.z + Math.sin(angle) * radius)
-    };
-   }
-
-   formLine(center) {
-    const index = this.bot.username.charCodeAt(0) % 5;
-    const spacing = 3;
-    return {
-      x: Math.floor(center.x + index * spacing),
-      y: Math.floor(center.y),
-      z: Math.floor(center.z)
-    };
-   }
-
-   formSquare(center) {
-    const index = this.bot.username.charCodeAt(0) % 4;
-    const size = 5;
-    const positions = [
-      { x: center.x - size, z: center.z - size }, // Top-left
-      { x: center.x + size, z: center.z - size }, // Top-right
-      { x: center.x - size, z: center.z + size }, // Bottom-left
-      { x: center.x + size, z: center.z + size }  // Bottom-right
-    ];
-    const pos = positions[index];
-    return {
-      x: Math.floor(pos.x),
-      y: Math.floor(center.y),
-      z: Math.floor(pos.z)
-    };
-   }
-
-   async retreat() {
-    console.log(`[SWARM] ${this.bot.username} retreating`);
-    this.bot.chat(`retreating!`);
-
-    // Run away from current position
-    if (this.bot.entity && this.bot.pathfinder) {
-      const awayPos = {
-        x: this.bot.entity.position.x + (Math.random() - 0.5) * 100,
-        y: this.bot.entity.position.y,
-        z: this.bot.entity.position.z + (Math.random() - 0.5) * 100
-      };
-
-      const goal = new goals.GoalBlock(Math.floor(awayPos.x), Math.floor(awayPos.y), Math.floor(awayPos.z));
-      await this.bot.pathfinder.goto(goal).catch(err => {
-        console.error(`[SWARM] Retreat error:`, err.message);
-      });
-    }
-   }
-
-   async swarmMine(resource, count) {
-    console.log(`[SWARM] ${this.bot.username} mining ${count} of ${resource}`);
-
-    for (let i = 0; i < count; i++) {
-      try {
-        // Mine one using existing item hunter
-        await this.itemHunter.findItem(resource, 1);
-        console.log(`[SWARM] ${this.bot.username} mined ${resource} (${i + 1}/${count})`);
-      } catch (err) {
-        console.error(`[SWARM] Mining error:`, err.message);
-      }
-    }
-
-    this.bot.chat(`finished mining ${count} of ${resource}!`);
-   }
-   }
+  }
+}
 
 // === COORDINATE SCRAPER ===
 class CoordinateScraper {
@@ -23275,15 +21684,12 @@ async function launchBot(username, role = 'fighter') {
   }
   
   globalBot = bot;
-
+  
   const combatAI = new CombatAI(bot);
   combatAI.hostileMobDetector = new HostileMobDetector();
   const combatLogger = new CombatLogger(bot, combatAI);
   const conversationAI = new ConversationAI(bot);
   const schematicLoader = new SchematicLoader(bot);
-
-  // Set up cross-references between systems
-  bot.combatAI = combatAI;
   const intelligenceDB = new IntelligenceDatabase(bot);
   let stashScanner = null;
   let dupeFramework = null;
@@ -23674,49 +22080,6 @@ async function launchBot(username, role = 'fighter') {
                 bot.currentHelpOperation = null;
               }
               break;
-              
-            // === SWARM COMMAND EXECUTION HANDLERS ===
-            case 'ATTACK_TARGET':
-              console.log(`[SWARM] 🎯 Attack target: ${message.target}`);
-              if (conversationAI) {
-                await conversationAI.swarmAttack(message.target);
-              }
-              break;
-              
-            case 'FORM_FORMATION':
-              console.log(`[SWARM] 📐 Form formation: ${message.formationType}`);
-              if (conversationAI) {
-                await conversationAI.formFormation(message.formationType, message.center);
-              }
-              break;
-              
-            case 'MINE_RESOURCE':
-              console.log(`[SWARM] ⛏️ Mine resource: ${message.count} of ${message.resource}`);
-              if (conversationAI) {
-                await conversationAI.swarmMine(message.resource, message.count);
-              }
-              break;
-              
-            case 'SEND_HELP':
-              console.log(`[SWARM] 🆘 Send help to: ${message.position.x}, ${message.position.y}, ${message.position.z}`);
-              if (conversationAI) {
-                await conversationAI.sendHelp(message.position);
-              }
-              break;
-              
-            case 'RETREAT_NOW':
-              console.log(`[SWARM] 🏃 Retreat now!`);
-              if (conversationAI) {
-                await conversationAI.retreat();
-              }
-              break;
-              
-            case 'GUARD_POSITION':
-              console.log(`[SWARM] 🛡️ Guard position: ${message.position.x}, ${message.position.y}, ${message.position.z}`);
-              if (conversationAI) {
-                await conversationAI.startGuarding(message.position);
-              }
-              break;
           }
         } catch (err) {
           console.log('[SWARM] Error processing message:', err.message);
@@ -23855,52 +22218,19 @@ async function launchBot(username, role = 'fighter') {
     // Combat handler
     bot.on('entityHurt', async (entity) => {
       if (entity === bot.entity) {
-        // Find the actual attacker - prioritize hostile mobs over players to prevent friendly fire
-        let attacker = null;
-        let closestDistance = Infinity;
-        const attackRange = 5; // blocks
-        
-        const nearbyEntities = Object.values(bot.entities).filter(e => 
-          e && e.position && e.position.distanceTo(bot.entity.position) < attackRange
+        const attacker = Object.values(bot.entities).find(e => 
+          e.type === 'player' && 
+          e.position.distanceTo(bot.entity.position) < 5
         );
         
-        // First, check for hostile mobs (priority to prevent attacking players)
-        for (const e of nearbyEntities) {
-          const distance = e.position.distanceTo(bot.entity.position);
-          if (combatAI.hostileMobDetector && combatAI.hostileMobDetector.isHostileMob(e) && distance < closestDistance) {
-            closestDistance = distance;
-            attacker = e;
-          }
-        }
-        
-        // If no hostile mobs found and neverAttackPlayers is false, check for players
-        if (!attacker && !config.combat.autoEngagement?.neverAttackPlayers) {
-          for (const e of nearbyEntities) {
-            const distance = e.position.distanceTo(bot.entity.position);
-            if (e.type === 'player' && distance < closestDistance) {
-              closestDistance = distance;
-              attacker = e;
-            }
-          }
-        }
-        
         if (attacker) {
-          const isPlayer = combatAI.hostileMobDetector && combatAI.hostileMobDetector.isPlayer(attacker);
-          const isMob = combatAI.hostileMobDetector && combatAI.hostileMobDetector.isHostileMob(attacker);
-          const attackerName = attacker.username || attacker.name || 'Unknown';
-          const attackerType = isPlayer ? 'player' : (isMob ? 'hostile mob' : 'entity');
+          combatLogger.noteAttacker(attacker);
           
-          console.log(`[COMBAT] 💢 Damaged by ${attackerType}: ${attackerName} (${closestDistance.toFixed(1)}m away)`);
-          
-          if (isPlayer) {
-            combatLogger.noteAttacker(attacker);
-            console.log(`[COMBAT] Bot damaged by player ${attacker.username} - retaliating!`);
-          } else if (isMob) {
-            console.log(`[COMBAT] Bot damaged by hostile mob ${attackerName} - auto-engaging!`);
-          }
+          // Auto-retaliation logging
+          console.log(`[COMBAT] Bot damaged by ${attacker.username} - retaliating!`);
         }
         
-        if (attacker && combatAI && !combatAI.inCombat && config.combat.autoEngagement?.autoRetaliate) {
+        if (attacker && combatAI && !combatAI.inCombat) {
           // Switch to combat equipment
           if (bot.equipmentManager) {
             await bot.equipmentManager.switchToCombatMode();
@@ -23912,8 +22242,8 @@ async function launchBot(username, role = 'fighter') {
             bot.currentBuilder.pause();
           }
           
-          // Record home defense incident if near home (only for players)
-          if (globalHomeDefense && config.homeBase.coords && attacker.type === 'player') {
+          // Record home defense incident if near home
+          if (globalHomeDefense && config.homeBase.coords) {
             const distanceToHome = bot.entity.position.distanceTo(config.homeBase.coords);
             if (distanceToHome < config.homeDefense.alertRadius) {
               const damageDealt = bot.health < 20 ? (20 - bot.health) : 0;
@@ -23925,10 +22255,9 @@ async function launchBot(username, role = 'fighter') {
           // Proximity-based swarm help: Alert swarm for bots within 200 blocks
           if (wsClient && wsClient.readyState === WebSocket.OPEN) {
             const helpRadius = config.swarm.combat?.helpRadius || 200;
-            const attackerName = attacker.username || attacker.name || 'Unknown';
             wsClient.send(JSON.stringify({
               type: 'ATTACK_ALERT',
-              attacker: attackerName,
+              attacker: attacker.username,
               victim: username,
               location: bot.entity.position,
               helpRadius: helpRadius,
@@ -25367,6 +23696,11 @@ class TrapDetector {
 }
 
 class EscapeArtist {
+  constructor(bot) {
+    this.bot = bot;
+    this.trapDetector = new TrapDetector(bot);
+    this.escapeHistory = [];
+  }
   
   async executeEscape(danger) {
     console.log(`[ESCAPE] Danger detected: ${danger.type} (${danger.severity})`);
@@ -25593,6 +23927,15 @@ class EscapeArtist {
 }
 
 class DangerMonitor {
+  constructor(bot) {
+    this.bot = bot;
+    this.trapDetector = new TrapDetector(bot);
+    this.escapeArtist = new EscapeArtist(bot);
+    // Use the same trapDetector instance for consistency
+    this.escapeArtist.trapDetector = this.trapDetector;
+    this.lastHealth = bot.health;
+    this.monitoring = false;
+  }
   
   startMonitoring() {
     this.monitoring = true;
@@ -25671,6 +24014,9 @@ class DangerMonitor {
 }
 
 class SafeLogoutFinder {
+  constructor(bot) {
+      this.bot = bot;
+  }
 
   async findSafeLogoutSpot() {
     const currentPos = this.bot.entity.position;
@@ -25740,6 +24086,9 @@ class SafeLogoutFinder {
 }
 
 class DeathRecovery {
+  constructor(bot) {
+      this.bot = bot;
+  }
 
   async onDeath() {
     console.log('[DEATH] Bot died - initiating recovery...');
