@@ -3387,6 +3387,38 @@ class SwarmCoordinator {
           timestamp: Date.now()
         });
         break;
+        
+      case 'FORMATION':
+        console.log(`[SWARM] 📐 Formation ${message.formationType} at ${message.center.x}, ${message.center.y}, ${message.center.z}`);
+        this.broadcast({
+          type: 'FORM_FORMATION',
+          formationType: message.formationType,
+          center: message.center,
+          initiator: message.initiator,
+          timestamp: Date.now()
+        });
+        break;
+        
+      case 'SWARM_MINE':
+        console.log(`[SWARM] ⛏️ Swarm mining ${message.count} of ${message.resource}`);
+        this.broadcast({
+          type: 'MINE_RESOURCE',
+          resource: message.resource,
+          count: message.count,
+          initiator: message.initiator,
+          timestamp: Date.now()
+        });
+        break;
+        
+      case 'HELP_REQUEST':
+        console.log(`[SWARM] 🆘 Help request at ${message.position.x}, ${message.position.y}, ${message.position.z}`);
+        this.broadcast({
+          type: 'SEND_HELP',
+          position: message.position,
+          requester: message.requester,
+          timestamp: Date.now()
+        });
+        break;
     }
   }
   
@@ -13770,6 +13802,13 @@ class ConversationAI {
       attack: /^!?(?:attack|kill)\s+(.+)/i,
       help: /^!?help\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)/i,
       
+      // Swarm Commands
+      coordinated_attack: /^!?(?:coordinated|swarm)\s+attack\s+(.+)/i,
+      swarm_help: /^!?(?:swarm|formation)\s+help\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)/i,
+      formation: /^!?formation\s+(circle|line|square)/i,
+      retreat: /^!?(?:retreat|fallback)/i,
+      swarm_mine: /^!?swarm\s+mine\s+(\d+)?\s*(.+)/i,
+      
       // Spawning
       spawn: /^!?spawn\s+(\d+)/i,
       
@@ -13869,7 +13908,7 @@ class ConversationAI {
     
     // Check for help requests
     if (lower.includes('help') || lower.includes('what can you do')) {
-      return `I can help with: finding items, building, combat, spawning bots, and more! Try "find me diamonds" or "attack playername"`;
+      return `I can help with: finding items, building, combat, spawning bots, swarm commands, and more! Try "find me diamonds", "attack playername", "coordinated attack player", "formation circle", "retreat", or "swarm status"`;
     }
     
     // Default response
@@ -13959,6 +13998,28 @@ class ConversationAI {
           z: parseInt(match[3])
         };
       
+      case 'coordinated_attack':
+        return { type: 'coordinated_attack', target: match[1].trim() };
+      
+      case 'swarm_help':
+        return {
+          type: 'swarm_help',
+          x: parseInt(match[1]),
+          y: parseInt(match[2]),
+          z: parseInt(match[3])
+        };
+      
+      case 'formation':
+        return { type: 'formation', formationType: match[1].trim() };
+      
+      case 'retreat':
+        return { type: 'retreat' };
+      
+      case 'swarm_mine':
+        const count = match[1] ? parseInt(match[1]) : 1;
+        const resource = match[2] ? match[2].trim() : 'stone';
+        return { type: 'swarm_mine', count, resource };
+      
       case 'spawn':
         return { type: 'spawn', count: parseInt(match[1]) };
       
@@ -13973,6 +14034,15 @@ class ConversationAI {
       
       case 'follow':
         return { type: 'follow', player: match[1].trim() };
+      
+      case 'status':
+        return { type: 'status' };
+      
+      case 'stop':
+        return { type: 'stop' };
+      
+      case 'stay':
+        return { type: 'stay' };
       
       default:
         return { type };
@@ -14078,7 +14148,7 @@ class ConversationAI {
   }
   
   isCommand(message) {
-    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'find', 'hunt', 'collect', 'fish for', 'farm', '!help', '!attack', '!spawn', 'need help'];
+    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'formation', 'swarm mine', 'find', 'hunt', 'collect', 'fish for', 'farm', '!help', '!attack', '!spawn', 'need help'];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
@@ -14199,6 +14269,93 @@ class ConversationAI {
             this.bot.chat(`stopping`);
             if (this.bot.pathfinder) {
               this.bot.pathfinder.stop();
+            }
+            return;
+          
+          case 'coordinated_attack':
+            console.log(`[COMMAND] Coordinated attack on ${command.target}`);
+            this.bot.chat(`coordinated attack on ${command.target}!`);
+            
+            // Broadcast to all bots
+            if (globalSwarmCoordinator) {
+              globalSwarmCoordinator.broadcast({
+                type: 'COORDINATED_ATTACK',
+                target: command.target,
+                initiator: this.bot.username,
+                timestamp: Date.now()
+              });
+              console.log(`[SWARM] Broadcasted coordinated attack on ${command.target}`);
+            } else {
+              this.bot.chat(`swarm coordinator not available`);
+            }
+            return;
+          
+          case 'swarm_help':
+            console.log(`[COMMAND] Swarm help at ${command.x} ${command.y} ${command.z}`);
+            this.bot.chat(`sending swarm help to ${command.x} ${command.y} ${command.z}`);
+            
+            if (globalSwarmCoordinator) {
+              globalSwarmCoordinator.broadcast({
+                type: 'HELP_REQUEST',
+                position: { x: command.x, y: command.y, z: command.z },
+                requester: this.bot.username,
+                timestamp: Date.now()
+              });
+              console.log(`[SWARM] Broadcasted help request to ${command.x} ${command.y} ${command.z}`);
+            } else {
+              this.bot.chat(`swarm coordinator not available`);
+            }
+            return;
+          
+          case 'formation':
+            console.log(`[COMMAND] Formation: ${command.formationType}`);
+            this.bot.chat(`forming ${command.formationType} formation`);
+            
+            if (globalSwarmCoordinator && this.bot.entity) {
+              globalSwarmCoordinator.broadcast({
+                type: 'FORMATION',
+                formationType: command.formationType,
+                center: this.bot.entity.position,
+                initiator: this.bot.username,
+                timestamp: Date.now()
+              });
+              console.log(`[SWARM] Broadcasted ${command.formationType} formation`);
+            } else {
+              this.bot.chat(`swarm coordinator not available`);
+            }
+            return;
+          
+          case 'retreat':
+            console.log(`[COMMAND] All bots retreat`);
+            this.bot.chat(`all bots retreat!`);
+            
+            if (globalSwarmCoordinator) {
+              globalSwarmCoordinator.broadcast({
+                type: 'RETREAT',
+                initiator: this.bot.username,
+                timestamp: Date.now()
+              });
+              console.log(`[SWARM] Broadcasted retreat command`);
+            } else {
+              this.bot.chat(`swarm coordinator not available`);
+            }
+            return;
+          
+          case 'swarm_mine':
+            console.log(`[COMMAND] Swarm mining: ${command.count} of ${command.resource}`);
+            this.bot.chat(`swarm mining ${command.count} of ${command.resource}`);
+            
+            if (globalSwarmCoordinator) {
+              globalSwarmCoordinator.broadcast({
+                type: 'SWARM_MINE',
+                resource: command.resource,
+                count: command.count,
+                initiator: this.bot.username,
+                timestamp: Date.now()
+              });
+              console.log(`[SWARM] Broadcasted swarm mining: ${command.count} of ${command.resource}`);
+            } else {
+              this.bot.chat(`swarm coordinator not available`);
             }
             return;
           
@@ -15790,8 +15947,167 @@ class ConversationAI {
    });
 
    console.log(`[SWARM] Guard duty started at ${coords.x}, ${coords.y}, ${coords.z}`);
-  }
-}
+   }
+
+   // === SWARM EXECUTION METHODS ===
+   // These methods are called when bots receive swarm messages
+
+   async swarmAttack(targetName) {
+    console.log(`[SWARM] ${this.bot.username} received swarm attack on ${targetName}`);
+
+    const target = this.bot.players[targetName]?.entity;
+    if (!target) {
+      console.log(`[SWARM] Target not found: ${targetName}`);
+      return;
+    }
+
+    console.log(`[SWARM] ${this.bot.username} attacking ${targetName}`);
+    this.bot.chat(`attacking with swarm!`);
+
+    if (this.bot.combatAI) {
+      await this.bot.combatAI.handleCombat(target).catch(err => {
+        console.error(`[SWARM] Combat error:`, err.message);
+      });
+    }
+   }
+
+   async coordinatedAttack(targetName, botCount) {
+    console.log(`[SWARM] Coordinated attack on ${targetName} (${botCount} bots)`);
+
+    const target = this.bot.players[targetName]?.entity;
+    if (!target) {
+      console.log(`[SWARM] Target not found: ${targetName}`);
+      return;
+    }
+
+    // Coordinated tactics - spread out around target
+    const angle = (this.bot.username.charCodeAt(0) / 255) * Math.PI * 2;
+    const distance = 5;
+
+    const targetX = target.position.x + Math.cos(angle) * distance;
+    const targetZ = target.position.z + Math.sin(angle) * distance;
+
+    // Move to position
+    if (this.bot.pathfinder) {
+      const goal = new goals.GoalBlock(Math.floor(targetX), Math.floor(target.position.y), Math.floor(targetZ));
+      await this.bot.pathfinder.goto(goal).catch(err => {
+        console.error(`[SWARM] Movement error:`, err.message);
+      });
+    }
+
+    // Attack
+    if (this.bot.combatAI) {
+      await this.bot.combatAI.handleCombat(target).catch(err => {
+        console.error(`[SWARM] Combat error:`, err.message);
+      });
+    }
+   }
+
+   async sendHelp(coords) {
+    console.log(`[SWARM] ${this.bot.username} heading to help at ${coords.x} ${coords.y} ${coords.z}`);
+
+    // Navigate to coords
+    if (this.bot.pathfinder) {
+      const goal = new goals.GoalBlock(coords.x, coords.y, coords.z);
+      await this.bot.pathfinder.goto(goal).catch(err => {
+        console.error(`[SWARM] Navigation error:`, err.message);
+      });
+    }
+
+    this.bot.chat(`arrived to help!`);
+   }
+
+   async formFormation(formationType, center) {
+    console.log(`[SWARM] ${this.bot.username} forming ${formationType} formation`);
+
+    // Different formation patterns
+    const formations = {
+      circle: this.formCircle(center),
+      line: this.formLine(center),
+      square: this.formSquare(center)
+    };
+
+    const position = formations[formationType];
+    if (position && this.bot.pathfinder) {
+      const goal = new goals.GoalBlock(position.x, position.y, position.z);
+      await this.bot.pathfinder.goto(goal).catch(err => {
+        console.error(`[SWARM] Formation error:`, err.message);
+      });
+    }
+   }
+
+   formCircle(center) {
+    const angle = (this.bot.username.charCodeAt(0) / 255) * Math.PI * 2;
+    const radius = 8;
+    return {
+      x: Math.floor(center.x + Math.cos(angle) * radius),
+      y: Math.floor(center.y),
+      z: Math.floor(center.z + Math.sin(angle) * radius)
+    };
+   }
+
+   formLine(center) {
+    const index = this.bot.username.charCodeAt(0) % 5;
+    const spacing = 3;
+    return {
+      x: Math.floor(center.x + index * spacing),
+      y: Math.floor(center.y),
+      z: Math.floor(center.z)
+    };
+   }
+
+   formSquare(center) {
+    const index = this.bot.username.charCodeAt(0) % 4;
+    const size = 5;
+    const positions = [
+      { x: center.x - size, z: center.z - size }, // Top-left
+      { x: center.x + size, z: center.z - size }, // Top-right
+      { x: center.x - size, z: center.z + size }, // Bottom-left
+      { x: center.x + size, z: center.z + size }  // Bottom-right
+    ];
+    const pos = positions[index];
+    return {
+      x: Math.floor(pos.x),
+      y: Math.floor(center.y),
+      z: Math.floor(pos.z)
+    };
+   }
+
+   async retreat() {
+    console.log(`[SWARM] ${this.bot.username} retreating`);
+    this.bot.chat(`retreating!`);
+
+    // Run away from current position
+    if (this.bot.entity && this.bot.pathfinder) {
+      const awayPos = {
+        x: this.bot.entity.position.x + (Math.random() - 0.5) * 100,
+        y: this.bot.entity.position.y,
+        z: this.bot.entity.position.z + (Math.random() - 0.5) * 100
+      };
+
+      const goal = new goals.GoalBlock(Math.floor(awayPos.x), Math.floor(awayPos.y), Math.floor(awayPos.z));
+      await this.bot.pathfinder.goto(goal).catch(err => {
+        console.error(`[SWARM] Retreat error:`, err.message);
+      });
+    }
+   }
+
+   async swarmMine(resource, count) {
+    console.log(`[SWARM] ${this.bot.username} mining ${count} of ${resource}`);
+
+    for (let i = 0; i < count; i++) {
+      try {
+        // Mine one using existing item hunter
+        await this.itemHunter.findItem(resource, 1);
+        console.log(`[SWARM] ${this.bot.username} mined ${resource} (${i + 1}/${count})`);
+      } catch (err) {
+        console.error(`[SWARM] Mining error:`, err.message);
+      }
+    }
+
+    this.bot.chat(`finished mining ${count} of ${resource}!`);
+   }
+   }
 
 // === COORDINATE SCRAPER ===
 class CoordinateScraper {
@@ -23358,6 +23674,49 @@ async function launchBot(username, role = 'fighter') {
                 bot.currentHelpOperation = null;
               }
               break;
+              
+            // === SWARM COMMAND EXECUTION HANDLERS ===
+            case 'ATTACK_TARGET':
+              console.log(`[SWARM] 🎯 Attack target: ${message.target}`);
+              if (conversationAI) {
+                await conversationAI.swarmAttack(message.target);
+              }
+              break;
+              
+            case 'FORM_FORMATION':
+              console.log(`[SWARM] 📐 Form formation: ${message.formationType}`);
+              if (conversationAI) {
+                await conversationAI.formFormation(message.formationType, message.center);
+              }
+              break;
+              
+            case 'MINE_RESOURCE':
+              console.log(`[SWARM] ⛏️ Mine resource: ${message.count} of ${message.resource}`);
+              if (conversationAI) {
+                await conversationAI.swarmMine(message.resource, message.count);
+              }
+              break;
+              
+            case 'SEND_HELP':
+              console.log(`[SWARM] 🆘 Send help to: ${message.position.x}, ${message.position.y}, ${message.position.z}`);
+              if (conversationAI) {
+                await conversationAI.sendHelp(message.position);
+              }
+              break;
+              
+            case 'RETREAT_NOW':
+              console.log(`[SWARM] 🏃 Retreat now!`);
+              if (conversationAI) {
+                await conversationAI.retreat();
+              }
+              break;
+              
+            case 'GUARD_POSITION':
+              console.log(`[SWARM] 🛡️ Guard position: ${message.position.x}, ${message.position.y}, ${message.position.z}`);
+              if (conversationAI) {
+                await conversationAI.startGuarding(message.position);
+              }
+              break;
           }
         } catch (err) {
           console.log('[SWARM] Error processing message:', err.message);
@@ -25422,35 +25781,19 @@ class DeathRecovery {
   }
 }
 
- 
-  
-  
-  async initialize() {
-    console.log('[EQUIPMENT] Initializing equipment system...');
-    
-    // Verify bot.equip method exists
-    console.log('[EQUIPMENT] bot.equip exists?', typeof this.bot.equip);
-    if (typeof this.bot.equip !== 'function') {
-      console.log('[EQUIPMENT] bot.setEquipment exists?', typeof this.bot.setEquipment);
-      console.log('[EQUIPMENT] bot.inventory.moveSlotItem exists?', typeof this.bot.inventory.moveSlotItem);
-    }
-    
-    await this.equipBestArmor();
-    await this.equipBestWeapon('combat');
-    await this.equipOffhand();
-    await this.organizeHotbar();
-    console.log('[EQUIPMENT] Equipment system initialization complete');
+// === SUPPLY CHAIN TASK QUEUE SYSTEM ===
+
+class TaskQueue {
+  constructor() {
+    this.queue = [];
+    this.completed = [];
+    this.inProgress = [];
+    this.taskIdCounter = 1;
   }
   
-  async equipBestArmor() {
-    const inventory = this.bot.inventory.items();
-    const armorSlots = ['head', 'torso', 'legs', 'feet'];
-    const equippedArmor = [];
-    
-    for (const slot of armorSlots) {
-      const bestArmor = this.findBestArmorForSlot(inventory, slot);
-      if (bestArmor) {
-        await this.bot.equip(bestArmor, slot);
+  generateTaskId() {
+    return `task_${this.taskIdCounter++}_${Date.now()}`;
+  }
         equippedArmor.push(bestArmor.name);
         console.log(`[ARMOR] Equipped ${bestArmor.name} in ${slot} slot`);
       }
