@@ -148,8 +148,52 @@ function safeAppendFile(filePath, data) {
 function safeReadJson(filePath, defaultValue = null) {
   const raw = safeReadFile(filePath);
   if (raw == null) {
-    return defaultValue;
+    // File doesn't exist, create default structure
+    console.log(`[FS] File not found, creating: ${filePath}`);
+    
+    // Create parent directories if they don't exist
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      console.log(`[FS] Creating directory: ${dir}`);
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    
+    // Determine appropriate default content based on file path
+    let defaultData = defaultValue;
+    if (defaultData === null) {
+      if (filePath.includes('global_inventory.json')) {
+        defaultData = {
+          items: [],
+          lastUpdated: Date.now()
+        };
+      } else if (filePath.includes('production_stats.json')) {
+        defaultData = {
+          stats: {},
+          lastUpdated: Date.now()
+        };
+      } else if (filePath.includes('whitelist.json')) {
+        defaultData = [];
+      } else if (filePath.includes('config.json')) {
+        defaultData = {};
+      } else {
+        // Generic default structure
+        defaultData = {
+          data: [],
+          lastUpdated: Date.now()
+        };
+      }
+    }
+    
+    // Write the default file
+    if (safeWriteJson(filePath, defaultData)) {
+      console.log(`[FS] ✓ Created default file: ${filePath}`);
+      return defaultData;
+    } else {
+      console.error(`[FS] Failed to create default file: ${filePath}`);
+      return defaultValue || null;
+    }
   }
+  
   try {
     return JSON.parse(raw);
   } catch (err) {
@@ -581,14 +625,16 @@ const config = {
    smartEquip: true,
    autoEngagement: {
      autoEngageHostileMobs: true,
-     engagementDistance: 2,
-     monitorInterval: 200,
+     engagementDistance: 3,
+     monitorInterval: 300,
      minHealthToFight: 4,
      requireMinHealth: true,
      avoidInWater: true,
      requireArmor: true,
-     focusSingleMob: true
-   },
+     focusSingleMob: true,
+     neverAttackPlayers: true,
+     autoRetaliate: true
+    },
    logger: {
      enabled: true,
      healthThreshold: 6,
@@ -1585,7 +1631,104 @@ class EquipmentManager {
     this.lastEquipmentCheck = 0;
     this.equipmentCheckInterval = 5000; // Check every 5 seconds
     
+    // Setup inventory listener for auto-equipping armor
+    this.setupArmorEquipping();
+    
     console.log('[EQUIPMENT] Equipment Manager initialized');
+  }
+  
+  setupArmorEquipping() {
+    // Listen for inventory updates to auto-equip armor
+    this.bot.on('inventoryUpdate', () => {
+      // Check if any new armor was picked up
+      this.checkAndEquipArmor();
+    });
+    
+    // Also listen for slot updates (more granular)
+    if (this.bot.inventory && this.bot.inventory.on) {
+      this.bot.inventory.on('updateSlot', (oldItem, newItem) => {
+        if (newItem && this.isArmorPiece(newItem.name)) {
+          console.log(`[EQUIPMENT] Armor picked up: ${newItem.name}`);
+          this.autoEquipArmor(newItem);
+        }
+      });
+    }
+    
+    console.log('[EQUIPMENT] Auto-armor equipping enabled');
+  }
+  
+  async initialize() {
+    // Initial armor check on startup
+    await this.checkAndEquipArmor();
+    console.log('[EQUIPMENT] Initial equipment check completed');
+  }
+  
+  isArmorPiece(itemName) {
+    if (!itemName) return false;
+    const name = itemName.toLowerCase();
+    
+    return name.includes('helmet') || name.includes('head') ||
+           name.includes('chestplate') || name.includes('chest') ||
+           name.includes('leggings') || name.includes('legs') ||
+           name.includes('boots') || name.includes('feet') ||
+           name.includes('shield') || name.includes('totem');
+  }
+  
+  async autoEquipArmor(item) {
+    const slot = this.getArmorSlot(item.name);
+    
+    if (!slot) {
+      console.log(`[EQUIPMENT] Unknown armor type: ${item.name}`);
+      return;
+    }
+    
+    try {
+      console.log(`[EQUIPMENT] Equipping: ${item.name} to ${slot}`);
+      
+      // Check if bot.equip is available
+      if (this.bot.equip && typeof this.bot.equip === 'function') {
+        await this.bot.equip(item, slot);
+        console.log(`[EQUIPMENT] ✓ Equipped: ${item.name}`);
+      } else {
+        console.log(`[EQUIPMENT] ⚠️ bot.equip not available`);
+      }
+    } catch (error) {
+      console.error(`[EQUIPMENT] Failed to equip ${item.name}:`, error.message);
+    }
+  }
+  
+  getArmorSlot(itemName) {
+    if (!itemName) return null;
+    const name = itemName.toLowerCase();
+    
+    if (name.includes('helmet') || name.includes('head')) return 'head';
+    if (name.includes('chestplate') || name.includes('chest')) return 'torso';
+    if (name.includes('leggings') || name.includes('legs')) return 'legs';
+    if (name.includes('boots') || name.includes('feet')) return 'feet';
+    if (name.includes('shield')) return 'off-hand';
+    if (name.includes('totem')) return 'off-hand';
+    
+    return null;
+  }
+  
+  async checkAndEquipArmor() {
+    if (!this.bot.inventory) return;
+    
+    try {
+      const inventory = this.bot.inventory.items();
+      const armorItems = inventory.filter(item => this.isArmorPiece(item.name));
+      
+      if (armorItems.length === 0) return;
+      
+      // Equip each piece of armor
+      for (const armor of armorItems) {
+        await this.autoEquipArmor(armor);
+        // Small delay between equips to avoid issues
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    } catch (err) {
+      console.log(`[EQUIPMENT] Failed to check/equip armor: ${err.message}`);
+    }
   }
   
   // === AUTOMATIC ARMOR EQUIPPING ===
@@ -8394,6 +8537,7 @@ class CombatAI {
     this.maceAI = new MaceWeaponAI(bot);
     this.combatLogger = null;
     this.combatCheck = null;
+    this.hostileMobDetector = new HostileMobDetector();
   }
   
   setCombatLogger(logger) {
@@ -8586,8 +8730,28 @@ class CombatAI {
       return;
     }
     
+    // === CRITICAL SAFETY: Check if target is player and neverAttackPlayers is enabled ===
+    const isPlayer = attacker.type === 'player' || attacker.username;
+    if (isPlayer && config.combat?.autoEngagement?.neverAttackPlayers) {
+      console.log(`[COMBAT] ${attacker.username || 'Player'} attacked but neverAttackPlayers is enabled - not retaliating!`);
+      return;
+    }
+    
+    // === CRITICAL SAFETY: Verify target is hostile before engaging ===
+    if (!this.hostileMobDetector) {
+      this.hostileMobDetector = new HostileMobDetector();
+    }
+    
+    const isHostileMob = this.hostileMobDetector.isHostileMob(attacker);
+    if (!isPlayer && !isHostileMob) {
+      console.log(`[COMBAT] Target ${attacker.name || 'Unknown'} is not hostile - not engaging`);
+      return;
+    }
+    
     try {
-      console.log(`[COMBAT] ⚔️ Engaged with ${attacker.username}!`);
+      const targetName = isPlayer ? attacker.username : attacker.name;
+      const targetType = isPlayer ? 'Player' : 'Hostile Mob';
+      console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
       this.inCombat = true;
       this.currentTarget = attacker;
       
@@ -8929,14 +9093,8 @@ class CombatAI {
             }
           }
           
-          // Check if player is attacking us
-          if (entity.type === 'player' && distance <= engagementDistance) {
-            if (this.hostileMobDetector && this.hostileMobDetector.isPlayerAttacking(entity)) {
-              console.log(`[COMBAT] ⚠️ Player ${entity.username} attacking at ${distance.toFixed(1)} blocks!`);
-              await this.autoEngageMob(entity);
-              break;
-            }
-          }
+          // Note: Player attack detection is now handled by entityHurt handler
+          // This prevents friendly fire and prioritizes hostile mobs
         }
       } catch (err) {
         console.log(`[COMBAT] Mob monitoring error: ${err.message}`);
@@ -8948,6 +9106,25 @@ class CombatAI {
     if (this.isCurrentlyFighting) {
       console.log('[COMBAT] Already fighting, ignoring new mob');
       return;
+    }
+    
+    // === CRITICAL SAFETY: Refuse to engage players if neverAttackPlayers is enabled ===
+    const isPlayer = mobEntity.type === 'player' || mobEntity.username;
+    if (isPlayer && config.combat?.autoEngagement?.neverAttackPlayers) {
+      console.log(`[COMBAT] ${mobEntity.username || 'Player'} detected but neverAttackPlayers is enabled - not engaging`);
+      return;
+    }
+    
+    // === CRITICAL SAFETY: Only engage hostile mobs, not passive entities ===
+    if (!isPlayer) {
+      if (!this.hostileMobDetector) {
+        this.hostileMobDetector = new HostileMobDetector();
+      }
+      
+      if (!this.hostileMobDetector.isHostileMob(mobEntity)) {
+        console.log(`[COMBAT] ${mobEntity.name || 'Unknown'} is not hostile - not engaging`);
+        return;
+      }
     }
     
     // Safeguard: Don't fight if low health
@@ -22446,16 +22623,49 @@ async function launchBot(username, role = 'fighter') {
     // Combat handler
     bot.on('entityHurt', async (entity) => {
       if (entity === bot.entity) {
-        const attacker = Object.values(bot.entities).find(e => 
-          e.type === 'player' && 
-          e.position.distanceTo(bot.entity.position) < 5
+        // Initialize hostile mob detector if not exists
+        if (!combatAI.hostileMobDetector) {
+          combatAI.hostileMobDetector = new HostileMobDetector();
+        }
+        
+        // Search for BOTH hostile mobs AND players as attackers
+        // PRIORITIZE hostile mobs over players to prevent friendly fire
+        const nearbyEntities = Object.values(bot.entities).filter(e => 
+          e.position && e.position.distanceTo(bot.entity.position) < 5
         );
+        
+        let attacker = null;
+        let attackerType = null;
+        
+        // First, check for hostile mobs (higher priority)
+        for (const entity of nearbyEntities) {
+          if (combatAI.hostileMobDetector.isHostileMob(entity)) {
+            attacker = entity;
+            attackerType = 'mob';
+            break;
+          }
+        }
+        
+        // If no hostile mob found, check for players
+        if (!attacker) {
+          for (const entity of nearbyEntities) {
+            if (entity.type === 'player') {
+              attacker = entity;
+              attackerType = 'player';
+              break;
+            }
+          }
+        }
         
         if (attacker) {
           combatLogger.noteAttacker(attacker);
           
-          // Auto-retaliation logging
-          console.log(`[COMBAT] Bot damaged by ${attacker.username} - retaliating!`);
+          // Log clear info about attacker type
+          if (attackerType === 'mob') {
+            console.log(`[COMBAT] Bot damaged by hostile mob: ${attacker.name} (${bot.entity.position.distanceTo(attacker.position).toFixed(1)}m away) - retaliating!`);
+          } else {
+            console.log(`[COMBAT] Bot damaged by player: ${attacker.username} (${bot.entity.position.distanceTo(attacker.position).toFixed(1)}m away) - retaliating!`);
+          }
         }
         
         if (attacker && combatAI && !combatAI.inCombat) {
