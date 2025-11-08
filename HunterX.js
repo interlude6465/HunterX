@@ -13107,6 +13107,449 @@ class AutoFisher {
   }
 }
 
+// === BARITONE-BASED BLOCK FINDER ===
+class BlockFinder {
+  constructor(bot) {
+    this.bot = bot;
+    this.baritone = null; // Baritone integration placeholder
+    this.netherBlocks = ['nether_wart_block', 'warped_wart_block', 'ancient_debris', 'nether_gold_ore'];
+    this.endBlocks = ['end_stone', 'purpur_block', 'dragon_egg', 'end_crystal'];
+  }
+  
+  async findAndReturnBlock(blockName, requesterUsername = null) {
+    console.log(`[FINDER] 🔍 Looking for: ${blockName}`);
+    
+    // Store starting position for return
+    const startPos = this.bot.entity.position.clone();
+    
+    // Normalize block name
+    const normalized = this.normalizeBlockName(blockName);
+    console.log(`[FINDER] 📝 Normalized: ${normalized}`);
+    
+    // Strategy 1: Search loaded chunks (fast, nearby)
+    console.log(`[FINDER] 🗺️ Strategy 1: Searching loaded chunks...`);
+    let result = await this.searchLoadedChunks(normalized);
+    if (result) {
+      // Get the block and return to player
+      const success = await this.retrieveBlockAndReturn(result, startPos, requesterUsername);
+      return success;
+    }
+    
+    // Strategy 2: Use smart exploration with pathfinding
+    console.log(`[FINDER] 🚶 Strategy 2: Using pathfinding exploration...`);
+    result = await this.searchWithPathfinding(normalized);
+    if (result) {
+      // Get the block and return to player
+      const success = await this.retrieveBlockAndReturn(result, startPos, requesterUsername);
+      return success;
+    }
+    
+    // Strategy 3: Check if it's in other dimensions
+    console.log(`[FINDER] 🌍 Strategy 3: Checking dimension requirements...`);
+    if (this.netherBlocks.includes(normalized)) {
+      this.bot.chat(`⚠️ That block is in the Nether, need to travel there!`);
+    } else if (this.endBlocks.includes(normalized)) {
+      this.bot.chat(`⚠️ That block is in the End, need to travel there!`);
+    } else {
+      this.bot.chat(`❌ Couldn't find ${blockName} in nearby areas`);
+    }
+    
+    return false;
+  }
+  
+  async retrieveBlockAndReturn(blockPos, startPos, requesterUsername = null) {
+    try {
+      // Pathfind to block
+      const reached = await this.pathfindToBlock(blockPos);
+      if (!reached) {
+        this.bot.chat(`❌ Couldn't reach the block`);
+        return false;
+      }
+      
+      // Dig the block
+      const dug = await this.digBlock(blockPos);
+      if (!dug) {
+        this.bot.chat(`❌ Failed to dig the block`);
+        return false;
+      }
+      
+      // Return to starting position or player
+      if (requesterUsername) {
+        const player = this.bot.players[requesterUsername];
+        if (player && player.entity) {
+          this.bot.chat(`🚶 Returning to ${requesterUsername}...`);
+          await this.bot.pathfinder.goto(new goals.GoalNear(player.entity.position, 3));
+        } else {
+          this.bot.chat(`🚶 Returning to starting position...`);
+          await this.bot.pathfinder.goto(new goals.GoalNear(startPos, 3));
+        }
+      } else {
+        this.bot.chat(`🚶 Returning to starting position...`);
+        await this.bot.pathfinder.goto(new goals.GoalNear(startPos, 3));
+      }
+      
+      return true;
+    } catch (error) {
+      console.log(`[FINDER] Error in retrieveBlockAndReturn: ${error.message}`);
+      this.bot.chat(`❌ Error: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async findBlock(blockName) {
+    console.log(`[FINDER] 🔍 Looking for: ${blockName}`);
+    
+    // Normalize block name
+    const normalized = this.normalizeBlockName(blockName);
+    console.log(`[FINDER] 📝 Normalized: ${normalized}`);
+    
+    // Strategy 1: Search loaded chunks (fast, nearby)
+    console.log(`[FINDER] 🗺️ Strategy 1: Searching loaded chunks...`);
+    let result = await this.searchLoadedChunks(normalized);
+    if (result) return result;
+    
+    // Strategy 2: Use smart exploration with pathfinding
+    console.log(`[FINDER] 🚶 Strategy 2: Using pathfinding exploration...`);
+    result = await this.searchWithPathfinding(normalized);
+    if (result) return result;
+    
+    // Strategy 3: Check if it's in other dimensions
+    console.log(`[FINDER] 🌍 Strategy 3: Checking dimension requirements...`);
+    if (this.netherBlocks.includes(normalized)) {
+      this.bot.chat(`⚠️ That block is in the Nether, need to travel there!`);
+    } else if (this.endBlocks.includes(normalized)) {
+      this.bot.chat(`⚠️ That block is in the End, need to travel there!`);
+    } else {
+      this.bot.chat(`❌ Couldn't find ${blockName} in nearby areas`);
+    }
+    
+    return null;
+  }
+  
+  async searchLoadedChunks(blockName) {
+    const world = this.bot.world;
+    const playerPos = this.bot.entity.position;
+    
+    // Search in 100 block radius (loaded chunks)
+    const searchRadius = 100;
+    let foundBlocks = [];
+    
+    console.log(`[FINDER] 🗺️ Searching ${searchRadius}x${searchRadius}x${searchRadius} area around ${Math.floor(playerPos.x)},${Math.floor(playerPos.y)},${Math.floor(playerPos.z)}`);
+    
+    // Use step size for efficiency
+    const step = 3;
+    
+    for (let x = playerPos.x - searchRadius; x < playerPos.x + searchRadius; x += step) {
+      for (let y = Math.max(0, playerPos.y - 50); y < Math.min(256, playerPos.y + 50); y += step) {
+        for (let z = playerPos.z - searchRadius; z < playerPos.z + searchRadius; z += step) {
+          try {
+            const block = world.getBlock(new Vec3(Math.floor(x), Math.floor(y), Math.floor(z)));
+            
+            if (block && block.name === blockName) {
+              const distance = playerPos.distanceTo(block.position);
+              foundBlocks.push({ 
+                x: block.position.x, 
+                y: block.position.y, 
+                z: block.position.z,
+                distance: distance
+              });
+              console.log(`[FINDER] ✅ Found ${blockName} at ${block.position.x} ${block.position.y} ${block.position.z} (${distance.toFixed(1)} blocks away)`);
+            }
+          } catch (error) {
+            // Block not loaded, skip
+          }
+        }
+      }
+    }
+    
+    if (foundBlocks.length > 0) {
+      // Return the closest block
+      foundBlocks.sort((a, b) => a.distance - b.distance);
+      console.log(`[FINDER] 🎯 Found ${foundBlocks.length} instances, closest is ${foundBlocks[0].distance.toFixed(1)} blocks away`);
+      return foundBlocks[0];
+    }
+    
+    console.log(`[FINDER] ❌ No ${blockName} found in loaded chunks`);
+    return null;
+  }
+  
+  async searchWithPathfinding(blockName) {
+    console.log(`[FINDER] 🚶 Starting pathfinding search for ${blockName}`);
+    
+    // Since Baritone isn't available, use systematic exploration
+    const spiralPoints = this.generateSpiralSearchPoints(200, 30); // 200 block radius, 30 points (reduced for efficiency)
+    const startTime = Date.now();
+    const maxSearchTime = 60000; // 60 second timeout
+    
+    for (const point of spiralPoints) {
+      // Check timeout
+      if (Date.now() - startTime > maxSearchTime) {
+        console.log(`[FINDER] ⏰ Search timeout reached (${maxSearchTime/1000}s)`);
+        this.bot.chat(`⏰ Search timeout - couldn't find ${blockName} in time`);
+        return null;
+      }
+      
+      try {
+        console.log(`[FINDER] 🚶 Exploring point ${Math.floor(point.x)}, ${Math.floor(point.z)}...`);
+        
+        // Pathfind to the exploration point with timeout
+        const pathfindPromise = this.bot.pathfinder.goto(new goals.GoalNear(point.x, point.y, point.z, 5));
+        await Promise.race([
+          pathfindPromise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Pathfinding timeout')), 10000))
+        ]);
+        
+        // Search around this point
+        const found = await this.searchLoadedChunks(blockName);
+        if (found) {
+          console.log(`[FINDER] 🎯 Found ${blockName} during exploration!`);
+          return found;
+        }
+        
+        // Small delay to prevent overwhelming
+        await this.sleep(500);
+        
+      } catch (error) {
+        console.log(`[FINDER] ⚠️ Failed to reach exploration point: ${error.message}`);
+        continue;
+      }
+    }
+    
+    console.log(`[FINDER] ❌ Pathfinding search completed, no ${blockName} found`);
+    return null;
+  }
+  
+  generateSpiralSearchPoints(maxRadius, numPoints) {
+    const points = [];
+    const playerPos = this.bot.entity.position;
+    
+    for (let i = 0; i < numPoints; i++) {
+      const angle = (i / numPoints) * 2 * Math.PI;
+      const radius = (i / numPoints) * maxRadius;
+      
+      const x = playerPos.x + Math.cos(angle) * radius;
+      const z = playerPos.z + Math.sin(angle) * radius;
+      const y = playerPos.y; // Keep at current Y level for safety
+      
+      points.push({ x, y: Math.floor(y), z });
+    }
+    
+    return points;
+  }
+  
+  normalizeBlockName(name) {
+    // "diamond block" → "diamond_block"
+    // "obsidian" → "obsidian"
+    // "diamond ore" → "diamond_ore"
+    let normalized = name.toLowerCase()
+      .replace(/\s+/g, '_');
+    
+    // Handle special cases
+    if (normalized.endsWith('_ore')) {
+      return normalized; // Already correct
+    }
+    
+    if (normalized.includes('ore')) {
+      return normalized.replace(/_?ore/, '_ore');
+    }
+    
+    if (normalized.includes('block')) {
+      return normalized.replace(/_?block/, '_block');
+    }
+    
+    // Common ore mappings
+    const oreMap = {
+      'diamond': 'diamond_ore',
+      'coal': 'coal_ore',
+      'iron': 'iron_ore',
+      'gold': 'gold_ore',
+      'lapis': 'lapis_ore',
+      'redstone': 'redstone_ore',
+      'emerald': 'emerald_ore',
+      'copper': 'copper_ore'
+    };
+    
+    if (oreMap[normalized]) {
+      return oreMap[normalized];
+    }
+    
+    return normalized;
+  }
+  
+  async pathfindToBlock(blockPos) {
+    console.log(`[FINDER] 🚶 Pathfinding to ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+    
+    try {
+      // Use pathfinder to go to the block
+      await this.bot.pathfinder.goto(new goals.GoalBlock(
+        blockPos.x,
+        blockPos.y,
+        blockPos.z
+      ));
+      
+      console.log(`[FINDER] ✅ Reached block location`);
+      return true;
+    } catch (error) {
+      console.error(`[FINDER] ❌ Failed to pathfind to block:`, error.message);
+      return false;
+    }
+  }
+  
+  async digBlock(blockPos) {
+    console.log(`[FINDER] ⛏️ Digging block at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+    
+    const block = this.bot.blockAt(new Vec3(blockPos.x, blockPos.y, blockPos.z));
+    
+    if (!block) {
+      console.log(`[FINDER] ❌ Block not found at position`);
+      return false;
+    }
+    
+    if (block.name === 'air') {
+      console.log(`[FINDER] ❌ Block is already air`);
+      return false;
+    }
+    
+    // Safety checks
+    if (!this.isSafeToMine(block)) {
+      console.log(`[FINDER] ❌ Block is not safe to mine`);
+      this.bot.chat(`⚠️ That block looks dangerous to mine!`);
+      return false;
+    }
+    
+    try {
+      // Check if we have the right tool
+      const tool = this.getBestTool(block);
+      if (tool) {
+        await this.bot.equip(tool, 'hand');
+        console.log(`[FINDER] 🔧 Equipped ${tool.name} for mining`);
+      } else {
+        console.log(`[FINDER] ⚠️ Mining with hand (no suitable tool)`);
+        this.bot.chat(`⚠️ No suitable tool found, mining by hand...`);
+      }
+      
+      await this.bot.dig(block, true); // true = drop items
+      console.log(`[FINDER] ✅ Successfully dug ${block.name}`);
+      return true;
+    } catch (error) {
+      console.error(`[FINDER] ❌ Failed to dig ${block.name}:`, error.message);
+      this.bot.chat(`❌ Failed to dig ${block.name}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  getBestTool(block) {
+    const tools = this.bot.inventory.items().filter(item => 
+      item.name.includes('pickaxe') || 
+      item.name.includes('axe') || 
+      item.name.includes('shovel') || 
+      item.name.includes('hoe')
+    );
+    
+    if (tools.length === 0) {
+      console.log(`[FINDER] ⚠️ No tools found in inventory`);
+      return null;
+    }
+    
+    // Determine best tool based on block type
+    let toolType = 'pickaxe'; // default
+    
+    if (block.name.includes('wood') || block.name.includes('log') || block.name.includes('planks')) {
+      toolType = 'axe';
+    } else if (block.name.includes('dirt') || block.name.includes('sand') || block.name.includes('gravel') || block.name.includes('grass')) {
+      toolType = 'shovel';
+    } else if (block.name.includes('leaves')) {
+      toolType = 'hoe';
+    }
+    
+    // Filter by tool type
+    const typeTools = tools.filter(tool => tool.name.includes(toolType));
+    const relevantTools = typeTools.length > 0 ? typeTools : tools;
+    
+    // Priority by material
+    const priority = ['diamond', 'iron', 'stone', 'wooden', 'golden'];
+    
+    for (const material of priority) {
+      const tool = relevantTools.find(t => t.name.startsWith(material + '_' + toolType));
+      if (tool) {
+        console.log(`[FINDER] 🔧 Selected ${tool.name} for mining ${block.name}`);
+        return tool;
+      }
+    }
+    
+    return relevantTools[0]; // Return any relevant tool
+  }
+  
+  isDangerousBlock(block) {
+    // Check for blocks that might be dangerous to mine
+    const dangerousBlocks = [
+      'lava', 'fire', 'magma_block', 'campfire',
+      ' TNT', 'tnt', 'monster_egg', 'spawner'
+    ];
+    
+    return dangerousBlocks.some(dangerous => 
+      block.name.toLowerCase().includes(dangerous.toLowerCase())
+    );
+  }
+  
+  isSafeToMine(block) {
+    // Check surroundings for dangerous conditions
+    const pos = block.position;
+    const surroundings = [
+      this.bot.blockAt(pos.offset(0, 1, 0)), // above
+      this.bot.blockAt(pos.offset(0, -1, 0)), // below
+      this.bot.blockAt(pos.offset(1, 0, 0)), // sides
+      this.bot.blockAt(pos.offset(-1, 0, 0)),
+      this.bot.blockAt(pos.offset(0, 0, 1)),
+      this.bot.blockAt(pos.offset(0, 0, -1))
+    ];
+    
+    for (const surrounding of surroundings) {
+      if (surrounding && this.isDangerousBlock(surrounding)) {
+        console.log(`[FINDER] ⚠️ Dangerous block detected nearby: ${surrounding.name}`);
+        return false;
+      }
+    }
+    
+    return true;
+  }
+  
+  toBlockName(itemName) {
+    // Convert item names to block names
+    const oreMap = {
+      'diamond': 'diamond_ore',
+      'coal': 'coal_ore',
+      'iron': 'iron_ore',
+      'gold': 'gold_ore',
+      'lapis': 'lapis_ore',
+      'redstone': 'redstone_ore',
+      'emerald': 'emerald_ore',
+      'copper': 'copper_ore'
+    };
+    
+    const lower = itemName.toLowerCase();
+    if (oreMap[lower]) {
+      return oreMap[lower];
+    }
+    
+    return lower + '_block';
+  }
+  
+  isBlock(name) {
+    // Check if it's a known block type
+    return name.includes('ore') || 
+           name.includes('block') || 
+           name.includes('stone') ||
+           name.includes('wood') ||
+           name.includes('log') ||
+           name.includes('planks');
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
 // === INTELLIGENT CONVERSATION SYSTEM ===
 class ConversationAI {
   constructor(bot) {
@@ -13115,6 +13558,7 @@ class ConversationAI {
     this.maxContext = 10;
     this.trustLevels = ['guest', 'trusted', 'admin', 'owner'];
     this.itemHunter = new ItemHunter(bot);
+    this.blockFinder = new BlockFinder(bot);
   }
   
   // Strip bot name from message with various formats
@@ -13875,6 +14319,77 @@ class ConversationAI {
           this.bot.chat("❌ Swarm coordinator not available!");
           console.log(`[HELP] ✗ Swarm coordinator not available`);
         }
+      }
+      return;
+    }
+
+    // Block finding commands (NEW)
+    if (lower.includes('findblock') || lower.includes('getblock') || lower.includes('find block') || lower.includes('get block')) {
+      console.log(`[COMMAND] Block finding command: ${message}`);
+      
+      // Extract block name from message
+      const blockMatch = message.match(/(?:findblock|getblock|find block|get block)[\s]+(.+)/i);
+      if (!blockMatch) {
+        this.bot.chat("Usage: 'findblock diamond' or 'find block obsidian'");
+        return;
+      }
+      
+      const blockName = blockMatch[1].trim();
+      this.bot.chat(`🔍 Looking for ${blockName}...`);
+      
+      try {
+        const success = await this.blockFinder.findAndReturnBlock(blockName, username);
+        
+        if (success) {
+          this.bot.chat(`✅ Successfully found and returned with ${blockName}!`);
+        } else {
+          this.bot.chat(`❌ Failed to find ${blockName}`);
+        }
+      } catch (error) {
+        console.log(`[FINDER] Error: ${error.message}`);
+        this.bot.chat(`❌ Error finding ${blockName}: ${error.message}`);
+      }
+      return;
+    }
+    
+    // Enhanced find/get commands with block detection
+    if (lower.includes('find me') || lower.includes('get me')) {
+      console.log(`[COMMAND] Enhanced item/block request: ${message}`);
+      
+      // Extract item/block name
+      const itemMatch = message.match(/(?:find me|get me)[\s]+(.+)/i);
+      if (!itemMatch) {
+        this.bot.chat("Usage: 'find me diamonds' or 'get me 5 iron ore'");
+        return;
+      }
+      
+      const requestText = itemMatch[1].trim();
+      
+      // Check if it's actually a block
+      const blockName = this.blockFinder.toBlockName(requestText);
+      
+      if (this.blockFinder.isBlock(blockName) || requestText.includes('ore') || requestText.includes('block')) {
+        console.log(`[COMMAND] ${requestText} detected as block, using block finder`);
+        this.bot.chat(`🔍 Looking for ${requestText}...`);
+        
+        try {
+          const success = await this.blockFinder.findAndReturnBlock(blockName, username);
+          
+          if (success) {
+            this.bot.chat(`✅ Successfully found and returned with ${requestText}!`);
+          } else {
+            this.bot.chat(`❌ Couldn't find ${requestText}, trying item hunting...`);
+            // Fall back to item hunting
+            await this.handleItemFinderCommand(username, message);
+          }
+        } catch (error) {
+          console.log(`[FINDER] Error: ${error.message}`);
+          this.bot.chat(`❌ Error finding ${requestText}: ${error.message}`);
+        }
+      } else {
+        console.log(`[COMMAND] ${requestText} detected as item, using item hunter`);
+        // Use existing item hunting system
+        await this.handleItemFinderCommand(username, message);
       }
       return;
     }
