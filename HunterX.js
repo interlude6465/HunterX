@@ -11123,6 +11123,16 @@ const CHEST_LOCATIONS = {
 // Natural Language Parser for item requests
 class ItemRequestParser {
   parseRequest(message) {
+    // Skip if message looks like a command
+    if (message.startsWith('!')) {
+      console.log(`[ITEM_PARSER] Skipping - starts with ! (command marker)`);
+      return null;
+    }
+    if (/^(?:go(?:to)?|come\s+to|travel\s+to|attack|help|spawn|equip|status|stop|follow|stay)/i.test(message)) {
+      console.log(`[ITEM_PARSER] Skipping - looks like a command pattern`);
+      return null;
+    }
+    
     // Skip if message contains bot name references (should have been stripped already)
     const botNames = ['hunter', 'bot', 'robot'];
     const lowerMessage = message.toLowerCase();
@@ -13115,6 +13125,34 @@ class ConversationAI {
     this.maxContext = 10;
     this.trustLevels = ['guest', 'trusted', 'admin', 'owner'];
     this.itemHunter = new ItemHunter(bot);
+    
+    // Command patterns for priority parsing
+    this.COMMAND_PATTERNS = {
+      // Navigation
+      goto: /^!?(?:go(?:to)?|come\s+to|travel\s+to)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)/i,
+      
+      // Combat
+      attack: /^!?(?:attack|kill)\s+(.+)/i,
+      help: /^!?help\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)/i,
+      
+      // Spawning
+      spawn: /^!?spawn\s+(\d+)/i,
+      
+      // Items (explicit command forms)
+      find: /^!?(?:find|get)\s+(?:me\s+)?(?:a\s+|an\s+)?(.+)/i,
+      mine: /^!?mine\s+(.+)/i,
+      
+      // Status
+      status: /^!?(?:status|stats|swarm\s+status)/i,
+      
+      // Equipment
+      equip: /^!?equip\s+(.+)/i,
+      
+      // Other
+      stop: /^!?stop/i,
+      follow: /^!?follow\s+(.+)/i,
+      stay: /^!?stay/i,
+    };
   }
   
   // Strip bot name from message with various formats
@@ -13252,7 +13290,63 @@ class ConversationAI {
     return mentioned || isWhitelisted;
   }
   
+  tryParseCommand(message) {
+    if (!message) return null;
+    
+    for (const [commandType, pattern] of Object.entries(this.COMMAND_PATTERNS)) {
+      const match = message.match(pattern);
+      if (match) {
+        console.log(`[COMMAND-PARSE] Matched pattern: ${commandType}`);
+        return this.buildCommand(commandType, match);
+      }
+    }
+    return null;
+  }
+  
+  buildCommand(type, match) {
+    switch (type) {
+      case 'goto':
+        return {
+          type: 'goto',
+          x: parseInt(match[1]),
+          y: parseInt(match[2]),
+          z: parseInt(match[3])
+        };
+      
+      case 'attack':
+        return { type: 'attack', target: match[1].trim() };
+      
+      case 'help':
+        return {
+          type: 'help',
+          x: parseInt(match[1]),
+          y: parseInt(match[2]),
+          z: parseInt(match[3])
+        };
+      
+      case 'spawn':
+        return { type: 'spawn', count: parseInt(match[1]) };
+      
+      case 'find':
+        return { type: 'find', item: match[1].trim() };
+      
+      case 'mine':
+        return { type: 'mine', resource: match[1].trim() };
+      
+      case 'equip':
+        return { type: 'equip', item: match[1].trim() };
+      
+      case 'follow':
+        return { type: 'follow', player: match[1].trim() };
+      
+      default:
+        return { type };
+    }
+  }
+  
   async handleMessage(username, message) {
+    console.log(`[CHAT] ${username}: ${message}`);
+    
     // Handle /msg relay for trusted+ users
     if (message.startsWith('/msg ') || message.startsWith('/w ') || message.startsWith('/tell ')) {
       await this.handlePrivateMessage(username, message);
@@ -13267,13 +13361,23 @@ class ConversationAI {
     this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
     if (this.context.length > this.maxContext) this.context.shift();
     
-    // Check if it's a command (use normalized message)
+    // Step 1: TRY COMMAND PARSING FIRST (priority over item lookup)
+    const command = this.tryParseCommand(normalizedMessage);
+    if (command) {
+      console.log(`[COMMAND] Recognized: ${command.type}`);
+      await this.handleCommand(username, normalizedMessage, command);
+      return;
+    }
+    
+    // Step 2: If not a pattern command, check legacy command system
     if (this.isCommand(normalizedMessage)) {
+      console.log(`[COMMAND] Recognized via legacy system`);
       await this.handleCommand(username, normalizedMessage);
       return;
     }
     
-    // Generate response
+    // Step 3: Fallback to other responses
+    console.log(`[CHAT] No pattern matched`);
     const response = this.generateResponse(username, normalizedMessage);
     this.bot.chat(response);
   }
@@ -13343,10 +13447,135 @@ class ConversationAI {
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
-  async handleCommand(username, message) {
+  async handleCommand(username, message, command) {
     if (!this.isWhitelisted(username)) {
       this.bot.chat("Sorry, only whitelisted players can give me commands!");
       return;
+    }
+    
+    // Handle parsed command objects from pattern matching
+    if (command && command.type) {
+      console.log(`[COMMAND] Executing parsed command: ${command.type}`);
+      try {
+        switch (command.type) {
+          case 'goto':
+            console.log(`[GOTO] Navigating to ${command.x} ${command.y} ${command.z}`);
+            this.bot.chat(`heading to ${command.x} ${command.y} ${command.z}`);
+            if (this.bot.pathfinder && this.bot.entity) {
+              const goal = new goals.GoalNear(new Vec3(command.x, command.y, command.z), 1);
+              await this.bot.pathfinder.goto(goal).catch(err => {
+                console.error('[GOTO] Navigation error:', err.message);
+                this.bot.chat(`❌ Failed to navigate: ${err.message}`);
+              });
+            }
+            return;
+          
+          case 'attack':
+            console.log(`[ATTACK] Attacking ${command.target}`);
+            this.bot.chat(`attacking ${command.target}`);
+            const target = this.bot.players[command.target]?.entity;
+            if (target && this.bot.combatAI) {
+              await this.bot.combatAI.handleCombat(target).catch(err => {
+                console.error('[ATTACK] Combat error:', err.message);
+              });
+            } else {
+              this.bot.chat(`player not found: ${command.target}`);
+            }
+            return;
+          
+          case 'spawn':
+            console.log(`[SPAWN] Spawning ${command.count} bots`);
+            this.bot.chat(`spawning ${command.count} bots`);
+            if (this.bot.swarmCoordinator) {
+              await this.bot.swarmCoordinator.spawnBots(command.count).catch(err => {
+                console.error('[SPAWN] Spawn error:', err.message);
+                this.bot.chat(`❌ Failed to spawn bots: ${err.message}`);
+              });
+            } else {
+              this.bot.chat(`swarm coordinator not available`);
+            }
+            return;
+          
+          case 'help':
+            console.log(`[HELP] Help requested at ${command.x} ${command.y} ${command.z}`);
+            this.bot.chat(`sending help to ${command.x} ${command.y} ${command.z}`);
+            if (this.bot.swarmCoordinator) {
+              await this.bot.swarmCoordinator.sendHelp({
+                x: command.x,
+                y: command.y,
+                z: command.z
+              }).catch(err => {
+                console.error('[HELP] Error:', err.message);
+                this.bot.chat(`❌ Failed to send help: ${err.message}`);
+              });
+            }
+            return;
+          
+          case 'find':
+            console.log(`[FIND] Finding ${command.item}`);
+            this.bot.chat(`looking for ${command.item}`);
+            await this.handleItemFinderCommand(username, `find ${command.item}`);
+            return;
+          
+          case 'mine':
+            console.log(`[MINE] Mining ${command.resource}`);
+            this.bot.chat(`mining ${command.resource}`);
+            await this.handleItemFinderCommand(username, `mine ${command.resource}`);
+            return;
+          
+          case 'equip':
+            console.log(`[EQUIP] Equipping ${command.item}`);
+            this.bot.chat(`equipping ${command.item}`);
+            if (this.bot.equipmentManager) {
+              try {
+                const item = await this.bot.equipmentManager.equipBestArmor();
+                this.bot.chat(`✅ Equipped: ${command.item}`);
+              } catch (err) {
+                this.bot.chat(`❌ Failed to equip: ${err.message}`);
+              }
+            }
+            return;
+          
+          case 'follow':
+            console.log(`[FOLLOW] Following ${command.player}`);
+            this.bot.chat(`following ${command.player}`);
+            const followTarget = this.bot.players[command.player]?.entity;
+            if (followTarget) {
+              this.bot.pathfinder.setMovements(new Movements(this.bot));
+              const followGoal = new goals.GoalFollow(followTarget, 2);
+              await this.bot.pathfinder.goto(followGoal).catch(err => {
+                console.error('[FOLLOW] Error:', err.message);
+              });
+            } else {
+              this.bot.chat(`player not found: ${command.player}`);
+            }
+            return;
+          
+          case 'status':
+            console.log(`[STATUS] Reporting status`);
+            if (this.bot.entity) {
+              const pos = this.bot.entity.position;
+              this.bot.chat(`health: ${this.bot.health}/20, position: ${Math.round(pos.x)} ${Math.round(pos.y)} ${Math.round(pos.z)}`);
+            }
+            return;
+          
+          case 'stop':
+            console.log(`[STOP] Stopping current action`);
+            this.bot.chat(`stopping`);
+            if (this.bot.pathfinder) {
+              this.bot.pathfinder.stop();
+            }
+            return;
+          
+          default:
+            this.bot.chat(`unknown command: ${command.type}`);
+            return;
+        }
+      } catch (error) {
+        console.error(`[COMMAND] Error executing ${command.type}:`, error.message);
+        this.bot.chat(`error: ${error.message}`);
+        return;
+      }
     }
     
     const lower = message.toLowerCase();
