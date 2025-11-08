@@ -776,6 +776,21 @@ const config = {
     lastRepair: null,
     lastElytraSwap: null,
     schedulerActive: false
+  },
+  
+  // Bot spawning configuration
+  bot: {
+    name: 'HunterX',
+    defaultProtocolVersion: '1.19.2',
+    supportedVersions: [
+      '1.19.2',
+      '1.20',
+      '1.20.1',
+      '1.20.4'
+    ],
+    fallbackVersion: '1.19.2',
+    connectionTimeout: 10000,
+    maxRetries: 3
   }
 };
 
@@ -18174,20 +18189,20 @@ class BotSpawner {
   
   async detectServerType(serverIP) {
     console.log('[DETECTION] Testing server type...');
-    
+
     try {
       const [host, portStr] = serverIP.split(':');
       const port = parseInt(portStr) || 25565;
-      
+
       let testBot = null;
-      
+
       try {
         testBot = mineflayer.createBot({
           host,
           port,
           username: `TestBot_${Date.now().toString(36)}`,
           auth: 'offline',
-          version: false, // Auto-detect version
+          version: config.bot.defaultProtocolVersion, // Use default version
           hideErrors: true,
           checkTimeoutInterval: 30000,
           closeTimeout: 60000
@@ -18195,16 +18210,16 @@ class BotSpawner {
       } catch (createError) {
         console.error('[DETECTION] Failed to create test bot:', createError.message);
         // Default to cracked mode if we can't even create a bot
-        return { cracked: true, useProxy: true, error: createError.message };
+        return { cracked: true, useProxy: true, version: config.bot.defaultProtocolVersion, error: createError.message };
       }
-      
+
       return new Promise((resolve, reject) => {
         let timeout = setTimeout(() => {
           safeBotQuit(testBot, 'Server detection timeout');
           testBot = null;
           reject(new Error('Connection timeout'));
-        }, 10000);
-        
+        }, config.bot.connectionTimeout);
+
         const safeCleanup = () => {
           if (timeout) {
             clearTimeout(timeout);
@@ -18215,26 +18230,26 @@ class BotSpawner {
             testBot = null;
           }
         };
-        
+
         testBot.once('spawn', () => {
-          const detectedVersion = testBot.version || 'unknown';
+          const detectedVersion = testBot.version || config.bot.defaultProtocolVersion;
           safeCleanup();
-          console.log(`[DETECTION] ✓ Server is CRACKED - will use proxies (detected version: ${detectedVersion})`);
+          console.log(`[DETECTION] ✓ Server is CRACKED - will use proxies (version: ${detectedVersion})`);
           resolve({ cracked: true, useProxy: true, version: detectedVersion });
         });
-        
+
         testBot.once('error', (err) => {
-          const detectedVersion = testBot.version || 'unknown';
+          const detectedVersion = testBot.version || config.bot.defaultProtocolVersion;
           safeCleanup();
-          
-          if (err.message.includes('authentication') || 
+
+          if (err.message.includes('authentication') ||
               err.message.includes('premium') ||
               err.message.includes('Session') ||
               err.message.includes('authenticate')) {
-            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (detected version: ${detectedVersion})`);
+            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (version: ${detectedVersion})`);
             resolve({ cracked: false, useProxy: false, version: detectedVersion });
-          } else if (err.message.includes('ECONNRESET')) {
-            console.log(`[DETECTION] Connection reset - assuming CRACKED server (detected version: ${detectedVersion})`);
+          } else if (err.message.includes('ECONNRESET') || err.message.includes('reset')) {
+            console.log(`[DETECTION] Connection reset - assuming CRACKED server (version: ${detectedVersion})`);
             resolve({ cracked: true, useProxy: true, version: detectedVersion });
           } else {
             console.error('[DETECTION] Detection error:', err.message);
@@ -18242,24 +18257,24 @@ class BotSpawner {
             resolve({ cracked: true, useProxy: true, version: detectedVersion, error: err.message });
           }
         });
-        
+
         testBot.once('kicked', (reason) => {
-          const detectedVersion = testBot.version || 'unknown';
+          const detectedVersion = testBot.version || config.bot.defaultProtocolVersion;
           safeCleanup();
-          
+
           const reasonStr = typeof reason === 'string' ? reason : JSON.stringify(reason);
-          if (reasonStr.includes('authentication') || 
+          if (reasonStr.includes('authentication') ||
               reasonStr.includes('premium') ||
               reasonStr.includes('Session')) {
-            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (kicked, detected version: ${detectedVersion})`);
+            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (version: ${detectedVersion})`);
             resolve({ cracked: false, useProxy: false, version: detectedVersion });
           } else {
-            console.log(`[DETECTION] Kicked for unknown reason: ${reasonStr} (detected version: ${detectedVersion})`);
+            console.log(`[DETECTION] Kicked for unknown reason: ${reasonStr} (version: ${detectedVersion})`);
             // Default to cracked mode on unknown kicks
             resolve({ cracked: true, useProxy: true, version: detectedVersion, kickReason: reasonStr });
           }
         });
-        
+
         testBot.once('end', () => {
           if (timeout) {
             clearTimeout(timeout);
@@ -18271,11 +18286,16 @@ class BotSpawner {
     } catch (error) {
       console.error('[DETECTION] Critical error:', error.message);
       // Default to cracked mode on critical errors
-      return { cracked: true, useProxy: true, error: error.message };
+      return { cracked: true, useProxy: true, version: config.bot.defaultProtocolVersion, error: error.message };
     }
   }
   
   async spawnBot(serverIP, options = {}) {
+    // Always specify version - never let it be undefined
+    if (!options.version) {
+      options.version = config.bot.defaultProtocolVersion;
+    }
+
     if (!this.serverType) {
       try {
         this.serverType = await this.detectServerType(serverIP);
@@ -18283,153 +18303,239 @@ class BotSpawner {
       } catch (err) {
         console.error('[DETECTION] Failed to detect server type:', err.message);
         console.log('[DETECTION] Defaulting to cracked server mode');
-        this.serverType = { cracked: true, useProxy: true };
+        this.serverType = { cracked: true, useProxy: true, version: config.bot.defaultProtocolVersion };
         config.swarm.serverType = this.serverType;
       }
     }
-    
+
+    // Ensure serverType has a version
+    if (!this.serverType.version) {
+      this.serverType.version = config.bot.defaultProtocolVersion;
+    }
+
+    console.log(`[SPAWNER] Server type: ${this.serverType.cracked ? 'CRACKED' : 'PREMIUM'}`);
+    console.log(`[SPAWNER] Using: ${this.serverType.useProxy ? 'Proxy' : 'Local Account'}`);
+    console.log(`[SPAWNER] Protocol version: ${options.version}`);
+
     if (this.serverType.cracked) {
       if (this.getActiveBotCount() >= this.maxBots) {
         throw new Error(`Cannot spawn more bots - max limit ${this.maxBots} reached`);
       }
       return await this.createProxyBot(serverIP, options);
     }
-    
+
     // Premium servers - only one local account bot allowed
     if (this.activeBots.some(info => info.type === 'local')) {
       throw new Error('Local account bot already running');
     }
-    
+
     return await this.createLocalBot(serverIP, options);
   }
   
   async createProxyBot(serverIP, options) {
     const [host, portStr] = serverIP.split(':');
     const port = parseInt(portStr) || 25565;
-    
+
     if (!this.proxyManager) {
       this.proxyManager = new ProxyManager(null);
     }
-    
+
     const username = options.username || this.generateRandomUsername();
-    
-    console.log(`[SPAWNER] Creating proxy bot: ${username}`);
-    
-    const botOptions = {
-      host,
-      port,
-      username,
-      auth: 'offline',
-      version: options.version || this.serverType.version || '1.20.1'
-    };
-    
-    // Add proxy configuration if enabled
-    if (config.proxy && config.proxy.enabled && config.proxy.host && config.proxy.port) {
-      botOptions.connect = (client) => {
-        const SocksClient = require('socks').SocksClient;
-        
-        const proxyOptions = {
-          proxy: {
-            host: config.proxy.host,
-            port: parseInt(config.proxy.port),
-            type: 5
-          },
-          command: 'connect',
-          destination: {
-            host,
-            port
-          }
-        };
-        
-        // Add proxy authentication if provided
-        if (config.proxy.username && config.proxy.password) {
-          proxyOptions.proxy.userId = config.proxy.username;
-          proxyOptions.proxy.password = config.proxy.password;
-        }
-        
-        return SocksClient.createConnection(proxyOptions)
-          .then(info => {
-            const socket = info.socket;
-            client.setSocket(socket);
-            client.emit('connect');
-            return socket;
-          })
-          .catch(err => {
-            console.error(`[PROXY] Connection failed: ${err.message}`);
-            throw err;
-          });
-      };
+    const version = options.version || this.serverType.version || config.bot.defaultProtocolVersion;
+
+    // Validate protocol version
+    if (!version || version === 'unknown') {
+      console.error('[SPAWNER] ✗ Invalid protocol version:', version);
+      throw new Error(`Invalid protocol version: ${version}`);
     }
-    
-    const bot = mineflayer.createBot(botOptions);
-    
-    this.registerBot(bot, username, 'proxy', options.role);
-    return bot;
+
+    console.log(`[SPAWNER] Creating proxy bot: ${username}`);
+    console.log(`[SPAWNER] Server: ${host}:${port}, Version: ${version}`);
+
+    const createBotWithVersion = async (testVersion) => {
+      const botOptions = {
+        host,
+        port,
+        username,
+        auth: 'offline',
+        version: testVersion,
+        hideErrors: false
+      };
+
+      // Add proxy configuration if enabled
+      if (config.proxy && config.proxy.enabled && config.proxy.host && config.proxy.port) {
+        botOptions.connect = (client) => {
+          const SocksClient = require('socks').SocksClient;
+
+          const proxyOptions = {
+            proxy: {
+              host: config.proxy.host,
+              port: parseInt(config.proxy.port),
+              type: 5
+            },
+            command: 'connect',
+            destination: {
+              host,
+              port
+            }
+          };
+
+          // Add proxy authentication if provided
+          if (config.proxy.username && config.proxy.password) {
+            proxyOptions.proxy.userId = config.proxy.username;
+            proxyOptions.proxy.password = config.proxy.password;
+          }
+
+          return SocksClient.createConnection(proxyOptions)
+            .then(info => {
+              const socket = info.socket;
+              client.setSocket(socket);
+              client.emit('connect');
+              return socket;
+            })
+            .catch(err => {
+              console.error(`[PROXY] Connection failed: ${err.message}`);
+              throw err;
+            });
+        };
+      }
+
+      return mineflayer.createBot(botOptions);
+    };
+
+    try {
+      const bot = await createBotWithVersion(version);
+      this.registerBot(bot, username, 'proxy', options.role);
+      return bot;
+    } catch (error) {
+      console.error(`[SPAWNER] Failed to create proxy bot with version ${version}: ${error.message}`);
+
+      // Try alternative versions if there's a protocol error
+      if (error.message.includes('protocol') || error.message.includes('version')) {
+        console.log('[SPAWNER] Trying alternative versions...');
+
+        for (const altVersion of config.bot.supportedVersions) {
+          if (altVersion === version) continue; // Already tried
+
+          try {
+            console.log(`[SPAWNER] Attempting version: ${altVersion}`);
+            const bot = await createBotWithVersion(altVersion);
+            console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
+            this.registerBot(bot, username, 'proxy', options.role);
+            return bot;
+          } catch (altError) {
+            console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
+            continue;
+          }
+        }
+      }
+
+      throw error;
+    }
   }
   
   async createLocalBot(serverIP, options) {
     const [host, portStr] = serverIP.split(':');
     const port = parseInt(portStr) || 25565;
-    
+
     const account = config.localAccount;
     if (!account.username || !account.password) {
       throw new Error('Local account credentials not configured');
     }
-    
+
+    const version = options.version || this.serverType.version || config.bot.defaultProtocolVersion;
+
+    // Validate protocol version
+    if (!version || version === 'unknown') {
+      console.error('[SPAWNER] ✗ Invalid protocol version:', version);
+      throw new Error(`Invalid protocol version: ${version}`);
+    }
+
     const username = options.username || account.username;
     console.log(`[SPAWNER] Creating local account bot: ${username}`);
-    
-    const botOptions = {
-      host,
-      port,
-      username: account.username,
-      password: account.password,
-      auth: account.authType || 'microsoft',
-      version: options.version || this.serverType.version || '1.20.1'
-    };
-    
-    // Add proxy configuration if enabled
-    if (config.proxy && config.proxy.enabled && config.proxy.host && config.proxy.port) {
-      botOptions.connect = (client) => {
-        const SocksClient = require('socks').SocksClient;
-        
-        const proxyOptions = {
-          proxy: {
-            host: config.proxy.host,
-            port: parseInt(config.proxy.port),
-            type: 5
-          },
-          command: 'connect',
-          destination: {
-            host,
-            port
-          }
-        };
-        
-        // Add proxy authentication if provided
-        if (config.proxy.username && config.proxy.password) {
-          proxyOptions.proxy.userId = config.proxy.username;
-          proxyOptions.proxy.password = config.proxy.password;
-        }
-        
-        return SocksClient.createConnection(proxyOptions)
-          .then(info => {
-            const socket = info.socket;
-            client.setSocket(socket);
-            client.emit('connect');
-            return socket;
-          })
-          .catch(err => {
-            console.error(`[PROXY] Connection failed: ${err.message}`);
-            throw err;
-          });
+    console.log(`[SPAWNER] Server: ${host}:${port}, Version: ${version}`);
+
+    const createBotWithVersion = async (testVersion) => {
+      const botOptions = {
+        host,
+        port,
+        username: account.username,
+        password: account.password,
+        auth: account.authType || 'microsoft',
+        version: testVersion,
+        hideErrors: false
       };
+
+      // Add proxy configuration if enabled
+      if (config.proxy && config.proxy.enabled && config.proxy.host && config.proxy.port) {
+        botOptions.connect = (client) => {
+          const SocksClient = require('socks').SocksClient;
+
+          const proxyOptions = {
+            proxy: {
+              host: config.proxy.host,
+              port: parseInt(config.proxy.port),
+              type: 5
+            },
+            command: 'connect',
+            destination: {
+              host,
+              port
+            }
+          };
+
+          // Add proxy authentication if provided
+          if (config.proxy.username && config.proxy.password) {
+            proxyOptions.proxy.userId = config.proxy.username;
+            proxyOptions.proxy.password = config.proxy.password;
+          }
+
+          return SocksClient.createConnection(proxyOptions)
+            .then(info => {
+              const socket = info.socket;
+              client.setSocket(socket);
+              client.emit('connect');
+              return socket;
+            })
+            .catch(err => {
+              console.error(`[PROXY] Connection failed: ${err.message}`);
+              throw err;
+            });
+        };
+      }
+
+      return mineflayer.createBot(botOptions);
+    };
+
+    try {
+      const bot = await createBotWithVersion(version);
+      this.registerBot(bot, username, 'local', options.role);
+      return bot;
+    } catch (error) {
+      console.error(`[SPAWNER] Failed to create local bot with version ${version}: ${error.message}`);
+
+      // Try alternative versions if there's a protocol error
+      if (error.message.includes('protocol') || error.message.includes('version')) {
+        console.log('[SPAWNER] Trying alternative versions...');
+
+        for (const altVersion of config.bot.supportedVersions) {
+          if (altVersion === version) continue;
+
+          try {
+            console.log(`[SPAWNER] Attempting version: ${altVersion}`);
+            const bot = await createBotWithVersion(altVersion);
+            console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
+            this.registerBot(bot, username, 'local', options.role);
+            return bot;
+          } catch (altError) {
+            console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
+            continue;
+          }
+        }
+      }
+
+      throw error;
     }
-    
-    const bot = mineflayer.createBot(botOptions);
-    
-    this.registerBot(bot, username, 'local', options.role);
-    return bot;
   }
   
   registerBot(bot, username, type, role = null) {
