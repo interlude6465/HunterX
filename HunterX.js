@@ -1588,6 +1588,54 @@ class EquipmentManager {
     this.equipmentCheckInterval = 5000; // Check every 5 seconds
     
     console.log('[EQUIPMENT] Equipment Manager initialized');
+    
+    // Set up inventory change listener for auto-equipping
+    this.setupInventoryListener();
+  }
+  
+  // === INVENTORY LISTENER FOR AUTO-EQUIP ===
+  setupInventoryListener() {
+    // Set up listeners after bot spawns to ensure inventory is ready
+    if (this.bot.inventory) {
+      // Listen for inventory updates to auto-equip armor
+      this.bot.inventory.on('updateSlot', async (oldItem, newItem) => {
+        if (newItem && this.isArmorItem(newItem.name)) {
+          console.log(`[EQUIPMENT] Detected armor pickup: ${newItem.name}`);
+          await this.autoEquipArmor(newItem);
+        }
+      });
+      
+      console.log('[EQUIPMENT] Inventory listener setup complete');
+    } else {
+      // If inventory not ready, set up a listener for when it becomes available
+      this.bot.once('spawn', () => {
+        setTimeout(() => {
+          this.setupInventoryListener();
+        }, 1000); // Wait a second after spawn for inventory to initialize
+      });
+    }
+    
+    // Listen for entity drops (items dropped by players/entities)
+    this.bot.on('entitySpawn', (entity) => {
+      if (entity.name === 'item') {
+        console.log('[EQUIPMENT] Item dropped nearby');
+        // Check if it's armor that we might pick up
+        if (entity.metadata && entity.metadata[8] && entity.metadata[8].itemId) {
+          const itemName = entity.metadata[8].itemId;
+          if (this.isArmorItem(itemName)) {
+            console.log(`[EQUIPMENT] Armor item detected nearby: ${itemName}`);
+          }
+        }
+      }
+    });
+    
+    // Listen for player drop events
+    this.bot.on('playerCollect', (collector, collectedEntity) => {
+      if (collector.username === this.bot.username && collectedEntity.name === 'item') {
+        console.log('[EQUIPMENT] Bot collected an item');
+        // Inventory updateSlot event will handle auto-equip
+      }
+    });
   }
   
   // === AUTOMATIC ARMOR EQUIPPING ===
@@ -2225,6 +2273,114 @@ class EquipmentManager {
     await this.organizeHotbar();
     
     console.log('[EQUIPMENT] Equipment system initialization complete');
+  }
+  
+  // === ADDITIONAL METHODS FOR AUTO-EQUIP FUNCTIONALITY ===
+  
+  // Auto-equip armor when picked up
+  async autoEquipArmor(item) {
+    const slot = this.getSlotForItem(item.name);
+    if (!slot) return;
+    
+    try {
+      console.log(`[EQUIPMENT] Auto-equipping: ${item.name} to ${slot}`);
+      
+      // Method 1: Use bot.equip
+      if (this.bot.equip && typeof this.bot.equip === 'function') {
+        await this.bot.equip(item, slot);
+        console.log(`[EQUIPMENT] ✓ Equipped ${item.name}`);
+      }
+      // Method 2: Direct equipment change
+      else if (this.bot.setEquipment) {
+        await this.bot.setEquipment(item, slot);
+        console.log(`[EQUIPMENT] ✓ Equipped ${item.name}`);
+      }
+      // Method 3: Inventory manipulation
+      else {
+        const inventorySlot = this.getInventorySlot(slot);
+        if (inventorySlot) {
+          this.bot.inventory.moveSlotItem(item.slot, inventorySlot);
+          console.log(`[EQUIPMENT] ✓ Moved ${item.name} to ${slot}`);
+        }
+      }
+    } catch (error) {
+      console.error(`[EQUIPMENT] Failed to equip ${item.name}:`, error.message);
+    }
+  }
+  
+  isArmorItem(itemName) {
+    const armorItems = [
+      'helmet', 'chestplate', 'leggings', 'boots', 'shield', 'totem'
+    ];
+    return armorItems.some(armor => itemName.toLowerCase().includes(armor));
+  }
+  
+  getSlotForItem(itemName) {
+    const lower = itemName.toLowerCase();
+    
+    if (lower.includes('helmet')) return 'head';
+    if (lower.includes('chestplate')) return 'torso';
+    if (lower.includes('leggings')) return 'legs';
+    if (lower.includes('boots')) return 'feet';
+    if (lower.includes('shield')) return 'off-hand';
+    if (lower.includes('totem')) return 'off-hand';
+    if (lower.includes('sword') || lower.includes('axe')) return 'hand';
+    
+    return null;
+  }
+  
+  getInventorySlot(equipmentSlot) {
+    // Map equipment slots to inventory positions
+    const slots = {
+      'head': 5,      // Helmet slot
+      'torso': 6,     // Chestplate slot
+      'legs': 7,      // Leggings slot
+      'feet': 8,      // Boots slot
+      'hand': 36,     // Main hand
+      'off-hand': 45  // Off hand
+    };
+    return slots[equipmentSlot] || null;
+  }
+  
+  // Manual equip command handler
+  async equipItem(itemName) {
+    const items = this.bot.inventory.items();
+    const toEquip = items.find(i => i.name.includes(itemName.toLowerCase()));
+    
+    if (toEquip) {
+      const slot = this.getSlotForItem(toEquip.name);
+      if (slot) {
+        await this.autoEquipArmor(toEquip);
+        this.bot.chat(`equipped ${toEquip.name}`);
+        return true;
+      } else {
+        this.bot.chat(`${toEquip.name} cannot be equipped`);
+        return false;
+      }
+    } else {
+      this.bot.chat(`${itemName} not found in inventory`);
+      return false;
+    }
+  }
+  
+  // Check current equipment status
+  checkEquipment() {
+    console.log('[EQUIPMENT] Current equipment:');
+    console.log('Head:', this.bot.inventory.slots[5]?.name || 'empty');
+    console.log('Chest:', this.bot.inventory.slots[6]?.name || 'empty');
+    console.log('Legs:', this.bot.inventory.slots[7]?.name || 'empty');
+    console.log('Feet:', this.bot.inventory.slots[8]?.name || 'empty');
+    console.log('Main hand:', this.bot.inventory.slots[36]?.name || 'empty');
+    console.log('Off hand:', this.bot.inventory.slots[45]?.name || 'empty');
+    
+    return {
+      head: this.bot.inventory.slots[5]?.name || null,
+      chest: this.bot.inventory.slots[6]?.name || null,
+      legs: this.bot.inventory.slots[7]?.name || null,
+      feet: this.bot.inventory.slots[8]?.name || null,
+      mainHand: this.bot.inventory.slots[36]?.name || null,
+      offHand: this.bot.inventory.slots[45]?.name || null
+    };
   }
 }
 
@@ -15374,6 +15530,58 @@ class ConversationAI {
       return;
     }
     
+    // Equipment commands
+    if (lower.includes('equip')) {
+      const parts = message.toLowerCase().split(' ');
+      const itemName = parts[1];
+      
+      if (!itemName) {
+        this.bot.chat("Usage: 'equip <item>' - Example: 'equip diamond_sword'");
+        return;
+      }
+      
+      if (this.bot.equipmentManager) {
+        console.log(`[COMMAND] Equipping ${itemName}`);
+        const success = await this.bot.equipmentManager.equipItem(itemName);
+        if (success) {
+          this.bot.chat(`✅ Equipped ${itemName}`);
+        }
+      } else {
+        this.bot.chat("Equipment manager not available!");
+      }
+      return;
+    }
+    
+    if (lower.includes('check equip') || lower.includes('equipment status') || lower.includes('check equipment')) {
+      if (this.bot.equipmentManager) {
+        const equipment = this.bot.equipmentManager.checkEquipment();
+        const status = [
+          `🪖 Equipment Status:`,
+          `🎯 Head: ${equipment.head || 'empty'}`,
+          `👕 Chest: ${equipment.chest || 'empty'}`,
+          `👖 Legs: ${equipment.legs || 'empty'}`,
+          `👢 Feet: ${equipment.feet || 'empty'}`,
+          `⚔️ Main hand: ${equipment.mainHand || 'empty'}`,
+          `🛡️ Off hand: ${equipment.offHand || 'empty'}`
+        ].join('\n');
+        this.bot.chat(status);
+      } else {
+        this.bot.chat("Equipment manager not available!");
+      }
+      return;
+    }
+    
+    if (lower.includes('auto equip')) {
+      if (this.bot.equipmentManager) {
+        console.log('[COMMAND] Running auto-equip all armor');
+        await this.bot.equipmentManager.equipBestArmor();
+        this.bot.chat("✅ Auto-equipped best armor!");
+      } else {
+        this.bot.chat("Equipment manager not available!");
+      }
+      return;
+    }
+    
     // Default fallback for unrecognized commands
     this.bot.chat("I didn't understand that command. Try 'help' for options!");
   }
@@ -24800,11 +25008,6 @@ class TrapDetector {
 }
 
 class EscapeArtist {
-  constructor(bot) {
-    this.bot = bot;
-    this.trapDetector = new TrapDetector(bot);
-    this.escapeHistory = [];
-  }
   
   async executeEscape(danger) {
     console.log(`[ESCAPE] Danger detected: ${danger.type} (${danger.severity})`);
@@ -25031,15 +25234,6 @@ class EscapeArtist {
 }
 
 class DangerMonitor {
-  constructor(bot) {
-    this.bot = bot;
-    this.trapDetector = new TrapDetector(bot);
-    this.escapeArtist = new EscapeArtist(bot);
-    // Use the same trapDetector instance for consistency
-    this.escapeArtist.trapDetector = this.trapDetector;
-    this.lastHealth = bot.health;
-    this.monitoring = false;
-  }
   
   startMonitoring() {
     this.monitoring = true;
@@ -25118,9 +25312,6 @@ class DangerMonitor {
 }
 
 class SafeLogoutFinder {
-  constructor(bot) {
-      this.bot = bot;
-  }
 
   async findSafeLogoutSpot() {
     const currentPos = this.bot.entity.position;
@@ -25190,9 +25381,6 @@ class SafeLogoutFinder {
 }
 
 class DeathRecovery {
-  constructor(bot) {
-      this.bot = bot;
-  }
 
   async onDeath() {
     console.log('[DEATH] Bot died - initiating recovery...');
@@ -25231,6 +25419,324 @@ class DeathRecovery {
               console.log(`Collecting ${item.displayName}`);
           }
       }
+  }
+}
+
+ 
+  
+  
+  async initialize() {
+    console.log('[EQUIPMENT] Initializing equipment system...');
+    
+    // Verify bot.equip method exists
+    console.log('[EQUIPMENT] bot.equip exists?', typeof this.bot.equip);
+    if (typeof this.bot.equip !== 'function') {
+      console.log('[EQUIPMENT] bot.setEquipment exists?', typeof this.bot.setEquipment);
+      console.log('[EQUIPMENT] bot.inventory.moveSlotItem exists?', typeof this.bot.inventory.moveSlotItem);
+    }
+    
+    await this.equipBestArmor();
+    await this.equipBestWeapon('combat');
+    await this.equipOffhand();
+    await this.organizeHotbar();
+    console.log('[EQUIPMENT] Equipment system initialization complete');
+  }
+  
+  async equipBestArmor() {
+    const inventory = this.bot.inventory.items();
+    const armorSlots = ['head', 'torso', 'legs', 'feet'];
+    const equippedArmor = [];
+    
+    for (const slot of armorSlots) {
+      const bestArmor = this.findBestArmorForSlot(inventory, slot);
+      if (bestArmor) {
+        await this.bot.equip(bestArmor, slot);
+        equippedArmor.push(bestArmor.name);
+        console.log(`[ARMOR] Equipped ${bestArmor.name} in ${slot} slot`);
+      }
+    }
+    
+    if (equippedArmor.length > 0) {
+      console.log(`[ARMOR] Equipped armor set: ${equippedArmor.join(', ')}`);
+    }
+    
+    return equippedArmor;
+  }
+  
+  findBestArmorForSlot(inventory, slot) {
+    const slotType = this.getSlotType(slot);
+    if (!slotType) return null;
+    
+    const armorItems = inventory.filter(item => 
+      item.name.includes(slotType) && this.isArmor(item.name)
+    );
+    
+    if (armorItems.length === 0) return null;
+    
+    let bestArmor = null;
+    let bestValue = 0;
+    
+    for (const armor of armorItems) {
+      const armorValue = this.calculateArmorValue(armor);
+      if (armorValue > bestValue) {
+        bestValue = armorValue;
+        bestArmor = armor;
+      }
+    }
+    
+    return bestArmor;
+  }
+  
+  calculateArmorValue(item) {
+    if (!item || !item.name) return 0;
+    
+    let value = 0;
+    
+    // Base material value
+    for (const [material, priority] of Object.entries(this.materialPriority)) {
+      if (item.name.includes(material)) {
+        value += priority * 20;
+        break;
+      }
+    }
+    
+    // Add enchantment bonus
+    if (item.nbt && item.nbt.value && item.nbt.value.Enchantments) {
+      const enchantments = item.nbt.value.Enchantments.value || [];
+      for (const enchantment of enchantments) {
+        const enchantName = enchantment.id.value.replace('minecraft:', '');
+        const level = enchantment.lvl.value || 1;
+        const priority = this.enchantmentPriorities[enchantName] || 1;
+        value += priority * level * 2;
+      }
+    }
+    
+    return value;
+  }
+  
+  async equipBestWeapon(situation = 'combat') {
+    const inventory = this.bot.inventory.items();
+    const weapons = this.findWeapons(inventory);
+    
+    if (weapons.length === 0) {
+      console.log('[WEAPON] No weapons found in inventory');
+      return null;
+    }
+    
+    let bestWeapon = null;
+    let bestScore = -1;
+    
+    for (const weapon of weapons) {
+      const score = this.calculateWeaponScore(weapon, situation);
+      if (score > bestScore) {
+        bestScore = score;
+        bestWeapon = weapon;
+      }
+    }
+    
+    if (bestWeapon) {
+      await this.bot.equip(bestWeapon, 'hand');
+      console.log(`[WEAPON] Equipped ${bestWeapon.name} for ${situation} (score: ${bestScore.toFixed(1)})`);
+      return bestWeapon;
+    }
+    
+    return null;
+  }
+  
+  findWeapons(inventory) {
+    return inventory.filter(item => {
+      const name = item.name;
+      return name.includes('sword') || name.includes('axe') || 
+             name.includes('bow') || name.includes('crossbow') || name.includes('trident');
+    });
+  }
+  
+  calculateWeaponScore(item, situation) {
+    if (!item || !item.name) return 0;
+    
+    let score = 0;
+    const name = item.name;
+    
+    // Base material score
+    for (const [material, priority] of Object.entries(this.materialPriority)) {
+      if (name.includes(material)) {
+        score += priority * 20;
+        break;
+      }
+    }
+    
+    // Weapon type bonuses
+    if (situation === 'combat') {
+      if (name.includes('sword')) score += 30;
+      if (name.includes('axe')) score += 25;
+    }
+    
+    return score;
+  }
+  
+  async equipOffhand() {
+    const inventory = this.bot.inventory.items();
+    
+    // Priority: Totem > Shield > Arrow > Food
+    const priorities = [
+      { type: 'totem', items: ['totem_of_undying'] },
+      { type: 'shield', items: ['shield'] },
+      { type: 'food', items: ['golden_apple', 'cooked_beef'] }
+    ];
+    
+    for (const priority of priorities) {
+      for (const itemName of priority.items) {
+        const item = inventory.find(invItem => invItem.name === itemName);
+        if (item) {
+          await this.bot.equip(item, 'off-hand');
+          console.log(`[OFFHAND] Equipped ${item.name} in off-hand`);
+          return item;
+        }
+      }
+    }
+    
+    return null;
+  }
+  
+  async organizeHotbar() {
+    console.log('[HOTBAR] Organizing hotbar...');
+    // Implementation would organize hotbar items
+  }
+  
+  async switchToCombatMode() {
+    console.log('[EQUIPMENT] Switching to combat mode');
+    await this.equipBestWeapon('combat');
+    await this.equipOffhand();
+  }
+  
+  async switchToTaskMode(task) {
+    console.log(`[EQUIPMENT] Switching to ${task} mode`);
+    // Implementation would switch to appropriate tool
+  }
+  
+  async update() {
+    // Implementation would check for damaged items, etc.
+  }
+  
+  // Auto-equip armor when picked up
+  async autoEquipArmor(item) {
+    const slot = this.getSlotForItem(item.name);
+    if (!slot) return;
+    
+    try {
+      console.log(`[EQUIPMENT] Auto-equipping: ${item.name} to ${slot}`);
+      
+      // Method 1: Use bot.equip
+      if (this.bot.equip && typeof this.bot.equip === 'function') {
+        await this.bot.equip(item, slot);
+        console.log(`[EQUIPMENT] ✓ Equipped ${item.name}`);
+      }
+      // Method 2: Direct equipment change
+      else if (this.bot.setEquipment) {
+        await this.bot.setEquipment(item, slot);
+        console.log(`[EQUIPMENT] ✓ Equipped ${item.name}`);
+      }
+      // Method 3: Inventory manipulation
+      else {
+        const inventorySlot = this.getInventorySlot(slot);
+        if (inventorySlot) {
+          this.bot.inventory.moveSlotItem(item.slot, inventorySlot);
+          console.log(`[EQUIPMENT] ✓ Moved ${item.name} to ${slot}`);
+        }
+      }
+    } catch (error) {
+      console.error(`[EQUIPMENT] Failed to equip ${item.name}:`, error.message);
+    }
+  }
+  
+  isArmorItem(itemName) {
+    const armorItems = [
+      'helmet', 'chestplate', 'leggings', 'boots', 'shield', 'totem'
+    ];
+    return armorItems.some(armor => itemName.toLowerCase().includes(armor));
+  }
+  
+  isArmor(name) {
+    return name.includes('helmet') || name.includes('chestplate') || 
+           name.includes('leggings') || name.includes('boots');
+  }
+  
+  getSlotForItem(itemName) {
+    const lower = itemName.toLowerCase();
+    
+    if (lower.includes('helmet')) return 'head';
+    if (lower.includes('chestplate')) return 'torso';
+    if (lower.includes('leggings')) return 'legs';
+    if (lower.includes('boots')) return 'feet';
+    if (lower.includes('shield')) return 'off-hand';
+    if (lower.includes('totem')) return 'off-hand';
+    if (lower.includes('sword') || lower.includes('axe')) return 'hand';
+    
+    return null;
+  }
+  
+  getInventorySlot(equipmentSlot) {
+    // Map equipment slots to inventory positions
+    const slots = {
+      'head': 5,      // Helmet slot
+      'torso': 6,     // Chestplate slot
+      'legs': 7,      // Leggings slot
+      'feet': 8,      // Boots slot
+      'hand': 36,     // Main hand
+      'off-hand': 45  // Off hand
+    };
+    return slots[equipmentSlot] || null;
+  }
+  
+  getSlotType(slot) {
+    const slotMap = {
+      'head': 'helmet',
+      'torso': 'chestplate',
+      'legs': 'leggings',
+      'feet': 'boots'
+    };
+    return slotMap[slot];
+  }
+  
+  // Manual equip command handler
+  async equipItem(itemName) {
+    const items = this.bot.inventory.items();
+    const toEquip = items.find(i => i.name.includes(itemName.toLowerCase()));
+    
+    if (toEquip) {
+      const slot = this.getSlotForItem(toEquip.name);
+      if (slot) {
+        await this.autoEquipArmor(toEquip);
+        this.bot.chat(`equipped ${toEquip.name}`);
+        return true;
+      } else {
+        this.bot.chat(`${toEquip.name} cannot be equipped`);
+        return false;
+      }
+    } else {
+      this.bot.chat(`${itemName} not found in inventory`);
+      return false;
+    }
+  }
+  
+  // Check current equipment status
+  checkEquipment() {
+    console.log('[EQUIPMENT] Current equipment:');
+    console.log('Head:', this.bot.inventory.slots[5]?.name || 'empty');
+    console.log('Chest:', this.bot.inventory.slots[6]?.name || 'empty');
+    console.log('Legs:', this.bot.inventory.slots[7]?.name || 'empty');
+    console.log('Feet:', this.bot.inventory.slots[8]?.name || 'empty');
+    console.log('Main hand:', this.bot.inventory.slots[36]?.name || 'empty');
+    console.log('Off hand:', this.bot.inventory.slots[45]?.name || 'empty');
+    
+    return {
+      head: this.bot.inventory.slots[5]?.name || null,
+      chest: this.bot.inventory.slots[6]?.name || null,
+      legs: this.bot.inventory.slots[7]?.name || null,
+      feet: this.bot.inventory.slots[8]?.name || null,
+      mainHand: this.bot.inventory.slots[36]?.name || null,
+      offHand: this.bot.inventory.slots[45]?.name || null
+    };
   }
 }
 
