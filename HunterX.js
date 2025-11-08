@@ -571,28 +571,38 @@ const config = {
   
   // Combat settings
   combat: {
-    maxSelfDamage: 6,
-    minEffectiveDamage: 4,
-    crystalRange: 5,
-    engageRange: 20,
-    retreatHealth: 8,
-    totemThreshold: 8,
-    autoLoot: true,
-    smartEquip: true,
-    logger: {
-      enabled: true,
-      healthThreshold: 6,
-      multipleAttackers: 2,
-      triggerScore: 60,
-      cooldownMs: 20000,
-      escapeDistance: 120,
-      sweepRadius: 16,
-      distressOnReconnect: true
-    },
-    emergency: {
-      pendingLog: null,
-      lastTrigger: null
-    }
+   maxSelfDamage: 6,
+   minEffectiveDamage: 4,
+   crystalRange: 5,
+   engageRange: 20,
+   retreatHealth: 8,
+   totemThreshold: 8,
+   autoLoot: true,
+   smartEquip: true,
+   autoEngagement: {
+     autoEngageHostileMobs: true,
+     engagementDistance: 2,
+     monitorInterval: 200,
+     minHealthToFight: 4,
+     requireMinHealth: true,
+     avoidInWater: true,
+     requireArmor: true,
+     focusSingleMob: true
+   },
+   logger: {
+     enabled: true,
+     healthThreshold: 6,
+     multipleAttackers: 2,
+     triggerScore: 60,
+     cooldownMs: 20000,
+     escapeDistance: 120,
+     sweepRadius: 16,
+     distressOnReconnect: true
+   },
+   emergency: {
+     pendingLog: null,
+     lastTrigger: null
+   }
   },
   
   lifesteal: {
@@ -8420,11 +8430,37 @@ class SwarmManager {
 }
 
 
+// === HOSTILE MOB DETECTOR ===
+class HostileMobDetector {
+  constructor() {
+    this.HOSTILE_MOBS = [
+      'zombie', 'creeper', 'skeleton', 'spider', 'cave_spider',
+      'enderman', 'witch', 'wither_skeleton', 'blaze', 'ghast',
+      'magma_cube', 'silverfish', 'endermite', 'evoker', 'vindicator',
+      'pillager', 'ravager', 'drowned', 'husk', 'stray',
+      'piglin', 'piglin_brute', 'zoglin', 'phantom'
+    ];
+  }
+  
+  isHostileMob(entity) {
+    if (!entity || !entity.name) return false;
+    
+    const mobName = entity.name.toLowerCase();
+    return this.HOSTILE_MOBS.some(hostile => mobName.includes(hostile));
+  }
+  
+  isPlayerAttacking(player) {
+    // Player has their arm raised = attacking
+    return player.metadata && player.metadata[1] === 1;
+  }
+}
+
 // === ADVANCED COMBAT AI (from v19 - enhanced) ===
 class CombatAI {
   constructor(bot) {
     this.bot = bot;
     this.inCombat = false;
+    this.isCurrentlyFighting = false;
     this.currentTarget = null;
     this.projectileAI = new ProjectileAI(bot);
     this.maceAI = new MaceWeaponAI(bot);
@@ -8931,6 +8967,135 @@ class CombatAI {
     
     if (this.crystalPvP) {
       this.crystalPvP.logPerformance();
+    }
+  }
+
+  // === AUTO-COMBAT FOR NEARBY HOSTILE MOBS ===
+  async monitorNearbyMobs() {
+    const engagementDistance = config.combat.autoEngagement?.engagementDistance || 2;
+    const monitorInterval = config.combat.autoEngagement?.monitorInterval || 200;
+    
+    this.mobMonitorHandle = safeSetInterval(async () => {
+      if (!config.combat.autoEngagement?.autoEngageHostileMobs || this.isCurrentlyFighting) {
+        return;
+      }
+      
+      try {
+        if (!this.bot.entity || !this.bot.entity.position) {
+          return;
+        }
+        
+        const nearbyEntities = Object.values(this.bot.entities);
+        
+        for (const entity of nearbyEntities) {
+          if (!entity || !entity.position) continue;
+          
+          const distance = this.bot.entity.position.distanceTo(entity.position);
+          
+          // Check if hostile mob within engagement distance
+          if (distance <= engagementDistance) {
+            if (this.hostileMobDetector && this.hostileMobDetector.isHostileMob(entity)) {
+              console.log(`[COMBAT] ⚠️ Hostile mob detected ${distance.toFixed(1)} blocks away: ${entity.name}`);
+              await this.autoEngageMob(entity);
+              break; // Focus on one mob at a time
+            }
+          }
+          
+          // Check if player is attacking us
+          if (entity.type === 'player' && distance <= engagementDistance) {
+            if (this.hostileMobDetector && this.hostileMobDetector.isPlayerAttacking(entity)) {
+              console.log(`[COMBAT] ⚠️ Player ${entity.username} attacking at ${distance.toFixed(1)} blocks!`);
+              await this.autoEngageMob(entity);
+              break;
+            }
+          }
+        }
+      } catch (err) {
+        console.log(`[COMBAT] Mob monitoring error: ${err.message}`);
+      }
+    }, monitorInterval, 'HostileMobMonitor');
+  }
+  
+  async autoEngageMob(mobEntity) {
+    if (this.isCurrentlyFighting) {
+      console.log('[COMBAT] Already fighting, ignoring new mob');
+      return;
+    }
+    
+    // Safeguard: Don't fight if low health
+    if (config.combat.autoEngagement?.requireMinHealth && this.bot.health < (config.combat.autoEngagement?.minHealthToFight || 4)) {
+      console.log(`[COMBAT] ⚠️ Too low health (${this.bot.health}), avoiding fight`);
+      // Try to heal if possible
+      await this.heal();
+      return;
+    }
+    
+    // Safeguard: Don't fight if no armor
+    if (config.combat.autoEngagement?.requireArmor) {
+      const hasHelmet = this.bot.inventory.slots[5]; // Helmet slot
+      if (!hasHelmet) {
+        console.log('[COMBAT] ⚠️ No armor, avoiding fight');
+        return;
+      }
+    }
+    
+    // Safeguard: Don't fight if in water and mob is dangerous
+    if (config.combat.autoEngagement?.avoidInWater && this.bot.isInWater && this.isDangerousMob(mobEntity)) {
+      console.log('[COMBAT] ⚠️ In water, avoiding dangerous mob');
+      return;
+    }
+    
+    // Check if already fighting
+    if (this.inCombat) {
+      console.log('[COMBAT] Already in combat, ignoring auto-engagement');
+      return;
+    }
+    
+    console.log(`[COMBAT] 🔥 Auto-engaging: ${mobEntity.name}`);
+    this.isCurrentlyFighting = true;
+    
+    try {
+      // Equip combat gear
+      if (this.bot.equipmentManager) {
+        await this.bot.equipmentManager.switchToTaskMode('combat');
+      }
+      
+      // Engage combat
+      await this.handleCombat(mobEntity);
+      
+    } catch (error) {
+      console.error('[COMBAT] Auto-combat error:', error.message);
+    } finally {
+      this.isCurrentlyFighting = false;
+    }
+  }
+  
+  isDangerousMob(entity) {
+    const dangerousMobs = ['creeper', 'witch', 'wither_skeleton', 'blaze'];
+    return dangerousMobs.some(m => entity.name.toLowerCase().includes(m));
+  }
+  
+  async heal() {
+    const healingItems = this.bot.inventory.items().filter(item => 
+      item.name.includes('potion') && item.name.includes('health')
+    );
+    
+    if (healingItems.length > 0) {
+      try {
+        await this.bot.equip(healingItems[0], 'hand');
+        this.bot.activateItem();
+        await sleep(500);
+      } catch (err) {
+        console.log(`[COMBAT] Failed to use healing item: ${err.message}`);
+      }
+    }
+  }
+  
+  stopMonitoring() {
+    if (this.mobMonitorHandle) {
+      clearTrackedInterval(this.mobMonitorHandle);
+      this.mobMonitorHandle = null;
+      console.log('[COMBAT] Hostile mob monitor stopped');
     }
   }
 
@@ -21809,6 +21974,7 @@ async function launchBot(username, role = 'fighter') {
   globalBot = bot;
 
   const combatAI = new CombatAI(bot);
+  combatAI.hostileMobDetector = new HostileMobDetector();
   const combatLogger = new CombatLogger(bot, combatAI);
   const conversationAI = new ConversationAI(bot);
   const schematicLoader = new SchematicLoader(bot);
@@ -22414,6 +22580,12 @@ async function launchBot(username, role = 'fighter') {
       }
     });
     
+    // Start monitoring for nearby hostile mobs (passive defense)
+    if (combatAI && config.combat.autoEngagement?.autoEngageHostileMobs) {
+      await combatAI.monitorNearbyMobs();
+      console.log('[BOT] ✓ Hostile mob auto-combat enabled');
+    }
+    
     // Totem pop detection (for metrics)
     bot.on('entityEffect', (entity, effect) => {
       if (entity === bot.entity && effect.id === 10) { // Regeneration effect from totem
@@ -22472,6 +22644,10 @@ async function launchBot(username, role = 'fighter') {
       // Break all circular references (Issue #5)
       if (bot.combatAI) {
         try {
+          // Stop monitoring for hostile mobs
+          if (bot.combatAI.stopMonitoring) {
+            bot.combatAI.stopMonitoring();
+          }
           if (bot.combatAI.crystalPvP) {
             bot.combatAI.crystalPvP.bot = null;
             bot.combatAI.crystalPvP = null;
@@ -22483,6 +22659,9 @@ async function launchBot(username, role = 'fighter') {
           if (bot.combatAI.maceAI) {
             bot.combatAI.maceAI.bot = null;
             bot.combatAI.maceAI = null;
+          }
+          if (bot.combatAI.hostileMobDetector) {
+            bot.combatAI.hostileMobDetector = null;
           }
           bot.combatAI.bot = null;
           bot.combatAI = null;
