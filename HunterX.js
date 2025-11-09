@@ -14470,7 +14470,10 @@ class ConversationAI {
 
       // Status commands
       'come to', 'come here', 'go to', 'craft', '!equip', '!status', '!test', 'gear up', 'get geared',
-      'start dupe', 'test dupe', 'stop dupe', 'dupe report', 'dupe stats', 'ultimate dupe'
+      'start dupe', 'test dupe', 'stop dupe', 'dupe report', 'dupe stats', 'ultimate dupe',
+      
+      // Location & Status reporting
+      'where are you', 'status report', 'what is my location', 'where am i', 'my location'
     ];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
@@ -14485,6 +14488,92 @@ class ConversationAI {
     
     const lower = message.toLowerCase();
     config.dangerEscape = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
+    
+    // Status report command
+    if (lower.includes('status report')) {
+      console.log(`[COMMAND] Status report requested by ${username}`);
+      const snapshot = await this.getBotStatusSnapshot(username);
+      const report = this.formatStatusReport(snapshot, username);
+      
+      // Track in config for dashboard
+      if (!config.conversationMetrics.recentStatusRequests) {
+        config.conversationMetrics.recentStatusRequests = [];
+      }
+      config.conversationMetrics.recentStatusRequests.push({
+        username,
+        type: 'status',
+        timestamp: Date.now()
+      });
+      // Keep only last 20
+      if (config.conversationMetrics.recentStatusRequests.length > 20) {
+        config.conversationMetrics.recentStatusRequests.shift();
+      }
+      
+      // Send report line by line
+      for (const line of report) {
+        this.bot.chat(line);
+      }
+      return;
+    }
+    
+    // Bot location command
+    if (lower.includes('where are you')) {
+      console.log(`[COMMAND] Location request by ${username}`);
+      const snapshot = await this.getBotStatusSnapshot(username);
+      const report = this.formatLocationReport(snapshot, username);
+      
+      // Track in config for dashboard
+      if (!config.conversationMetrics.recentStatusRequests) {
+        config.conversationMetrics.recentStatusRequests = [];
+      }
+      config.conversationMetrics.recentStatusRequests.push({
+        username,
+        type: 'location',
+        timestamp: Date.now()
+      });
+      if (config.conversationMetrics.recentStatusRequests.length > 20) {
+        config.conversationMetrics.recentStatusRequests.shift();
+      }
+      
+      // Send report line by line
+      for (const line of report) {
+        this.bot.chat(line);
+      }
+      return;
+    }
+    
+    // Player location command
+    if (lower.includes('what is my location') || lower.includes('where am i') || lower.includes('my location')) {
+      console.log(`[COMMAND] Player location request by ${username}`);
+      
+      const player = this.bot.players[username];
+      if (!player || !player.entity) {
+        this.bot.chat(`Sorry ${username}, I can't see you right now!`);
+        return;
+      }
+      
+      const snapshot = await this.getBotStatusSnapshot(username);
+      const report = this.formatLocationReport(snapshot, username, player.entity.position);
+      
+      // Track in config for dashboard
+      if (!config.conversationMetrics.recentStatusRequests) {
+        config.conversationMetrics.recentStatusRequests = [];
+      }
+      config.conversationMetrics.recentStatusRequests.push({
+        username,
+        type: 'player_location',
+        timestamp: Date.now()
+      });
+      if (config.conversationMetrics.recentStatusRequests.length > 20) {
+        config.conversationMetrics.recentStatusRequests.shift();
+      }
+      
+      // Send report line by line
+      for (const line of report) {
+        this.bot.chat(line);
+      }
+      return;
+    }
     
     if (lower.startsWith('!status')) {
       this.broadcastEscapeStatus(true);
@@ -15901,6 +15990,209 @@ class ConversationAI {
      return idMatch[1];
    }
    return null;
+  }
+
+  async getBotStatusSnapshot(username) {
+    const pos = this.bot.entity.position;
+    const hasPreciseAccess = this.hasTrustLevel(username, 'trusted');
+    
+    // Get biome if available
+    let biome = 'unknown';
+    try {
+      const biomeBlock = this.bot.blockAt(pos);
+      if (biomeBlock && biomeBlock.biome) {
+        biome = biomeBlock.biome.name || 'unknown';
+      }
+    } catch (err) {
+      // Biome not available
+    }
+    
+    // Get dimension
+    const dimension = this.bot.game?.dimension || 'unknown';
+    
+    // Get nearby players
+    const nearbyPlayers = getNearbyPlayers(this.bot, 50);
+    
+    // Get nearby mobs
+    let nearbyMobs = [];
+    try {
+      const entities = Object.values(this.bot.entities);
+      nearbyMobs = entities.filter(e => {
+        if (!e.position || e.type !== 'mob') return false;
+        const dist = e.position.distanceTo(pos);
+        return dist < 20;
+      }).map(e => ({
+        name: e.name || e.displayName || 'unknown',
+        distance: Math.round(e.position.distanceTo(pos))
+      }));
+    } catch (err) {
+      // Entities not available
+    }
+    
+    // Get activity
+    const activity = determineBotActivity(this.bot);
+    
+    // Get pathfinder ETA if moving
+    let eta = null;
+    if (this.bot.pathfinder && this.bot.pathfinder.isMoving && this.bot.pathfinder.isMoving()) {
+      try {
+        const goal = this.bot.pathfinder.goal;
+        if (goal && this.bot.pathfinder.getPathTo) {
+          const path = this.bot.pathfinder.getPathTo(goal);
+          if (path && path.cost) {
+            eta = Math.round(path.cost / 4.3); // Convert blocks to seconds (approx walking speed)
+          }
+        }
+      } catch (err) {
+        // Pathfinder info not available
+      }
+    }
+    
+    // Get armor info
+    const armorSlots = this.bot.inventory.slots.slice(5, 9); // Armor slots
+    const armorCount = armorSlots.filter(s => s !== null).length;
+    const armorDurability = armorSlots.filter(s => s !== null).map(s => {
+      if (s.durabilityUsed !== undefined && s.maxDurability !== undefined) {
+        return Math.round(((s.maxDurability - s.durabilityUsed) / s.maxDurability) * 100);
+      }
+      return 100;
+    });
+    const avgArmor = armorDurability.length > 0 
+      ? Math.round(armorDurability.reduce((a, b) => a + b, 0) / armorDurability.length)
+      : 0;
+    
+    // Get active task
+    const activeTask = config.tasks.current ? config.tasks.current.type || 'unknown' : null;
+    
+    return {
+      position: hasPreciseAccess ? {
+        x: Math.round(pos.x),
+        y: Math.round(pos.y),
+        z: Math.round(pos.z)
+      } : null,
+      biome: hasPreciseAccess ? biome : null,
+      dimension: hasPreciseAccess ? dimension : null,
+      activity,
+      nearbyPlayers: nearbyPlayers.map(p => ({
+        name: p.username,
+        distance: Math.round(p.distance)
+      })),
+      nearbyMobs: hasPreciseAccess ? nearbyMobs : null,
+      health: Math.round(this.bot.health),
+      food: typeof this.bot.food === 'number' ? Math.round(this.bot.food) : null,
+      armorEquipped: armorCount,
+      armorDurability: avgArmor,
+      activeTask,
+      eta: hasPreciseAccess ? eta : null,
+      timestamp: Date.now()
+    };
+  }
+
+  formatStatusReport(snapshot, username) {
+    const lines = [];
+    
+    lines.push(`📊 Status Report for ${this.bot.username}`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━`);
+    
+    // Activity
+    lines.push(`🔹 Activity: ${snapshot.activity}`);
+    
+    // Location (only for trusted+)
+    if (snapshot.position) {
+      lines.push(`📍 Location: ${snapshot.position.x}, ${snapshot.position.y}, ${snapshot.position.z}`);
+      if (snapshot.biome) {
+        lines.push(`🌍 Biome: ${snapshot.biome}`);
+      }
+      if (snapshot.dimension) {
+        lines.push(`🌐 Dimension: ${snapshot.dimension}`);
+      }
+    } else {
+      lines.push(`📍 Location: [Restricted - Trusted+ only]`);
+    }
+    
+    // Health and food
+    lines.push(`❤️  Health: ${snapshot.health}/20`);
+    if (snapshot.food !== null) {
+      lines.push(`🍖 Food: ${snapshot.food}/20`);
+    }
+    
+    // Armor
+    lines.push(`🛡️  Armor: ${snapshot.armorEquipped}/4 pieces (${snapshot.armorDurability}% durability)`);
+    
+    // Active task
+    if (snapshot.activeTask) {
+      lines.push(`📋 Task: ${snapshot.activeTask}`);
+    }
+    
+    // ETA (only for trusted+)
+    if (snapshot.eta !== null) {
+      lines.push(`⏱️  ETA: ~${snapshot.eta}s`);
+    }
+    
+    // Nearby players
+    if (snapshot.nearbyPlayers.length > 0) {
+      const playerList = snapshot.nearbyPlayers.map(p => `${p.name} (${p.distance}m)`).join(', ');
+      lines.push(`👥 Nearby players: ${playerList}`);
+    } else {
+      lines.push(`👥 Nearby players: None`);
+    }
+    
+    // Nearby mobs (only for trusted+)
+    if (snapshot.nearbyMobs) {
+      if (snapshot.nearbyMobs.length > 0) {
+        const mobList = snapshot.nearbyMobs.slice(0, 3).map(m => `${m.name} (${m.distance}m)`).join(', ');
+        lines.push(`🐺 Nearby mobs: ${mobList}${snapshot.nearbyMobs.length > 3 ? ` +${snapshot.nearbyMobs.length - 3} more` : ''}`);
+      }
+    }
+    
+    return lines;
+  }
+
+  formatLocationReport(snapshot, username, playerPos = null) {
+    const lines = [];
+    
+    // If requesting own location
+    if (playerPos) {
+      lines.push(`📍 Your Location, ${username}`);
+      lines.push(`━━━━━━━━━━━━━━━━━━━━━━`);
+      lines.push(`Coordinates: ${Math.round(playerPos.x)}, ${Math.round(playerPos.y)}, ${Math.round(playerPos.z)}`);
+      
+      // Add bot's location relative to player (only for trusted+)
+      if (snapshot.position) {
+        const dx = snapshot.position.x - playerPos.x;
+        const dy = snapshot.position.y - playerPos.y;
+        const dz = snapshot.position.z - playerPos.z;
+        const dist = Math.round(Math.sqrt(dx*dx + dy*dy + dz*dz));
+        
+        lines.push(`📏 Distance to me: ${dist} blocks`);
+        
+        // Cardinal direction
+        const angle = Math.atan2(dz, dx);
+        const directions = ['East', 'Southeast', 'South', 'Southwest', 'West', 'Northwest', 'North', 'Northeast'];
+        const dirIndex = Math.round((angle / Math.PI) * 4 + 4) % 8;
+        lines.push(`🧭 Direction: I'm ${directions[dirIndex]} of you`);
+      }
+    } else {
+      // Requesting bot location
+      lines.push(`📍 My Location`);
+      lines.push(`━━━━━━━━━━━━━━━━━━━━━━`);
+      
+      if (snapshot.position) {
+        lines.push(`Coordinates: ${snapshot.position.x}, ${snapshot.position.y}, ${snapshot.position.z}`);
+        if (snapshot.biome) {
+          lines.push(`Biome: ${snapshot.biome}`);
+        }
+        if (snapshot.dimension) {
+          lines.push(`Dimension: ${snapshot.dimension}`);
+        }
+        lines.push(`Activity: ${snapshot.activity}`);
+      } else {
+        lines.push(`[Restricted - Trusted+ only]`);
+        lines.push(`Ask an admin for access to location data.`);
+      }
+    }
+    
+    return lines;
   }
 
   extractItem(message) {
@@ -20959,10 +21251,22 @@ const dashboardHTML = `
     
     <div class="panel">
       <h2>🤖 Bot Status</h2>
+      <div class="stat"><span>Activity:</span><span id="botActivity">idle</span></div>
       <div class="stat"><span>Health:</span><span id="health">20</span></div>
+      <div class="stat"><span>Food:</span><span id="food">20</span></div>
       <div class="stat"><span>Position:</span><span id="position">0, 0, 0</span></div>
+      <div class="stat"><span>Dimension:</span><span id="dimension">unknown</span></div>
       <div class="stat"><span>Current Task:</span><span id="task">Idle</span></div>
+      <div class="stat"><span>Nearby Players:</span><span id="nearbyPlayers">0</span></div>
       <div class="stat"><span>Inventory:</span><span id="inventory">Empty</span></div>
+    </div>
+    
+    <div class="panel">
+      <h2>📊 Status Requests</h2>
+      <div class="stat"><span>Total Requests:</span><span id="statusRequestCount">0</span></div>
+      <div id="statusRequestList" style="margin-top: 10px; max-height: 200px; overflow-y: auto; font-size: 12px;">
+        <em>No recent status requests</em>
+      </div>
     </div>
     
     <div class="panel">
@@ -21453,10 +21757,42 @@ const dashboardHTML = `
         document.getElementById('dupePlugins').textContent = d.dupe.pluginsAnalyzed;
         document.getElementById('dupeExploits').textContent = d.dupe.activeExploits;
         
-        document.getElementById('health').textContent = d.bot.health;
-        document.getElementById('position').textContent = d.bot.position;
+        // Update bot status
+        if (d.botStatus) {
+          document.getElementById('botActivity').textContent = d.botStatus.activity || 'idle';
+          document.getElementById('health').textContent = d.botStatus.health || 20;
+          document.getElementById('food').textContent = d.botStatus.food || 20;
+          document.getElementById('position').textContent = d.botStatus.position 
+            ? \`\${d.botStatus.position.x}, \${d.botStatus.position.y}, \${d.botStatus.position.z}\`
+            : 'Unknown';
+          document.getElementById('dimension').textContent = d.botStatus.dimension || 'unknown';
+          document.getElementById('nearbyPlayers').textContent = d.botStatus.nearbyPlayers?.length || 0;
+        } else {
+          // Fallback to old format
+          document.getElementById('health').textContent = d.bot.health;
+          document.getElementById('position').textContent = d.bot.position;
+        }
         document.getElementById('task').textContent = d.bot.task || 'Idle';
         document.getElementById('inventory').textContent = d.bot.inventory;
+        
+        // Update status requests
+        if (d.conversation && d.conversation.recentStatusRequests) {
+          const requests = d.conversation.recentStatusRequests;
+          document.getElementById('statusRequestCount').textContent = requests.length;
+          
+          if (requests.length > 0) {
+            document.getElementById('statusRequestList').innerHTML = requests.slice(-10).reverse().map(req => {
+              const timeAgo = Math.floor((Date.now() - req.timestamp) / 1000);
+              const typeEmoji = req.type === 'status' ? '📊' : req.type === 'location' ? '📍' : '🗺️';
+              return \`<div style="margin: 5px 0; padding: 5px; background: #111; border-left: 2px solid #0f0;">
+                \${typeEmoji} <strong>\${req.username}</strong> - \${req.type}<br>
+                <small style="color: #888;">\${timeAgo}s ago</small>
+              </div>\`;
+            }).join('');
+          } else {
+            document.getElementById('statusRequestList').innerHTML = '<em>No recent status requests</em>';
+          }
+        }
         
         // Update home base
         if (d.homeBase) {
@@ -22430,8 +22766,24 @@ http.createServer((req, res) => {
         avgResponseTime: config.conversationMetrics.avgResponseTime,
         responseRate: config.conversationMetrics.messagesReceived > 0
           ? ((config.conversationMetrics.messagesResponded / config.conversationMetrics.messagesReceived) * 100).toFixed(1) + '%'
-          : '0%'
+          : '0%',
+        recentStatusRequests: config.conversationMetrics.recentStatusRequests || []
       },
+      botStatus: globalBot ? {
+        activity: determineBotActivity(globalBot),
+        position: globalBot.entity?.position ? {
+          x: Math.round(globalBot.entity.position.x),
+          y: Math.round(globalBot.entity.position.y),
+          z: Math.round(globalBot.entity.position.z)
+        } : null,
+        dimension: globalBot.game?.dimension || 'unknown',
+        health: Math.round(globalBot.health || 0),
+        food: typeof globalBot.food === 'number' ? Math.round(globalBot.food) : null,
+        nearbyPlayers: getNearbyPlayers(globalBot, 50).map(p => ({
+          name: p.username,
+          distance: Math.round(p.distance)
+        }))
+      } : null,
       whitelist: {
         total: config.whitelist.length,
         byLevel: {
@@ -24237,6 +24589,102 @@ async function launchBot(username, role = 'fighter') {
   });
   
   return bot;
+}
+
+function determineBotActivity(bot) {
+  if (!bot || !bot.entity) {
+    return 'unknown';
+  }
+
+  // Check combat state (highest priority)
+  if (bot.combatAI && bot.combatAI.currentTarget) {
+    return 'fighting';
+  }
+
+  // Check if taking damage or recently damaged
+  if (bot.lastDamageTime && (Date.now() - bot.lastDamageTime < 3000)) {
+    return 'under attack';
+  }
+
+  // Check if in combat mode
+  if (bot.pvp && bot.pvp.target) {
+    return 'fighting';
+  }
+
+  // Check task queue
+  if (config.tasks.current) {
+    const task = config.tasks.current;
+    if (task.type) {
+      if (task.type === 'mine' || task.type === 'mining') return 'mining';
+      if (task.type === 'build' || task.type === 'building') return 'building';
+      if (task.type === 'gather' || task.type === 'collecting') return 'gathering';
+      if (task.type === 'hunt' || task.type === 'hunting') return 'hunting';
+      if (task.type === 'craft' || task.type === 'crafting') return 'crafting';
+      if (task.type === 'follow' || task.type === 'following') return 'following';
+      if (task.type === 'guard' || task.type === 'guarding') return 'guarding';
+      return task.type.toLowerCase();
+    }
+  }
+
+  // Check pathfinder state
+  if (bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving()) {
+    return 'traveling';
+  }
+
+  // Check movement manager
+  if (bot.movementManager) {
+    if (bot.movementManager.currentMode === 'highway') {
+      return 'highway travel';
+    }
+    if (bot.movementManager.isMoving) {
+      return 'traveling';
+    }
+  }
+
+  // Check if following someone
+  if (bot.followingPlayer) {
+    return 'following';
+  }
+
+  // Check if at home base
+  if (config.homeBase.coords && bot.entity.position) {
+    const dist = bot.entity.position.distanceTo(config.homeBase.coords);
+    if (dist < 10) {
+      return 'at home base';
+    }
+  }
+
+  // Check builder status
+  if (globalSchematicBuilder && globalSchematicBuilder.isBuilding) {
+    return 'building';
+  }
+
+  // Check if tracking player
+  if (bot.playerTracker && bot.playerTracker.isTracking) {
+    return `tracking ${bot.playerTracker.targetUsername}`;
+  }
+
+  // Check if stash hunting
+  if (config.stashHunt.active) {
+    return 'stash hunting';
+  }
+
+  // Check if dupe testing
+  if (config.dupeDiscovery.testingEnabled) {
+    return 'testing dupes';
+  }
+
+  // Check velocity for any movement
+  if (bot.entity.velocity) {
+    const vel = bot.entity.velocity;
+    const speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+    if (speed > 0.1) {
+      return 'moving';
+    }
+  }
+
+  // Default to idle
+  return 'idle';
 }
 
 function startVideoFeedStreaming(bot, wsClient) {
