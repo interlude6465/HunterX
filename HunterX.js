@@ -13453,14 +13453,329 @@ class VillagerTrader {
   }
 }
 
-// Mining Automation
-class AutoMiner {
+// Baritone-style Block Finder and Miner
+class BaritoneMiner {
   constructor(bot) {
     this.bot = bot;
   }
   
+  async mineResource(resourceName, quantity = 1) {
+    console.log(`[MINE] Mining: ${resourceName}`);
+    
+    // Normalize resource name
+    const blockName = this.getBlockName(resourceName);
+    console.log(`[MINE] Looking for: ${blockName}`);
+    
+    let collected = 0;
+    const maxAttempts = 10;
+    let attempts = 0;
+    
+    while (collected < quantity && attempts < maxAttempts) {
+      attempts++;
+      
+      // Step 1: Search loaded chunks first (fast)
+      let targetBlock = this.findInLoadedChunks(blockName);
+      
+      if (!targetBlock) {
+        console.log(`[MINE] Not in loaded chunks, exploring area`);
+        
+        // Step 2: Explore nearby area
+        targetBlock = await this.exploreForBlock(blockName);
+      }
+      
+      if (!targetBlock) {
+        console.log(`[MINE] ${blockName} not found after exploration`);
+        break;
+      }
+      
+      // Step 3: Pathfind to block
+      console.log(`[MINE] Found at ${targetBlock.x} ${targetBlock.y} ${targetBlock.z}`);
+      const reached = await this.pathfindToBlock(targetBlock);
+      
+      if (!reached) {
+        console.log(`[MINE] Failed to reach block`);
+        continue;
+      }
+      
+      // Step 4: Mine the block
+      const mined = await this.mineBlock(targetBlock);
+      
+      if (mined) {
+        collected++;
+        console.log(`[MINE] ✓ Progress: ${collected}/${quantity}`);
+      }
+      
+      // Short delay before next block
+      await this.sleep(500);
+    }
+    
+    if (collected >= quantity) {
+      console.log(`[MINE] ✓ Mining complete: ${collected}x ${resourceName}`);
+      return true;
+    } else {
+      console.log(`[MINE] ⚠️ Mining incomplete: ${collected}/${quantity} ${resourceName}`);
+      return collected > 0; // Return true if we got at least something
+    }
+  }
+  
+  findInLoadedChunks(blockName) {
+    console.log(`[MINE] Scanning loaded chunks for ${blockName}...`);
+    
+    const blockIds = this.getBlockIds(blockName);
+    if (blockIds.length === 0) {
+      console.log(`[MINE] Unknown block type: ${blockName}`);
+      return null;
+    }
+    
+    const pos = this.bot.entity.position;
+    const radius = 100; // 100 block radius
+    
+    // Use bot.findBlocks for efficient search
+    const blocks = this.bot.findBlocks({
+      matching: blockIds,
+      maxDistance: radius,
+      count: 1
+    });
+    
+    if (blocks && blocks.length > 0) {
+      const blockPos = blocks[0];
+      console.log(`[MINE] Found in loaded chunks at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+      return { x: blockPos.x, y: blockPos.y, z: blockPos.z };
+    }
+    
+    return null;
+  }
+  
+  async exploreForBlock(blockName) {
+    console.log(`[MINE] Exploring area for ${blockName}...`);
+    
+    const blockIds = this.getBlockIds(blockName);
+    const startPos = this.bot.entity.position.clone();
+    const explorationRadius = 200; // Explore up to 200 blocks
+    const checkInterval = 20; // Check every 20 blocks
+    
+    // Try exploring in different directions
+    const directions = [
+      { x: 1, z: 0 },   // East
+      { x: -1, z: 0 },  // West
+      { x: 0, z: 1 },   // South
+      { x: 0, z: -1 },  // North
+      { x: 1, z: 1 },   // SE
+      { x: -1, z: 1 },  // SW
+      { x: 1, z: -1 },  // NE
+      { x: -1, z: -1 }  // NW
+    ];
+    
+    for (const dir of directions) {
+      for (let dist = checkInterval; dist < explorationRadius; dist += checkInterval) {
+        const explorePos = {
+          x: Math.floor(startPos.x + dir.x * dist),
+          y: Math.floor(startPos.y),
+          z: Math.floor(startPos.z + dir.z * dist)
+        };
+        
+        // Move towards exploration point
+        try {
+          await this.bot.pathfinder.goto(new goals.GoalNear(
+            explorePos.x,
+            explorePos.y,
+            explorePos.z,
+            10
+          ), { timeout: 10000 });
+        } catch (err) {
+          // Can't reach, try next direction
+          continue;
+        }
+        
+        // Check if we can find the block now
+        const foundBlock = this.bot.findBlocks({
+          matching: blockIds,
+          maxDistance: 50,
+          count: 1
+        });
+        
+        if (foundBlock && foundBlock.length > 0) {
+          const blockPos = foundBlock[0];
+          console.log(`[MINE] ✓ Found during exploration at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+          return { x: blockPos.x, y: blockPos.y, z: blockPos.z };
+        }
+      }
+    }
+    
+    console.log(`[MINE] Exploration failed to find ${blockName}`);
+    return null;
+  }
+  
+  async pathfindToBlock(blockPos) {
+    console.log(`[MINE] Pathfinding to ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+    
+    try {
+      await this.bot.pathfinder.goto(new goals.GoalNear(
+        blockPos.x,
+        blockPos.y,
+        blockPos.z,
+        3
+      ), { timeout: 30000 });
+      
+      console.log(`[MINE] ✓ Reached block location`);
+      return true;
+    } catch (error) {
+      console.log(`[MINE] Pathfinding failed: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async mineBlock(blockPos) {
+    console.log(`[MINE] Mining block at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+    
+    const block = this.bot.blockAt(new Vec3(blockPos.x, blockPos.y, blockPos.z));
+    
+    if (!block) {
+      console.log(`[MINE] Block not found at position`);
+      return false;
+    }
+    
+    if (block.name === 'air') {
+      console.log(`[MINE] Block already mined`);
+      return false;
+    }
+    
+    try {
+      // Equip best tool for the block
+      await this.equipBestTool(block);
+      
+      // Look at the block
+      await this.bot.lookAt(block.position.offset(0.5, 0.5, 0.5));
+      
+      // Mine it
+      await this.bot.dig(block, true); // true = force dig even if no tool
+      
+      console.log(`[MINE] ✓ Mined ${block.name}`);
+      return true;
+    } catch (error) {
+      console.log(`[MINE] Failed to mine: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async equipBestTool(block) {
+    if (!block || !this.bot.pathfinder) return;
+    
+    // Find best tool in inventory
+    const tools = this.bot.inventory.items();
+    let bestTool = null;
+    let bestTime = Infinity;
+    
+    for (const tool of tools) {
+      try {
+        const time = block.digTime(tool);
+        if (time < bestTime) {
+          bestTime = time;
+          bestTool = tool;
+        }
+      } catch (err) {
+        // Ignore error
+      }
+    }
+    
+    if (bestTool) {
+      try {
+        await this.bot.equip(bestTool, 'hand');
+        console.log(`[MINE] Equipped ${bestTool.name}`);
+      } catch (err) {
+        console.log(`[MINE] Failed to equip tool: ${err.message}`);
+      }
+    }
+  }
+  
+  getBlockName(resourceName) {
+    const name = resourceName.toLowerCase().trim();
+    
+    // Map resource names to block names
+    const blockMap = {
+      'diamond': 'diamond_ore',
+      'diamonds': 'diamond_ore',
+      'iron': 'iron_ore',
+      'iron_ingot': 'iron_ore',
+      'gold': 'gold_ore',
+      'gold_ingot': 'gold_ore',
+      'coal': 'coal_ore',
+      'obsidian': 'obsidian',
+      'ancient_debris': 'ancient_debris',
+      'lapis': 'lapis_ore',
+      'lapis_lazuli': 'lapis_ore',
+      'redstone': 'redstone_ore',
+      'emerald': 'emerald_ore',
+      'copper': 'copper_ore',
+      'copper_ingot': 'copper_ore',
+      'wood': 'oak_log',
+      'log': 'oak_log',
+      'oak_log': 'oak_log',
+      'birch_log': 'birch_log',
+      'spruce_log': 'spruce_log',
+      'jungle_log': 'jungle_log',
+      'acacia_log': 'acacia_log',
+      'dark_oak_log': 'dark_oak_log',
+      'trees': 'oak_log',
+      'stone': 'stone',
+      'cobblestone': 'cobblestone',
+      'dirt': 'dirt',
+      'sand': 'sand',
+      'gravel': 'gravel'
+    };
+    
+    return blockMap[name] || name;
+  }
+  
+  getBlockIds(blockName) {
+    // Get block IDs, including deepslate variants for ores
+    const ids = [];
+    
+    // Add primary block
+    const primaryBlock = this.bot.registry.blocksByName[blockName];
+    if (primaryBlock) {
+      ids.push(primaryBlock.id);
+    }
+    
+    // Add deepslate variant if it exists
+    const deepslateVariant = this.bot.registry.blocksByName[`deepslate_${blockName}`];
+    if (deepslateVariant) {
+      ids.push(deepslateVariant.id);
+    }
+    
+    // Special cases
+    if (blockName === 'stone') {
+      // Include all stone variants
+      ['stone', 'cobblestone', 'andesite', 'diorite', 'granite'].forEach(variant => {
+        const block = this.bot.registry.blocksByName[variant];
+        if (block) ids.push(block.id);
+      });
+    }
+    
+    return ids.filter(id => id !== undefined);
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// Mining Automation
+class AutoMiner {
+  constructor(bot) {
+    this.bot = bot;
+    this.baritoneMiner = new BaritoneMiner(bot);
+  }
+  
   async mineForItem(itemName, quantity) {
     console.log(`[HUNTER] ⛏️ Mining for ${quantity}x ${itemName}...`);
+    
+    // Use Baritone-style mining instead of Y-level strategies
+    return await this.baritoneMiner.mineResource(itemName, quantity);
+  }
+  
+  async mineForItemOld(itemName, quantity) {
+    console.log(`[HUNTER] ⛏️ Old Y-level mining for ${quantity}x ${itemName}...`);
     
     const mineData = ITEM_KNOWLEDGE[itemName]?.sources.find(s => s.type === 'mining');
     if (!mineData) {
