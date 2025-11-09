@@ -3305,14 +3305,28 @@ class SwarmCoordinator {
   
   broadcast(message, excludeBotId = null) {
     const messageStr = JSON.stringify(message);
-    
+
     this.bots.forEach((bot, botId) => {
       if (botId !== excludeBotId && bot.ws.readyState === WebSocket.OPEN) {
         bot.ws.send(messageStr);
       }
     });
   }
-  
+
+  broadcastCommand(command) {
+    console.log(`[SWARM] Broadcasting command to all bots: ${command}`);
+
+    for (const [botId, botInfo] of this.bots) {
+      if (botInfo.ws.readyState === WebSocket.OPEN) {
+        botInfo.ws.send(JSON.stringify({
+          type: 'COMMAND',
+          command: command,
+          timestamp: Date.now()
+        }));
+      }
+    }
+  }
+
   sendAck(botId, messageId) {
     const bot = this.bots.get(botId);
     if (bot && bot.ws.readyState === WebSocket.OPEN) {
@@ -13366,6 +13380,24 @@ class ConversationAI {
         return;
       }
 
+      // Handle group commands (!! prefix)
+      if (message.startsWith('!!')) {
+        console.log(`[COMMAND] Group command detected: ${message}`);
+        if (!this.isWhitelisted(username)) {
+          this.bot.chat("Sorry, only whitelisted players can give me commands!");
+          return;
+        }
+        const cleanCommand = message.substring(2).trim();
+        if (globalSwarmCoordinator) {
+          console.log(`[COMMAND] Broadcasting group command: ${cleanCommand}`);
+          globalSwarmCoordinator.broadcastCommand(cleanCommand);
+          this.bot.chat(`📢 Broadcasting command to all bots: ${cleanCommand}`);
+        } else {
+          this.bot.chat("Swarm coordinator not available for group commands!");
+        }
+        return;
+      }
+
       if (!this.shouldRespond(username, message)) return;
 
       // Normalize message (strip bot name, clean whitespace)
@@ -13451,7 +13483,45 @@ class ConversationAI {
   }
   
   isCommand(message) {
-    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'find', 'hunt', 'collect', 'fish for', 'farm', '!help', '!attack', '!spawn', '!goto', '!stop', '!follow', '!equip', '!status', '!test', 'need help'];
+    const commandPrefixes = [
+      // Emergency & Assistance
+      '!help', 'need help', '!swarm status', 'swarm status', '!spawn', '!stop',
+
+      // Navigation
+      '!goto', 'go', '!follow', 'go home', 'head home', 'set home', 'travel to', 'travel', 'find highway',
+
+      // Combat & Attack
+      '!attack', 'attack', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'defense status',
+
+      // Resource & Gathering
+      '!mine', 'mine', 'collect', 'find', 'hunt', 'fish for', 'farm', 'gather', 'get me',
+
+      // Discovery & Testing
+      '!stash', 'stash', '!dupe', 'dupe', 'scanner status', 'scanner report',
+
+      // Base & Storage
+      'home status', 'home info', 'deposit', 'store valuables',
+
+      // Maintenance & Repair
+      'maintenance status', 'repair status', 'start maintenance', 'stop maintenance', 'repair armor', 'fix armor',
+      'swap elytra', 'fix elytra', 'check elytra', 'set xp farm',
+
+      // Building
+      'start build', 'build schematic', 'build status', 'build progress',
+
+      // Analytics
+      '!stats', 'stats', 'performance', 'analytics',
+
+      // Trust & Permissions
+      'trust level', 'check trust', 'list whitelist', 'show whitelist', 'set trust', 'set level', 'remove trust', 'remove whitelist',
+
+      // Mode changes
+      'change to', 'switch to',
+
+      // Status commands
+      'come to', 'come here', 'go to', 'craft', '!equip', '!status', '!test', 'gear up', 'get geared',
+      'start dupe', 'test dupe', 'stop dupe', 'dupe report', 'dupe stats', 'ultimate dupe'
+    ];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
@@ -13901,8 +13971,10 @@ class ConversationAI {
       return;
     }
 
-    // Item Finder commands
-    if (lower.includes('find') || lower.includes('hunt') || lower.includes('collect') || lower.includes('get me') || lower.includes('fish for') || lower.includes('farm')) {
+    // Item Finder commands (with or without !)
+    if (lower.includes('!mine') || lower.includes('!collect') || lower.includes('!find') ||
+        lower.includes('find') || lower.includes('hunt') || lower.includes('collect') ||
+        lower.includes('get me') || lower.includes('fish for') || lower.includes('farm')) {
       await this.handleItemFinderCommand(username, message);
       return;
     }
@@ -14676,9 +14748,85 @@ class ConversationAI {
       return;
     }
     
+    // Stats/Analytics commands
+    if (lower.includes('!stats') || lower.includes('stats') || lower.includes('analytics') || lower.includes('performance')) {
+      if (lower.includes('performance') || lower.includes('analytics')) {
+        if (!this.hasTrustLevel(username, 'admin')) {
+          this.bot.chat("Only admin+ can view performance analytics!");
+          return;
+        }
+      }
+
+      const pos = this.bot.entity.position;
+      const stats = {
+        health: Math.round(this.bot.health),
+        hunger: Math.round(this.bot.food),
+        armor: this.bot.inventory.slots.filter(slot => slot && slot.type && slot.type.includes('armor')).length,
+        position: `${Math.round(pos.x)}, ${Math.round(pos.y)}, ${Math.round(pos.z)}`,
+        dimension: this.bot.game.dimension,
+        gameTime: this.bot.time.timeOfDay,
+        itemsInInventory: this.bot.inventory.items().length,
+        biome: this.bot.world?.biome?.name || 'unknown'
+      };
+
+      this.bot.chat(`📊 Stats:`);
+      this.bot.chat(`  ❤️ Health: ${stats.health}/20`);
+      this.bot.chat(`  🍖 Hunger: ${stats.hunger}/20`);
+      this.bot.chat(`  🛡️ Armor: ${stats.armor} pieces`);
+      this.bot.chat(`  📦 Inventory: ${stats.itemsInInventory}/36 items`);
+      this.bot.chat(`  📍 Position: ${stats.position}`);
+      this.bot.chat(`  🌍 Biome: ${stats.biome}`);
+      this.bot.chat(`  🌐 Dimension: ${stats.dimension}`);
+      this.bot.chat(`  ⏱️ Time: ${stats.gameTime}`);
+
+      if (lower.includes('performance') || lower.includes('analytics')) {
+        const memUsage = process.memoryUsage();
+        this.bot.chat(`📈 Performance:`);
+        this.bot.chat(`  💾 Memory: ${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB / ${(memUsage.heapTotal / 1024 / 1024).toFixed(2)}MB`);
+        if (globalBotSpawner) {
+          this.bot.chat(`  🤖 Active bots: ${globalBotSpawner.getActiveBotCount()}`);
+        }
+        if (globalSwarmCoordinator) {
+          const status = globalSwarmCoordinator.getSwarmStatus();
+          this.bot.chat(`  🐝 Swarm size: ${status.bots.length}`);
+        }
+      }
+      return;
+    }
+
+    // Stash scanner command
+    if (lower.includes('!stash') || lower.includes('stash')) {
+      this.bot.chat(`🔍 Scanning for stashes...`);
+      if (this.bot.stashScanner) {
+        await this.bot.stashScanner.startScanning();
+      } else {
+        this.bot.chat("Stash scanner not initialized!");
+      }
+      return;
+    }
+
+    // Dupe command (admin only)
+    if (lower.includes('!dupe') || (lower.includes('dupe') && lower.includes('test'))) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can test dupes!");
+        return;
+      }
+
+      const itemMatch = message.match(/dupe\s+(.+)/i);
+      const itemName = itemMatch ? itemMatch[1].trim() : 'diamond';
+
+      this.bot.chat(`🔍 Testing dupe for ${itemName}...`);
+      if (globalDupeFramework) {
+        await globalDupeFramework.testDupe(itemName);
+      } else {
+        this.bot.chat("Dupe framework not initialized!");
+      }
+      return;
+    }
+
     // Default fallback for unrecognized commands
     this.bot.chat("I didn't understand that command. Try 'help' for options!");
-  }
+    }
   
   async handleItemFinderCommand(username, message) {
     console.log(`[HUNTER] 🎯 Item request from ${username}: ${message}`);
@@ -14805,6 +14953,26 @@ class ConversationAI {
    return null;
   }
 
+  extractItem(message) {
+    // Extract item name from various patterns
+    const patterns = [
+      /(?:get|find|mine|craft|farm|hunt|collect|fish for)\s+(?:me\s+)?(?:(\d+)\s+)?([a-zA-Z\s]+?)(?:\s|$)/i,
+      /(?:me\s+)?(?:(\d+)\s+)?([a-zA-Z\s]+?)(?:\s|$)/i
+    ];
+
+    for (const pattern of patterns) {
+      const match = message.match(pattern);
+      if (match) {
+        const quantity = match[1] ? parseInt(match[1]) : 1;
+        const item = match[2] ? match[2].trim() : null;
+        if (item) {
+          return item;
+        }
+      }
+    }
+    return null;
+  }
+
   startFollowing(player) {
     console.log(`[FOLLOW] Starting to follow: ${player.username}`);
     
@@ -14920,6 +15088,111 @@ class ConversationAI {
    });
 
    console.log(`[SWARM] Guard duty started at ${coords.x}, ${coords.y}, ${coords.z}`);
+  }
+
+  parseResourceTask(message) {
+    const quantities = {
+      'diamond': 64,
+      'iron': 64,
+      'gold': 32,
+      'emerald': 32,
+      'stone': 128,
+      'cobblestone': 128,
+      'oak log': 64,
+      'spruce log': 64,
+      'birch log': 64
+    };
+
+    for (const [item, defaultQty] of Object.entries(quantities)) {
+      if (message.toLowerCase().includes(item)) {
+        const qtyMatch = message.match(/(\d+)\s+/);
+        const quantity = qtyMatch ? parseInt(qtyMatch[1]) : defaultQty;
+        return { item, quantity };
+      }
+    }
+    return null;
+  }
+
+  async executeResourceTask(task) {
+    if (!task) return;
+    const { item, quantity } = task;
+    this.bot.chat(`🔨 Mining ${quantity}x ${item}...`);
+
+    if (this.bot.mining) {
+      await this.bot.mining.collectResource(item, quantity).catch(err => {
+        console.log(`[RESOURCE] Mining error: ${err.message}`);
+        this.bot.chat(`❌ Failed to mine ${item}: ${err.message}`);
+      });
+    } else {
+      this.bot.chat("Mining module not available!");
+    }
+  }
+
+  findNearestPlayer() {
+    const players = Object.values(this.bot.entities).filter(e =>
+      e.type === 'player' && e.username !== this.bot.username
+    );
+
+    if (players.length === 0) return null;
+
+    let nearest = players[0];
+    let minDist = nearest.position.distanceTo(this.bot.entity.position);
+
+    for (const player of players) {
+      const dist = player.position.distanceTo(this.bot.entity.position);
+      if (dist < minDist) {
+        nearest = player;
+        minDist = dist;
+      }
+    }
+
+    return nearest;
+  }
+
+  broadcastRetreat() {
+    this.bot.chat("Falling back!");
+    if (this.bot.pathfinder) {
+      this.bot.pathfinder.stop();
+    }
+    if (this.bot.ashfinder) {
+      this.bot.ashfinder.stop();
+    }
+
+    if (globalSwarmCoordinator) {
+      globalSwarmCoordinator.broadcast({
+        type: 'RETREAT',
+        initiator: this.bot.username,
+        timestamp: Date.now()
+      });
+    }
+  }
+
+  handleTrustCommand(username, message) {
+    if (!this.hasTrustLevel(username, 'admin')) {
+      this.bot.chat("Only admin+ can manage trust!");
+      return;
+    }
+
+    const setMatch = message.match(/set\s+(?:trust|level)\s+(\w+)\s+(\w+)/i);
+    if (setMatch) {
+      const targetPlayer = setMatch[1];
+      const trustLevel = setMatch[2].toLowerCase();
+
+      if (!this.trustLevels.includes(trustLevel)) {
+        this.bot.chat(`Invalid trust level. Use: ${this.trustLevels.join(', ')}`);
+        return;
+      }
+
+      const index = config.whitelist.findIndex(e => e.name === targetPlayer);
+      if (index >= 0) {
+        config.whitelist[index].level = trustLevel;
+      } else {
+        config.whitelist.push({ name: targetPlayer, level: trustLevel });
+      }
+
+      safeWriteFile('./data/whitelist.json', JSON.stringify(config.whitelist, null, 2));
+      this.bot.chat(`✅ Set ${targetPlayer}'s trust level to ${trustLevel}`);
+    }
   }
 }
 
