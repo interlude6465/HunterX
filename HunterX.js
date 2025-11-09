@@ -762,6 +762,113 @@ function safeWriteJson(filePath, data) {
   return safeWriteFile(filePath, JSON.stringify(data, null, 2));
 }
 
+// === HEALTH TRACKING SYSTEM ===
+function initializeHealthTracking(bot) {
+  if (!bot) {
+    console.error('[HEALTH] Bot object not available');
+    return;
+  }
+  
+  const healthFile = './data/health.json';
+  const defaultHealthData = {
+    botName: bot.username || 'UnknownBot',
+    currentHealth: 20,
+    maxHealth: 20,
+    lastUpdated: Date.now(),
+    healthHistory: [],
+    damageEvents: []
+  };
+  
+  // Initialize or load health.json
+  let healthData = safeReadJson(healthFile, defaultHealthData);
+  if (!healthData) {
+    healthData = defaultHealthData;
+    safeWriteJson(healthFile, healthData);
+    console.log('[HEALTH] ✓ Created health.json with default values');
+  }
+  
+  // Update initial health values
+  healthData.botName = bot.username || 'UnknownBot';
+  healthData.currentHealth = bot.health || 20;
+  healthData.maxHealth = 20;
+  healthData.lastUpdated = Date.now();
+  
+  // Initialize health history if missing
+  if (!Array.isArray(healthData.healthHistory)) {
+    healthData.healthHistory = [];
+  }
+  if (!Array.isArray(healthData.damageEvents)) {
+    healthData.damageEvents = [];
+  }
+  
+  // Save initialized health data
+  safeWriteJson(healthFile, healthData);
+  console.log(`[HEALTH] Health tracking initialized for ${bot.username} (Health: ${healthData.currentHealth}/${healthData.maxHealth})`);
+  
+  // Track health changes
+  let lastRecordedHealth = bot.health || 20;
+  let recordInterval = null;
+  
+  const updateHealthRecord = () => {
+    const currentHealth = bot.health || 20;
+    const timestamp = Date.now();
+    
+    // Only record if health changed
+    if (currentHealth !== lastRecordedHealth) {
+      const healthData = safeReadJson(healthFile, defaultHealthData);
+      if (!healthData) healthData = defaultHealthData;
+      
+      // Ensure arrays exist
+      if (!Array.isArray(healthData.healthHistory)) healthData.healthHistory = [];
+      if (!Array.isArray(healthData.damageEvents)) healthData.damageEvents = [];
+      
+      // Record health change
+      healthData.currentHealth = currentHealth;
+      healthData.maxHealth = 20;
+      healthData.lastUpdated = timestamp;
+      
+      // Add to history (keep last 100 entries)
+      healthData.healthHistory.push({
+        timestamp,
+        health: currentHealth,
+        change: currentHealth - lastRecordedHealth
+      });
+      if (healthData.healthHistory.length > 100) {
+        healthData.healthHistory = healthData.healthHistory.slice(-100);
+      }
+      
+      // If damage was taken, record the event
+      if (currentHealth < lastRecordedHealth) {
+        const damage = lastRecordedHealth - currentHealth;
+        healthData.damageEvents.push({
+          timestamp,
+          damage,
+          healthAfter: currentHealth
+        });
+        // Keep last 50 damage events
+        if (healthData.damageEvents.length > 50) {
+          healthData.damageEvents = healthData.damageEvents.slice(-50);
+        }
+      }
+      
+      // Save updated health data
+      safeWriteJson(healthFile, healthData);
+      lastRecordedHealth = currentHealth;
+    }
+  };
+  
+  // Record health every 1 second
+  recordInterval = setInterval(updateHealthRecord, 1000);
+  
+  // Store interval ID for cleanup
+  if (bot.healthTrackingInterval) {
+    clearInterval(bot.healthTrackingInterval);
+  }
+  bot.healthTrackingInterval = recordInterval;
+  
+  console.log('[HEALTH] ✓ Health tracking started');
+}
+
 // === VERSION EXTRACTION AND SERVER DETECTION HELPERS ===
 function extractVersionFromError(errorMessage) {
   // Parse: "This server is version X.Y.Z, you are using version A.B.C"
@@ -2193,6 +2300,11 @@ class EquipmentManager {
     this.lastEquipmentCheck = 0;
     this.equipmentCheckInterval = 5000; // Check every 5 seconds
     
+    // Track last equip attempts to prevent infinite loops
+    this.lastEquipAttempts = new Map(); // item.name -> { timestamp, count }
+    this.equipDebounceTime = 2000; // 2 second debounce between equips of same item
+    this.maxEquipAttemptsPerItem = 2; // Max 2 attempts to equip an item
+    
     // Setup inventory listener for auto-equipping armor
     this.setupArmorEquipping();
     
@@ -2200,10 +2312,15 @@ class EquipmentManager {
   }
   
   setupArmorEquipping() {
-    // Listen for inventory updates to auto-equip armor
+    // Debounce inventory updates to prevent spam
+    let inventoryUpdateTimeout = null;
+    
+    // Listen for inventory updates to auto-equip armor (with debounce)
     this.bot.on('inventoryUpdate', () => {
-      // Check if any new armor was picked up
-      this.checkAndEquipArmor();
+      if (inventoryUpdateTimeout) clearTimeout(inventoryUpdateTimeout);
+      inventoryUpdateTimeout = setTimeout(() => {
+        this.checkAndEquipArmor();
+      }, 300); // Wait 300ms for inventory to settle
     });
     
     // Also listen for slot updates (more granular)
@@ -2211,12 +2328,42 @@ class EquipmentManager {
       this.bot.inventory.on('updateSlot', (oldItem, newItem) => {
         if (newItem && this.isArmorPiece(newItem.name)) {
           console.log(`[EQUIPMENT] Armor picked up: ${newItem.name}`);
-          this.autoEquipArmor(newItem);
+          // Check if we should attempt to equip this item
+          if (this.shouldAttemptEquip(newItem.name)) {
+            this.autoEquipArmor(newItem);
+          }
         }
       });
     }
     
     console.log('[EQUIPMENT] Auto-armor equipping enabled');
+  }
+  
+  shouldAttemptEquip(itemName) {
+    const now = Date.now();
+    const lastAttempt = this.lastEquipAttempts.get(itemName);
+    
+    // If no previous attempts, allow equip
+    if (!lastAttempt) {
+      this.lastEquipAttempts.set(itemName, { timestamp: now, count: 1 });
+      return true;
+    }
+    
+    // If beyond debounce time, reset attempts
+    if (now - lastAttempt.timestamp > this.equipDebounceTime) {
+      this.lastEquipAttempts.set(itemName, { timestamp: now, count: 1 });
+      return true;
+    }
+    
+    // If within debounce time, check attempt count
+    if (lastAttempt.count < this.maxEquipAttemptsPerItem) {
+      lastAttempt.count++;
+      lastAttempt.timestamp = now;
+      return true;
+    }
+    
+    // Max attempts reached within debounce time
+    return false;
   }
   
   async initialize() {
@@ -2245,6 +2392,15 @@ class EquipmentManager {
     }
     
     try {
+      // Check if this item is already equipped in the correct slot
+      const slotId = this.getEquipmentSlotId(slot);
+      const currentlyEquipped = this.bot.entity.equipment[slotId];
+      
+      if (currentlyEquipped && currentlyEquipped.name === item.name) {
+        console.log(`[EQUIPMENT] ℹ️ ${item.name} already equipped in ${slot} slot`);
+        return; // Already equipped, skip
+      }
+      
       console.log(`[EQUIPMENT] Equipping: ${item.name} to ${slot}`);
       
       // Check if bot.equip is available
@@ -2282,11 +2438,25 @@ class EquipmentManager {
       
       if (armorItems.length === 0) return;
       
-      // Equip each piece of armor
+      // Only equip items that are not already equipped
       for (const armor of armorItems) {
-        await this.autoEquipArmor(armor);
-        // Small delay between equips to avoid issues
-        await new Promise(resolve => setTimeout(resolve, 100));
+        const slot = this.getArmorSlot(armor.name);
+        if (slot) {
+          const slotId = this.getEquipmentSlotId(slot);
+          const currentlyEquipped = this.bot.entity.equipment[slotId];
+          
+          // Skip if already equipped
+          if (currentlyEquipped && currentlyEquipped.name === armor.name) {
+            continue;
+          }
+          
+          // Only equip if we should attempt it (respects debounce)
+          if (this.shouldAttemptEquip(armor.name)) {
+            await this.autoEquipArmor(armor);
+            // Small delay between equips to avoid issues
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        }
       }
     } catch (err) {
       console.log(`[EQUIPMENT] Failed to check/equip armor: ${err.message}`);
@@ -3639,19 +3809,24 @@ class SwarmCoordinator {
   
   startServer() {
     if (config.swarm.wsServer) return;
-    
+
     config.swarm.wsServer = new WebSocket.Server({ port: this.port });
-    
+
+    // Add error handler for the WebSocket server
+    config.swarm.wsServer.on('error', (err) => {
+      console.error(`[SWARM] WebSocket server error:`, err.message);
+    });
+
     config.swarm.wsServer.on('connection', (ws, req) => {
       const path = (req.url || '/');
       if (path.startsWith('/video-feed')) {
         this.registerViewer(ws);
         return;
       }
-      
+
       const botId = path.replace('/', '');
       console.log(`[SWARM] Bot connected: ${botId}`);
-      
+
       this.bots.set(botId, {
         ws,
         id: botId,
@@ -3661,12 +3836,12 @@ class SwarmCoordinator {
         task: null,
         lastHeartbeat: Date.now()
       });
-      
+
       if (!this.defaultVideoBot) {
         this.defaultVideoBot = botId;
       }
       this.broadcastVideoState();
-      
+
       ws.on('message', (data) => {
         try {
           const message = JSON.parse(data);
@@ -3675,7 +3850,11 @@ class SwarmCoordinator {
           console.log(`[SWARM] Invalid message from ${botId}:`, err.message);
         }
       });
-      
+
+      ws.on('error', (err) => {
+        console.error(`[SWARM] Bot connection error (${botId}):`, err.message);
+      });
+
       ws.on('close', () => {
         console.log(`[SWARM] Bot disconnected: ${botId}`);
         this.bots.delete(botId);
@@ -3686,12 +3865,12 @@ class SwarmCoordinator {
         }
         this.broadcastVideoState();
       });
-      
+
       ws.send(JSON.stringify({ type: 'CONNECTED', botId }));
     });
-    
+
     console.log(`[SWARM] Coordinator listening on port ${this.port}`);
-    
+
     this.startHeartbeatMonitor();
   }
   
@@ -3907,13 +4086,13 @@ class SwarmCoordinator {
     const viewerId = `viewer_${Date.now()}`;
     console.log('[VIDEO] Viewer connected');
     this.viewers.add(ws);
-    
+
     this.viewerState.set(ws, {
       id: viewerId,
       selectedBot: this.defaultVideoBot,
       connectedAt: Date.now()
     });
-    
+
     if (!this.defaultVideoBot) {
       const bots = this.getBotIdList();
       if (bots.length > 0) {
@@ -3924,16 +4103,20 @@ class SwarmCoordinator {
     if (viewerState && !viewerState.selectedBot) {
       viewerState.selectedBot = this.defaultVideoBot;
     }
-    
-    ws.send(JSON.stringify({
-      type: 'VIEWER_CONNECTED',
-      viewerId,
-      botList: this.getBotIdList(),
-      selectedBot: this.defaultVideoBot
-    }));
-    
+
+    try {
+      ws.send(JSON.stringify({
+        type: 'VIEWER_CONNECTED',
+        viewerId,
+        botList: this.getBotIdList(),
+        selectedBot: this.defaultVideoBot
+      }));
+    } catch (err) {
+      console.error(`[VIDEO] Failed to send VIEWER_CONNECTED to ${viewerId}:`, err.message);
+    }
+
     this.sendLatestFrameToViewer(ws);
-    
+
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data);
@@ -3953,7 +4136,11 @@ class SwarmCoordinator {
         console.log('[VIDEO] Invalid viewer message:', err.message);
       }
     });
-    
+
+    ws.on('error', (err) => {
+      console.error(`[VIDEO] Viewer connection error (${viewerId}):`, err.message);
+    });
+
     ws.on('close', () => {
       console.log('[VIDEO] Viewer disconnected');
       this.viewers.delete(ws);
@@ -23377,16 +23564,19 @@ async function launchBot(username, role = 'fighter') {
   
   bot.once('spawn', async () => {
     console.log(`[SPAWN] ${username} joined ${config.server}`);
-    
+
     // Wait a moment for plugins to fully initialize
     await new Promise(resolve => setTimeout(resolve, 100));
-    
+
+    // Initialize health.json tracking
+    initializeHealthTracking(bot);
+
     // Ensure pathfinder plugin loaded
     if (!bot.pathfinder) {
       console.log('[ERROR] Pathfinder plugin not loaded!');
       return;
     }
-    
+
     // Set up movements configuration
     try {
       bot.pathfinder.setMovements(new Movements(bot));
