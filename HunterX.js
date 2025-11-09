@@ -8744,13 +8744,15 @@ class CombatAI {
       return;
     }
     
-    // === CRITICAL SAFETY: Check if target is player and neverAttackPlayers is enabled ===
+    // === PLAYER ATTACK RETALIATION: Always retaliate against direct attacks ===
     const isPlayer = attacker.type === 'player' || attacker.username;
-    if (isPlayer && config.combat?.autoEngagement?.neverAttackPlayers) {
-      console.log(`[COMBAT] ${attacker.username || 'Player'} attacked but neverAttackPlayers is enabled - not retaliating!`);
-      return;
+
+    // Note: Even if neverAttackPlayers is enabled, we retaliate against direct attacks
+    // neverAttackPlayers is meant to prevent attacking innocent players, not prevent self-defense
+    if (isPlayer) {
+      console.log(`[COMBAT] 🎯 Player ${attacker.username || 'Unknown'} attacked us - RETALIATING!`);
     }
-    
+
     // === CRITICAL SAFETY: Verify target is hostile before engaging ===
     if (!this.hostileMobDetector) {
       this.hostileMobDetector = new HostileMobDetector();
@@ -22566,12 +22568,30 @@ async function launchBot(username, role = 'fighter') {
               break;
               
             case 'BACKUP_NEEDED':
-              console.log(`[SWARM] 🚨 ${message.botId} needs backup!`);
-              if (bot.entity.position.distanceTo(message.position) < 200) {
-                bot.chat(`On my way to help ${message.botId}!`);
-                bot.ashfinder.goto(new goals.GoalNear(new Vec3(
-                  message.position.x, message.position.y, message.position.z), 10
-                )).catch(() => {});
+              console.log(`[SWARM] 🚨 ${message.botId} needs backup! Attacker: ${message.attacker}`);
+              const backupDistance = bot.entity.position.distanceTo(message.position);
+              const backupRadius = message.helpRadius || 200;
+
+              if (backupDistance < backupRadius) {
+                bot.chat(`⚔️ On my way to help ${message.botId}! ATTACKING ${message.attacker}!`);
+
+                // Find the attacker entity
+                const backupAttacker = Object.values(bot.entities).find(e =>
+                  (e.type === 'player' && e.username === message.attacker) ||
+                  (e.name && e.name.toLowerCase().includes(message.attacker.toLowerCase()))
+                );
+
+                if (backupAttacker && combatAI && typeof combatAI.handleCombat === 'function') {
+                  // Attack the attacker directly
+                  console.log(`[SWARM] 🎯 Found backup target ${message.attacker} - ENGAGING!`);
+                  await combatAI.handleCombat(backupAttacker);
+                } else if (!backupAttacker && bot.ashfinder) {
+                  // If we can't find the attacker, navigate to the victim's location
+                  console.log(`[SWARM] Could not find ${message.attacker}, moving to support location`);
+                  bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+                    message.position.x, message.position.y, message.position.z), 10
+                  )).catch(() => {});
+                }
               }
               break;
               
@@ -22651,13 +22671,30 @@ async function launchBot(username, role = 'fighter') {
             case 'ATTACK_ALERT':
               console.log(`[SWARM] ⚔️ ${message.victim} is under attack by ${message.attacker}!`);
               // Respond if close enough and not the victim
-              if (username !== message.victim && bot.entity && bot.entity.position && bot.ashfinder) {
+              if (username !== message.victim && bot.entity && bot.entity.position) {
                 const distance = bot.entity.position.distanceTo(new Vec3(message.location.x, message.location.y, message.location.z));
-                if (distance < 100) {
-                  console.log(`[SWARM] Responding to threat! Distance: ${Math.floor(distance)} blocks`);
-                  bot.ashfinder.goto(new goals.GoalNear(new Vec3(
-                    message.location.x, message.location.y, message.location.z), 5
-                  )).catch(() => {});
+                const helpRadius = message.helpRadius || 100;
+
+                if (distance < helpRadius) {
+                  console.log(`[SWARM] ⚔️ Responding to help request! Distance: ${Math.floor(distance)} blocks - ATTACKING ${message.attacker}!`);
+
+                  // Find the attacker entity
+                  const attacker = Object.values(bot.entities).find(e =>
+                    (e.type === 'player' && e.username === message.attacker) ||
+                    (e.name && e.name.toLowerCase().includes(message.attacker.toLowerCase()))
+                  );
+
+                  if (attacker && combatAI && typeof combatAI.handleCombat === 'function') {
+                    // Attack the attacker
+                    console.log(`[SWARM] 🎯 Found attacker ${message.attacker} at ${attacker.position.x.toFixed(0)}, ${attacker.position.y.toFixed(0)}, ${attacker.position.z.toFixed(0)}`);
+                    await combatAI.handleCombat(attacker);
+                  } else if (!attacker && bot.ashfinder) {
+                    // If we can't find the attacker, navigate to victim's location for support
+                    console.log(`[SWARM] Could not find attacker ${message.attacker}, moving to support ${message.victim}`);
+                    bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+                      message.location.x, message.location.y, message.location.z), 5
+                    )).catch(() => {});
+                  }
                 }
               }
               break;
@@ -22675,20 +22712,57 @@ async function launchBot(username, role = 'fighter') {
             case 'COORDINATED_ATTACK':
               console.log(`[SWARM] 🎯 Coordinated attack on ${message.target} initiated by ${message.initiator}!`);
               // Find and attack target
-              const attackTarget = Object.values(bot.entities).find(e => 
+              const coordAttackTarget = Object.values(bot.entities).find(e =>
                 e.type === 'player' && e.username === message.target
               );
-              if (attackTarget && bot.pvp) {
-                bot.pvp.attack(attackTarget);
+
+              if (coordAttackTarget && combatAI && typeof combatAI.handleCombat === 'function') {
+                console.log(`[SWARM] ⚔️ Joining coordinated attack on ${message.target}!`);
+                bot.chat(`🎯 Joining coordinated attack on ${message.target}!`);
+                await combatAI.handleCombat(coordAttackTarget);
+              } else if (coordAttackTarget && !combatAI) {
+                console.log(`[SWARM] ⚠️ Combat AI not available for coordinated attack`);
+              } else {
+                console.log(`[SWARM] ⚠️ Target ${message.target} not found in loaded entities`);
+              }
+              break;
+
+            case 'ATTACK_TARGET':
+              console.log(`[SWARM] 🎯 Received attack target: ${message.target} at position ${message.targetPos.x}, ${message.targetPos.y}, ${message.targetPos.z}`);
+              const attackTargetEntity = Object.values(bot.entities).find(e =>
+                e.type === 'player' && e.username === message.target
+              );
+
+              if (attackTargetEntity && combatAI && typeof combatAI.handleCombat === 'function') {
+                console.log(`[SWARM] 🎯 Found attack target ${message.target} - ENGAGING!`);
+                await combatAI.handleCombat(attackTargetEntity);
+              } else if (!attackTargetEntity) {
+                console.log(`[SWARM] ⚠️ Attack target ${message.target} not found in loaded entities`);
               }
               break;
               
             case 'RETREAT':
-              console.log(`[SWARM] 🏃 Retreat signal from ${message.bot}!`);
-              if (bot.pvp && bot.pvp.target) {
-                bot.pvp.stop();
-              }
-              break;
+               console.log(`[SWARM] 🏃 Retreat signal from ${message.bot}!`);
+               if (combatAI) {
+                 combatAI.inCombat = false;
+                 combatAI.currentTarget = null;
+               }
+               if (bot.pvp && bot.pvp.target) {
+                 bot.pvp.stop();
+               }
+               break;
+
+             case 'RETREAT_NOW':
+               console.log(`[SWARM] 🏃 Retreat command from ${message.initiator}! All bots retreating!`);
+               if (combatAI) {
+                 combatAI.inCombat = false;
+                 combatAI.currentTarget = null;
+               }
+               if (bot.pvp && bot.pvp.target) {
+                 bot.pvp.stop();
+               }
+               bot.chat(`Retreating as ordered by ${message.initiator}!`);
+               break;
               
             case 'REGROUP':
               console.log(`[SWARM] 📍 Regrouping at ${message.location.x}, ${message.location.y}, ${message.location.z}`);
@@ -22696,7 +22770,22 @@ async function launchBot(username, role = 'fighter') {
                 message.location.x, message.location.y, message.location.z), 5
               )).catch(() => {});
               break;
-              
+
+            case 'GUARD_POSITION':
+              console.log(`[SWARM] 🛡️ Guard duty initiated at ${message.position.x}, ${message.position.y}, ${message.position.z}`);
+              bot.chat(`🛡️ Starting guard duty at ${message.position.x}, ${message.position.y}, ${message.position.z}!`);
+              if (bot.ashfinder) {
+                bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+                  message.position.x, message.position.y, message.position.z), 3
+                )).then(() => {
+                  console.log(`[SWARM] Arrived at guard position, beginning patrol`);
+                  bot.chat(`Guard position ready! Monitoring for threats...`);
+                }).catch(err => {
+                  console.log(`[SWARM] Failed to reach guard position: ${err.message}`);
+                });
+              }
+              break;
+
             case 'HELP_COMMAND':
               console.log(`[SWARM] 🆘 Help request from ${message.requestedBy} at ${message.coords.x}, ${message.coords.y}, ${message.coords.z}`);
               bot.chat(`Coming to help ${message.requestedBy}!`);
