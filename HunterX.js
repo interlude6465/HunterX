@@ -1423,7 +1423,28 @@ const config = {
     messagesResponded: 0,
     commandsExecuted: 0,
     avgResponseTime: 0,
-    lastInteraction: null
+    lastInteraction: null,
+    privateMessagesReceived: 0,
+    privateMessagesSent: 0,
+    privateAutoReplies: 0,
+    lastPrivateInteraction: null
+  },
+  
+  // Private messaging system
+  privateMsg: {
+    enabled: false, // Private messaging auto-reply toggle
+    minTrustLevel: 'trusted', // Minimum trust level to toggle private messaging
+    autoReplyTemplate: '🤖 [Auto-reply] I am currently in private mode. Please use public chat or try again later.',
+    autoReplyPrefix: '[Auto-reply] ',
+    rateLimitPerSender: 30000, // 30 seconds between replies to same sender
+    globalRateLimit: 10, // Max auto-replies per minute
+    rateLimitWindow: 60000, // 1 minute window for global rate limit
+    forwardToConsole: true, // Log private messages to console
+    logToFile: true, // Save private messages to intelligence log
+    senderCooldowns: new Map(), // Track per-sender cooldowns
+    globalReplyCount: 0, // Track replies in current window
+    lastRateReset: Date.now(), // Last time global rate limit was reset
+    blockedSenders: new Set() // Senders who are blocked due to spam
   },
   
   // Anti-cheat bypass system
@@ -14465,6 +14486,9 @@ class ConversationAI {
       // Trust & Permissions
       'trust level', 'check trust', 'list whitelist', 'show whitelist', 'set trust', 'set level', 'remove trust', 'remove whitelist',
 
+      // Private Messaging
+      '!msg toggle', '!msg on', '!msg off', 'private message', 'private mode',
+
       // Mode changes
       'change to', 'switch to',
 
@@ -14605,6 +14629,57 @@ class ConversationAI {
         }
       } else {
         this.bot.chat("Usage: remove trust <player>");
+      }
+      return;
+    }
+    
+    // Private messaging commands
+    if (lower.startsWith('!msg toggle') || lower.includes('private mode')) {
+      if (!this.hasTrustLevel(username, config.privateMsg.minTrustLevel)) {
+        this.bot.chat(`Sorry ${username}, only ${config.privateMsg.minTrustLevel}+ players can toggle private messaging!`);
+        return;
+      }
+      
+      config.privateMsg.enabled = !config.privateMsg.enabled;
+      const status = config.privateMsg.enabled ? 'ENABLED' : 'DISABLED';
+      this.bot.chat(`🔐 Private messaging auto-reply: ${status}`);
+      console.log(`[PRIVATE MSG] ${username} toggled private messaging: ${status}`);
+      
+      // Save configuration
+      saveConfiguration();
+      return;
+    }
+    
+    if (lower.startsWith('!msg on')) {
+      if (!this.hasTrustLevel(username, config.privateMsg.minTrustLevel)) {
+        this.bot.chat(`Sorry ${username}, only ${config.privateMsg.minTrustLevel}+ players can enable private messaging!`);
+        return;
+      }
+      
+      if (!config.privateMsg.enabled) {
+        config.privateMsg.enabled = true;
+        this.bot.chat(`🔐 Private messaging auto-reply: ENABLED`);
+        console.log(`[PRIVATE MSG] ${username} enabled private messaging`);
+        saveConfiguration();
+      } else {
+        this.bot.chat(`Private messaging is already enabled!`);
+      }
+      return;
+    }
+    
+    if (lower.startsWith('!msg off')) {
+      if (!this.hasTrustLevel(username, config.privateMsg.minTrustLevel)) {
+        this.bot.chat(`Sorry ${username}, only ${config.privateMsg.minTrustLevel}+ players can disable private messaging!`);
+        return;
+      }
+      
+      if (config.privateMsg.enabled) {
+        config.privateMsg.enabled = false;
+        this.bot.chat(`🔐 Private messaging auto-reply: DISABLED`);
+        console.log(`[PRIVATE MSG] ${username} disabled private messaging`);
+        saveConfiguration();
+      } else {
+        this.bot.chat(`Private messaging is already disabled!`);
       }
       return;
     }
@@ -16143,6 +16218,166 @@ class ConversationAI {
       safeWriteFile('./data/whitelist.json', JSON.stringify(config.whitelist, null, 2));
       this.bot.chat(`✅ Set ${targetPlayer}'s trust level to ${trustLevel}`);
     }
+  }
+  
+  // Handle incoming whisper/private message
+  async handleWhisper(username, message) {
+    console.log(`[PRIVATE MSG] Received whisper from ${username}: ${message}`);
+    
+    // Update metrics
+    config.conversationMetrics.privateMessagesReceived++;
+    config.conversationMetrics.lastPrivateInteraction = Date.now();
+    
+    // Forward to console if enabled
+    if (config.privateMsg.forwardToConsole) {
+      console.log(`[WHISPER] ${username}: ${message}`);
+    }
+    
+    // Log to intelligence database if enabled
+    if (config.privateMsg.logToFile && globalIntelligenceDatabase) {
+      globalIntelligenceDatabase.logEvent({
+        type: 'private_message',
+        timestamp: Date.now(),
+        sender: username,
+        receiver: this.bot.username,
+        content: message,
+        direction: 'incoming'
+      });
+    }
+    
+    // Ignore own messages to prevent feedback loops
+    if (username === this.bot.username) {
+      return;
+    }
+    
+    // Check if private messaging is enabled
+    if (!config.privateMsg.enabled) {
+      console.log(`[PRIVATE MSG] Private messaging disabled, ignoring whisper from ${username}`);
+      return;
+    }
+    
+    // Check sender trust level
+    if (!this.isWhitelisted(username)) {
+      console.log(`[PRIVATE MSG] Unwhitelisted sender ${username}, ignoring whisper`);
+      return;
+    }
+    
+    // Check if sender is blocked due to spam
+    if (config.privateMsg.blockedSenders.has(username)) {
+      console.log(`[PRIVATE MSG] Blocked sender ${username}, ignoring whisper`);
+      return;
+    }
+    
+    // Rate limiting per sender
+    const now = Date.now();
+    const lastReplyTime = config.privateMsg.senderCooldowns.get(username);
+    if (lastReplyTime && (now - lastReplyTime) < config.privateMsg.rateLimitPerSender) {
+      console.log(`[PRIVATE MSG] Rate limit exceeded for ${username}, ignoring whisper`);
+      return;
+    }
+    
+    // Global rate limiting
+    if (now - config.privateMsg.lastRateReset > config.privateMsg.rateLimitWindow) {
+      config.privateMsg.globalReplyCount = 0;
+      config.privateMsg.lastRateReset = now;
+    }
+    
+    if (config.privateMsg.globalReplyCount >= config.privateMsg.globalRateLimit) {
+      console.log(`[PRIVATE MSG] Global rate limit exceeded, ignoring whisper from ${username}`);
+      return;
+    }
+    
+    // Check if this looks like a command (and handle it)
+    const normalizedMessage = this.normalizeMessage(message, username);
+    if (this.isCommand(normalizedMessage)) {
+      console.log(`[PRIVATE MSG] Command detected in whisper: ${normalizedMessage}`);
+      await this.handleCommand(username, normalizedMessage);
+      return;
+    }
+    
+    // Send auto-reply
+    await this.sendPrivateAutoReply(username);
+  }
+  
+  // Send auto-reply to private message
+  async sendPrivateAutoReply(username) {
+    try {
+      // Update rate limiting
+      const now = Date.now();
+      config.privateMsg.senderCooldowns.set(username, now);
+      config.privateMsg.globalReplyCount++;
+      
+      // Construct auto-reply message
+      const autoReply = config.privateMsg.autoReplyTemplate;
+      
+      // Send the reply using /msg command
+      this.bot.chat(`/msg ${username} ${autoReply}`);
+      
+      // Update metrics
+      config.conversationMetrics.privateMessagesSent++;
+      config.conversationMetrics.privateAutoReplies++;
+      
+      console.log(`[PRIVATE MSG] Auto-reply sent to ${username}: ${autoReply}`);
+      
+      // Log the reply to intelligence database
+      if (config.privateMsg.logToFile && globalIntelligenceDatabase) {
+        globalIntelligenceDatabase.logEvent({
+          type: 'private_message',
+          timestamp: Date.now(),
+          sender: this.bot.username,
+          receiver: username,
+          content: autoReply,
+          direction: 'outgoing',
+          autoReply: true
+        });
+      }
+      
+    } catch (error) {
+      console.log(`[PRIVATE MSG] Error sending auto-reply to ${username}: ${error.message}`);
+    }
+  }
+  
+  // Get recent private conversations for dashboard
+  getRecentPrivateConversations(limit = 10) {
+    if (!globalIntelligenceDatabase) {
+      return [];
+    }
+    
+    try {
+      const recentEvents = globalIntelligenceDatabase.events
+        .filter(event => event.type === 'private_message')
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, limit);
+      
+      return recentEvents.map(event => ({
+        timestamp: event.timestamp,
+        sender: event.sender,
+        receiver: event.receiver,
+        content: event.content,
+        direction: event.direction,
+        autoReply: event.autoReply || false
+      }));
+    } catch (error) {
+      console.log(`[PRIVATE MSG] Error getting recent conversations: ${error.message}`);
+      return [];
+    }
+  }
+  
+  // Get private messaging statistics
+  getPrivateMessagingStats() {
+    return {
+      enabled: config.privateMsg.enabled,
+      messagesReceived: config.conversationMetrics.privateMessagesReceived,
+      messagesSent: config.conversationMetrics.privateMessagesSent,
+      autoReplies: config.conversationMetrics.privateAutoReplies,
+      lastInteraction: config.conversationMetrics.lastPrivateInteraction,
+      blockedSenders: Array.from(config.privateMsg.blockedSenders),
+      globalReplyCount: config.privateMsg.globalReplyCount,
+      activeCooldowns: Array.from(config.privateMsg.senderCooldowns.entries()).map(([sender, time]) => ({
+        sender,
+        cooldownEnds: time + config.privateMsg.rateLimitPerSender
+      }))
+    };
   }
 }
 
@@ -22430,7 +22665,12 @@ http.createServer((req, res) => {
         avgResponseTime: config.conversationMetrics.avgResponseTime,
         responseRate: config.conversationMetrics.messagesReceived > 0
           ? ((config.conversationMetrics.messagesResponded / config.conversationMetrics.messagesReceived) * 100).toFixed(1) + '%'
-          : '0%'
+          : '0%',
+        privateMessagesReceived: config.conversationMetrics.privateMessagesReceived,
+        privateMessagesSent: config.conversationMetrics.privateMessagesSent,
+        privateAutoReplies: config.conversationMetrics.privateAutoReplies,
+        lastPrivateInteraction: config.conversationMetrics.lastPrivateInteraction,
+        privateMessagingEnabled: config.privateMsg.enabled
       },
       whitelist: {
         total: config.whitelist.length,
@@ -22924,6 +23164,88 @@ http.createServer((req, res) => {
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, response: 'Command failed: ' + err.message }));
+      }
+    });
+  } else if (req.url === '/api/private-messages' && req.method === 'GET') {
+    // Get recent private conversations
+    try {
+      const conversationAI = new ConversationAI(globalBot);
+      const limit = parseInt(req.url.split('limit=')[1]) || 10;
+      const conversations = conversationAI.getRecentPrivateConversations(limit);
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        conversations,
+        total: conversations.length
+      }));
+    } catch (err) {
+      console.log('[API] Private messages error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+  } else if (req.url === '/api/private-message-stats' && req.method === 'GET') {
+    // Get private messaging statistics
+    try {
+      const conversationAI = new ConversationAI(globalBot);
+      const stats = conversationAI.getPrivateMessagingStats();
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        stats
+      }));
+    } catch (err) {
+      console.log('[API] Private message stats error:', err.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+  } else if (req.url.startsWith('/api/private-message/toggle') && req.method === 'POST') {
+    // Toggle private messaging (requires authentication)
+    let body = '';
+    req.on('data', chunk => body += chunk.toString());
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        const { user, enabled } = data;
+        
+        if (!user) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'User parameter required' }));
+          return;
+        }
+        
+        const conversationAI = new ConversationAI(globalBot);
+        
+        // Check if user has permission
+        if (!conversationAI.hasTrustLevel(user, config.privateMsg.minTrustLevel)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ 
+            success: false, 
+            error: `Access denied: ${config.privateMsg.minTrustLevel}+ users only` 
+          }));
+          return;
+        }
+        
+        // Toggle private messaging
+        if (typeof enabled === 'boolean') {
+          config.privateMsg.enabled = enabled;
+        } else {
+          config.privateMsg.enabled = !config.privateMsg.enabled;
+        }
+        
+        saveConfiguration();
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          enabled: config.privateMsg.enabled,
+          message: `Private messaging ${config.privateMsg.enabled ? 'ENABLED' : 'DISABLED'}`
+        }));
+      } catch (err) {
+        console.log('[API] Private message toggle error:', err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message }));
       }
     });
   } else {
@@ -23880,6 +24202,45 @@ async function launchBot(username, role = 'fighter') {
     // Chat handler
     bot.on('chat', async (username, message) => {
       if (username === bot.username) return;
+      
+      // Check for server-specific private message patterns
+      const privatePatterns = [
+        /(\w+)\s+whispers to you:\s*(.+)/i,
+        /From\s+(\w+):\s*(.+)/i,
+        /\[(\w+)\s*->\s*me\]\s*(.+)/i,
+        /(\w+)\s*->\s*(\w+):\s*(.+)/i
+      ];
+      
+      let isPrivateMessage = false;
+      let privateSender = username;
+      let privateContent = message;
+      
+      for (const pattern of privatePatterns) {
+        const match = message.match(pattern);
+        if (match) {
+          isPrivateMessage = true;
+          privateSender = match[1];
+          privateContent = match[match.length - 1]; // Last capture group is the content
+          
+          // Only process if this message is directed to the bot
+          if (match.length > 2 && match[2] && match[2].toLowerCase() !== bot.username.toLowerCase()) {
+            // This is a private message between other players, ignore it
+            isPrivateMessage = false;
+          }
+          break;
+        }
+      }
+      
+      // Handle as private message if detected
+      if (isPrivateMessage) {
+        try {
+          await conversationAI.handleWhisper(privateSender, privateContent);
+        } catch (e) {
+          console.log('[PRIVATE MSG] Private message detection error:', e.message);
+        }
+        return;
+      }
+      
       try {
         if (await farmIntegration.tryHandleChat(username, message)) {
           return;
@@ -23888,6 +24249,16 @@ async function launchBot(username, role = 'fighter') {
         console.log('[FARM] Chat handler error:', e.message);
       }
       await conversationAI.handleMessage(username, message);
+    });
+
+    // Whisper/Private message handler
+    bot.on('whisper', async (username, message) => {
+      if (username === bot.username) return;
+      try {
+        await conversationAI.handleWhisper(username, message);
+      } catch (e) {
+        console.log('[PRIVATE MSG] Whisper handler error:', e.message);
+      }
     });
 
     bot.on('death', async () => {
@@ -24784,6 +25155,36 @@ function loadConfiguration() {
           config.dangerEscape.playerProximityRadius = radius;
         }
       }
+      if (savedConfig.privateMsg) {
+        const privateSettings = savedConfig.privateMsg;
+        if (typeof privateSettings.enabled === 'boolean') {
+          config.privateMsg.enabled = privateSettings.enabled;
+        }
+        if (privateSettings.minTrustLevel && typeof privateSettings.minTrustLevel === 'string') {
+          config.privateMsg.minTrustLevel = privateSettings.minTrustLevel;
+        }
+        if (privateSettings.autoReplyTemplate && typeof privateSettings.autoReplyTemplate === 'string') {
+          config.privateMsg.autoReplyTemplate = privateSettings.autoReplyTemplate;
+        }
+        if (privateSettings.autoReplyPrefix && typeof privateSettings.autoReplyPrefix === 'string') {
+          config.privateMsg.autoReplyPrefix = privateSettings.autoReplyPrefix;
+        }
+        if (typeof privateSettings.rateLimitPerSender === 'number' && privateSettings.rateLimitPerSender > 0) {
+          config.privateMsg.rateLimitPerSender = privateSettings.rateLimitPerSender;
+        }
+        if (typeof privateSettings.globalRateLimit === 'number' && privateSettings.globalRateLimit > 0) {
+          config.privateMsg.globalRateLimit = privateSettings.globalRateLimit;
+        }
+        if (typeof privateSettings.rateLimitWindow === 'number' && privateSettings.rateLimitWindow > 0) {
+          config.privateMsg.rateLimitWindow = privateSettings.rateLimitWindow;
+        }
+        if (typeof privateSettings.forwardToConsole === 'boolean') {
+          config.privateMsg.forwardToConsole = privateSettings.forwardToConsole;
+        }
+        if (typeof privateSettings.logToFile === 'boolean') {
+          config.privateMsg.logToFile = privateSettings.logToFile;
+        }
+      }
       console.log('✅ Configuration loaded successfully!');
       return true;
     } else {
@@ -24816,6 +25217,17 @@ function saveConfiguration() {
     dangerEscape: {
       enabled: escapeSettings.enabled !== false,
       playerProximityRadius: normalizedRadius
+    },
+    privateMsg: {
+      enabled: config.privateMsg.enabled,
+      minTrustLevel: config.privateMsg.minTrustLevel,
+      autoReplyTemplate: config.privateMsg.autoReplyTemplate,
+      autoReplyPrefix: config.privateMsg.autoReplyPrefix,
+      rateLimitPerSender: config.privateMsg.rateLimitPerSender,
+      globalRateLimit: config.privateMsg.globalRateLimit,
+      rateLimitWindow: config.privateMsg.rateLimitWindow,
+      forwardToConsole: config.privateMsg.forwardToConsole,
+      logToFile: config.privateMsg.logToFile
     }
   };
   
@@ -25212,6 +25624,20 @@ async function initializeHunterX() {
   if (!configLoaded) {
     runSetupWizard();
     return; // Don't show menu yet, let setup wizard handle it
+  }
+  
+  // Initialize private messaging data structures
+  if (!config.privateMsg.senderCooldowns) {
+    config.privateMsg.senderCooldowns = new Map();
+  }
+  if (!config.privateMsg.blockedSenders) {
+    config.privateMsg.blockedSenders = new Set();
+  }
+  if (!config.privateMsg.globalReplyCount) {
+    config.privateMsg.globalReplyCount = 0;
+  }
+  if (!config.privateMsg.lastRateReset) {
+    config.privateMsg.lastRateReset = Date.now();
   }
   
   // Show main menu
@@ -26585,6 +27011,12 @@ class ProductionTracker {
 }
 
 // === STARTUP CALL ===
+// Ensure data directory exists
+if (!fs.existsSync('./data')) {
+  fs.mkdirSync('./data', { recursive: true });
+  console.log('[INIT] Created data directory');
+}
+
 // Initialize HunterX with automatic setup and credential management
 initializeHunterX();
 
