@@ -1325,6 +1325,7 @@ const config = {
     placement: null, // Will be initialized by NeuralBrainManager
     dupe: null, // Will be initialized by NeuralBrainManager
     conversation: null, // Will be initialized by NeuralBrainManager
+    dialogue: null, // Will be initialized by DialogueRL
     available: false, // Will be updated by NeuralBrainManager
     type: 'fallback', // Will be updated by NeuralBrainManager
     manager: null // Will be set to NeuralBrainManager instance
@@ -14540,6 +14541,7 @@ class ConversationAI {
     this.maxContext = 10;
     this.trustLevels = ['guest', 'trusted', 'admin', 'owner'];
     this.itemHunter = new ItemHunter(bot);
+    this.dialogueRL = new DialogueRL(bot);
   }
   
   // Strip bot name from message with various formats
@@ -14677,6 +14679,23 @@ class ConversationAI {
     return mentioned || isWhitelisted;
   }
   
+  // Classify message type for RL scenario tracking
+  classifyMessageType(message) {
+    const lower = message.toLowerCase();
+    
+    if (lower.includes('find') || lower.includes('mine') || lower.includes('collect') || 
+        lower.includes('hunt') || lower.includes('gather') || lower.includes('get')) {
+      return 'resource_request';
+    }
+    
+    if (lower.includes('attack') || lower.includes('fight') || lower.includes('combat') || 
+        lower.includes('defend') || lower.includes('retreat') || lower.includes('guard')) {
+      return 'combat_command';
+    }
+    
+    return 'smalltalk';
+  }
+
   async handleMessage(username, message) {
       console.log(`[CHAT] ${username}: ${message}`);
 
@@ -14712,12 +14731,25 @@ class ConversationAI {
       this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
       if (this.context.length > this.maxContext) this.context.shift();
 
+      // Classify message type for RL
+      const messageType = this.classifyMessageType(normalizedMessage);
+
       // Check if it's a command (use normalized message)
       if (this.isCommand(normalizedMessage)) {
         console.log(`[CHAT] Command detected: ${normalizedMessage}`);
         console.log(`[CHAT] Calling handleCommand...`);
 
+        const startTime = Date.now();
         await this.handleCommand(username, normalizedMessage);
+        const responseTime = Date.now() - startTime;
+
+        // Record outcome for RL training
+        const trustLevel = this.getTrustLevel(username) || 'guest';
+        this.dialogueRL.recordOutcome(username, normalizedMessage, 'execute_parsed_command', {
+          success: true,
+          responseTime: responseTime,
+          trustViolation: false
+        }, messageType);
 
         console.log(`[CHAT] Command execution complete`);
         return;
@@ -14726,6 +14758,14 @@ class ConversationAI {
       // Generate response
       const response = this.generateResponse(username, normalizedMessage);
       this.bot.chat(response);
+      
+      // Record non-command interaction for RL
+      const trustLevel = this.getTrustLevel(username) || 'guest';
+      this.dialogueRL.recordOutcome(username, normalizedMessage, 'fall_back_parser', {
+        success: true,
+        responseTime: 50,
+        trustViolation: false
+      }, messageType);
     }
   
   async handlePrivateMessage(username, message) {
@@ -15892,6 +15932,56 @@ class ConversationAI {
       return;
     }
     
+    // Dialogue RL commands
+    if (lower.includes('!rl') || lower.includes('rl dialogue')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can control RL settings!");
+        return;
+      }
+      
+      if (lower.includes('stats')) {
+        const stats = this.dialogueRL.getStats();
+        this.bot.chat(`📊 Dialogue RL Stats:`);
+        this.bot.chat(`  Enabled: ${stats.enabled}, Initialized: ${stats.initialized}`);
+        this.bot.chat(`  Total interactions: ${stats.stats.totalInteractions}`);
+        this.bot.chat(`  Success rate: ${stats.successRate}`);
+        this.bot.chat(`  Training data: ${stats.trainingDataSize} examples`);
+        this.bot.chat(`  Scenario stats:`);
+        this.bot.chat(`    Resource: ${stats.stats.scenarioStats.resource_request.count} (${stats.stats.scenarioStats.resource_request.success} success)`);
+        this.bot.chat(`    Combat: ${stats.stats.scenarioStats.combat_command.count} (${stats.stats.scenarioStats.combat_command.success} success)`);
+        this.bot.chat(`    Smalltalk: ${stats.stats.scenarioStats.smalltalk.count} (${stats.stats.scenarioStats.smalltalk.success} success)`);
+        this.bot.chat(`  Actions: ${stats.stats.clarificationsRequested} clarifications, ${stats.stats.rejections} rejections, ${stats.stats.escalations} escalations, ${stats.stats.trustVetoes} trust vetoes`);
+        return;
+      }
+      
+      if (lower.includes('reset')) {
+        this.dialogueRL.resetStats();
+        this.bot.chat("✅ Dialogue RL statistics reset!");
+        return;
+      }
+      
+      if (lower.includes('train')) {
+        await this.dialogueRL.trainModel();
+        this.bot.chat("✅ Dialogue RL model trained!");
+        return;
+      }
+      
+      if (lower.includes('save')) {
+        this.dialogueRL.saveModel();
+        this.bot.chat("✅ Dialogue RL model saved to disk!");
+        return;
+      }
+      
+      if (lower.includes('load')) {
+        await this.dialogueRL.loadModel();
+        this.bot.chat("✅ Dialogue RL model loaded from disk!");
+        return;
+      }
+      
+      this.bot.chat("Usage: !rl dialogue [stats|reset|train|save|load]");
+      return;
+    }
+    
     // Projectile & Mace commands
     if (lower.includes('projectile stats') || lower.includes('bow stats')) {
       if (this.bot.combatAI && this.bot.combatAI.projectileAI) {
@@ -16811,6 +16901,404 @@ class ConversationAI {
 
       safeWriteFile('./data/whitelist.json', JSON.stringify(config.whitelist, null, 2));
       this.bot.chat(`✅ Set ${targetPlayer}'s trust level to ${trustLevel}`);
+    }
+  }
+}
+
+// === DIALOGUE REINFORCEMENT LEARNING ===
+class DialogueRL {
+  constructor(bot) {
+    this.bot = bot;
+    this.enabled = config.neural && config.neural.available;
+    this.model = null;
+    this.replayBuffer = [];
+    this.maxBufferSize = 1000;
+    this.trainingData = [];
+    this.stats = {
+      totalInteractions: 0,
+      successfulCommands: 0,
+      failedCommands: 0,
+      clarificationsRequested: 0,
+      rejections: 0,
+      escalations: 0,
+      trustVetoes: 0,
+      scenarioStats: {
+        resource_request: { count: 0, success: 0 },
+        combat_command: { count: 0, success: 0 },
+        smalltalk: { count: 0, success: 0 }
+      }
+    };
+    this.recentSuccesses = [];
+    this.maxRecentSuccesses = 20;
+    this.lastTrainingTime = 0;
+    this.trainingInterval = 60000; // Train every 60 seconds
+    this.confidenceThreshold = 0.7; // Below this, use fallback
+    this.initialized = false;
+    
+    this.initializeModel();
+  }
+  
+  initializeModel() {
+    try {
+      // Initialize dialogue neural network if available
+      if (this.enabled && config.neural && config.neural.manager) {
+        // Network for dialogue action selection: 
+        // Input: [trustLevel, confidence, intentVector (5d), successRate, recentSuccess]
+        // Output: 7 possible actions
+        const inputSize = 13; // 1 trust + 1 confidence + 5 intent + 1 success rate + 5 recent history
+        const outputSize = 7; // 7 possible actions
+        
+        if (!config.neural.dialogue) {
+          config.neural.dialogue = config.neural.manager.createNetwork('dialogue', inputSize, outputSize);
+        }
+        this.model = config.neural.dialogue;
+        this.initialized = true;
+        console.log('[DIALOGUE_RL] Dialogue RL model initialized');
+      } else {
+        console.log('[DIALOGUE_RL] RL disabled or not available, using deterministic fallback');
+      }
+    } catch (error) {
+      console.error('[DIALOGUE_RL] Error initializing model:', error);
+      this.initialized = false;
+    }
+  }
+  
+  // Encode dialogue state into a feature vector
+  encodeState(username, message, trustLevel, messageType) {
+    try {
+      const features = [];
+      
+      // 1. Trust level (normalized: 0-3 / 3)
+      const trustLevels = { guest: 0, trusted: 1, admin: 2, owner: 3 };
+      const trustValue = (trustLevels[trustLevel] || 0) / 3.0;
+      features.push(trustValue);
+      
+      // 2. Message length normalized (as proxy for clarity)
+      const lengthNormalized = Math.min(1.0, message.length / 100.0);
+      features.push(lengthNormalized);
+      
+      // 3-7. Intent vector (5D) - classify message intent
+      const intentVector = this.encodeIntent(message, messageType);
+      features.push(...intentVector);
+      
+      // 8. Success rate from recent history
+      const successRate = this.recentSuccesses.length > 0 
+        ? this.recentSuccesses.filter(s => s.success).length / this.recentSuccesses.length
+        : 0.5;
+      features.push(Math.min(1.0, successRate));
+      
+      // 9-13. Recent success history (last 5 interactions, normalized)
+      const recentCount = Math.min(5, this.recentSuccesses.length);
+      for (let i = 0; i < 5; i++) {
+        if (i < recentCount) {
+          features.push(this.recentSuccesses[this.recentSuccesses.length - 1 - i].success ? 1.0 : 0.0);
+        } else {
+          features.push(0.5); // Neutral for missing history
+        }
+      }
+      
+      return features;
+    } catch (error) {
+      console.error('[DIALOGUE_RL] Error encoding state:', error);
+      return Array(13).fill(0.5); // Default fallback
+    }
+  }
+  
+  // Encode message intent into 5D vector
+  encodeIntent(message, messageType) {
+    const intent = [0, 0, 0, 0, 0]; // [resource, combat, clarification, help, smalltalk]
+    const lower = message.toLowerCase();
+    
+    // Resource request intent
+    if (lower.includes('find') || lower.includes('mine') || lower.includes('collect') || lower.includes('get')) {
+      intent[0] = 1.0;
+    }
+    
+    // Combat command intent
+    if (lower.includes('attack') || lower.includes('defend') || lower.includes('combat') || lower.includes('fight')) {
+      intent[1] = 1.0;
+    }
+    
+    // Clarification/confusion intent
+    if (lower.includes('?') || lower.includes('what') || lower.includes('how') || lower.includes('help')) {
+      intent[2] = 0.8;
+    }
+    
+    // Help request intent
+    if (lower.includes('help') || lower.includes('need') || lower.includes('emergency')) {
+      intent[3] = 1.0;
+    }
+    
+    // Smalltalk intent
+    if (lower.includes('hello') || lower.includes('hi') || lower.includes('thanks') || lower.includes('bye')) {
+      intent[4] = 1.0;
+    }
+    
+    // Normalize (convert to probabilities, not all-or-nothing)
+    const sum = intent.reduce((a, b) => a + b, 0);
+    if (sum > 0) {
+      return intent.map(v => v / (sum + 0.1));
+    }
+    
+    return intent;
+  }
+  
+  // Select action based on RL network
+  async selectAction(username, message, trustLevel, messageType, conversationAI) {
+    if (!this.enabled || !this.initialized) {
+      return { action: 'fall_back_parser', confidence: 0.0 };
+    }
+    
+    try {
+      const state = this.encodeState(username, message, trustLevel, messageType);
+      
+      // Query neural network for action probabilities
+      const actionProbabilities = await safeNeuralPredict('dialogue', state, null);
+      
+      if (!actionProbabilities) {
+        return { action: 'fall_back_parser', confidence: 0.0 };
+      }
+      
+      // Map output to action
+      const actions = [
+        'execute_parsed_command',
+        'request_clarification',
+        'reject_request',
+        'delegate_to_module',
+        'escalate_to_owner',
+        'fall_back_parser',
+        'noop'
+      ];
+      
+      // Ensure actionProbabilities is iterable
+      const probs = Array.isArray(actionProbabilities) ? actionProbabilities : [actionProbabilities];
+      
+      // Find best action
+      let bestAction = 'fall_back_parser';
+      let bestConfidence = 0;
+      
+      for (let i = 0; i < Math.min(probs.length, actions.length); i++) {
+        const prob = Math.max(0, Math.min(1, parseFloat(probs[i]) || 0));
+        if (prob > bestConfidence) {
+          bestConfidence = prob;
+          bestAction = actions[i];
+        }
+      }
+      
+      return {
+        action: bestAction,
+        confidence: bestConfidence,
+        probabilities: probs.slice(0, actions.length)
+      };
+    } catch (error) {
+      console.error('[DIALOGUE_RL] Error selecting action:', error);
+      return { action: 'fall_back_parser', confidence: 0.0 };
+    }
+  }
+  
+  // Record outcome for training
+  recordOutcome(username, message, action, outcome, messageType = 'unknown') {
+    try {
+      const success = outcome.success || false;
+      const reward = this.calculateReward(outcome, action, message);
+      
+      // Update stats
+      this.stats.totalInteractions++;
+      if (success) {
+        this.stats.successfulCommands++;
+      } else {
+        this.stats.failedCommands++;
+      }
+      
+      if (action === 'request_clarification') {
+        this.stats.clarificationsRequested++;
+      } else if (action === 'reject_request') {
+        this.stats.rejections++;
+      } else if (action === 'escalate_to_owner') {
+        this.stats.escalations++;
+      }
+      
+      // Track scenario stats
+      if (this.stats.scenarioStats[messageType]) {
+        this.stats.scenarioStats[messageType].count++;
+        if (success) {
+          this.stats.scenarioStats[messageType].success++;
+        }
+      }
+      
+      // Record in recent successes
+      this.recentSuccesses.push({ success, timestamp: Date.now(), messageType });
+      if (this.recentSuccesses.length > this.maxRecentSuccesses) {
+        this.recentSuccesses.shift();
+      }
+      
+      // Store for training
+      this.trainingData.push({
+        message,
+        action,
+        reward,
+        timestamp: Date.now(),
+        messageType,
+        username
+      });
+      
+      console.log(`[DIALOGUE_RL] Recorded outcome: action=${action}, success=${success}, reward=${reward.toFixed(2)}`);
+    } catch (error) {
+      console.error('[DIALOGUE_RL] Error recording outcome:', error);
+    }
+  }
+  
+  // Calculate reward signal
+  calculateReward(outcome, action, message) {
+    let reward = 0;
+    
+    if (outcome.success) {
+      // Reward successful execution
+      if (action === 'execute_parsed_command') {
+        reward = 1.0;
+      } else if (action === 'request_clarification') {
+        reward = 0.3; // Less reward for clarification
+      } else if (action === 'delegate_to_module') {
+        reward = 0.7; // Moderate reward for delegation
+      }
+    } else {
+      // Penalize failures
+      reward = -0.5;
+    }
+    
+    // Penalize unauthorized attempts
+    if (outcome.trustViolation) {
+      reward -= 1.0;
+    }
+    
+    // Penalize redundant clarifications
+    if (action === 'request_clarification' && outcome.redundantClarification) {
+      reward -= 0.5;
+    }
+    
+    // Bonus for quick, successful interaction
+    if (outcome.success && outcome.responseTime && outcome.responseTime < 500) {
+      reward += 0.2;
+    }
+    
+    return reward;
+  }
+  
+  // Record trust veto (when RL decision would violate trust level)
+  recordTrustVeto(action, trustLevel, requiredLevel) {
+    this.stats.trustVetoes++;
+    console.log(`[DIALOGUE_RL] Trust veto: action=${action} requires=${requiredLevel}, user=${trustLevel}`);
+  }
+  
+  // Train the model periodically
+  async trainModel() {
+    if (!this.enabled || !this.initialized || this.trainingData.length === 0) {
+      return;
+    }
+    
+    // Only train if enough time has passed
+    const now = Date.now();
+    if (now - this.lastTrainingTime < this.trainingInterval) {
+      return;
+    }
+    
+    try {
+      // Prepare training data in batch
+      const batchSize = Math.min(32, this.trainingData.length);
+      const batch = this.trainingData.slice(-batchSize);
+      
+      const trainingExamples = batch.map(data => {
+        // Create target vector with reward
+        const target = Array(7).fill(0);
+        const actionIndex = [
+          'execute_parsed_command',
+          'request_clarification',
+          'reject_request',
+          'delegate_to_module',
+          'escalate_to_owner',
+          'fall_back_parser',
+          'noop'
+        ].indexOf(data.action);
+        
+        if (actionIndex >= 0) {
+          target[actionIndex] = Math.max(0, Math.min(1, (data.reward + 1) / 2)); // Normalize reward to [0,1]
+        }
+        
+        return {
+          input: data.state || Array(13).fill(0.5),
+          output: target
+        };
+      });
+      
+      // Train the network
+      const success = await safeNeuralTrain('dialogue', trainingExamples, {
+        iterations: 100,
+        errorThresh: 0.01
+      });
+      
+      if (success) {
+        console.log('[DIALOGUE_RL] Model trained successfully on', batchSize, 'examples');
+        this.lastTrainingTime = now;
+        
+        // Periodically save model
+        if (now % 300000 < this.trainingInterval) { // Save every ~5 minutes
+          safeNeuralSave('dialogue', './models/dialogue_model.json');
+        }
+      }
+    } catch (error) {
+      console.error('[DIALOGUE_RL] Error training model:', error);
+    }
+  }
+  
+  // Get RL stats
+  getStats() {
+    return {
+      enabled: this.enabled,
+      initialized: this.initialized,
+      stats: this.stats,
+      trainingDataSize: this.trainingData.length,
+      successRate: this.stats.totalInteractions > 0 
+        ? (this.stats.successfulCommands / this.stats.totalInteractions * 100).toFixed(2) + '%'
+        : 'N/A'
+    };
+  }
+  
+  // Reset RL system
+  resetStats() {
+    this.stats = {
+      totalInteractions: 0,
+      successfulCommands: 0,
+      failedCommands: 0,
+      clarificationsRequested: 0,
+      rejections: 0,
+      escalations: 0,
+      trustVetoes: 0,
+      scenarioStats: {
+        resource_request: { count: 0, success: 0 },
+        combat_command: { count: 0, success: 0 },
+        smalltalk: { count: 0, success: 0 }
+      }
+    };
+    this.recentSuccesses = [];
+    this.trainingData = [];
+    console.log('[DIALOGUE_RL] Statistics reset');
+  }
+  
+  // Load persisted model
+  async loadModel() {
+    try {
+      await safeNeuralLoad('dialogue', './models/dialogue_model.json');
+      console.log('[DIALOGUE_RL] Dialogue model loaded from disk');
+    } catch (error) {
+      console.log('[DIALOGUE_RL] No persisted dialogue model found, starting fresh');
+    }
+  }
+  
+  // Save model to disk
+  saveModel() {
+    if (this.initialized) {
+      safeNeuralSave('dialogue', './models/dialogue_model.json');
+      console.log('[DIALOGUE_RL] Dialogue model saved to disk');
     }
   }
 }
@@ -24046,6 +24534,10 @@ async function launchBot(username, role = 'fighter') {
   combatAI.hostileMobDetector = new HostileMobDetector();
   const combatLogger = new CombatLogger(bot, combatAI);
   const conversationAI = new ConversationAI(bot);
+  
+  // Load persisted dialogue RL model if available
+  await conversationAI.dialogueRL.loadModel();
+  
   const schematicLoader = new SchematicLoader(bot);
   const intelligenceDB = new IntelligenceDatabase(bot);
   let stashScanner = null;
@@ -24655,6 +25147,22 @@ async function launchBot(username, role = 'fighter') {
         intelligenceDB.saveIntelligence();
       }
     }, 60000); // Save every minute
+    
+    // Dialogue RL periodic training and model saving
+    setInterval(() => {
+      if (conversationAI && conversationAI.dialogueRL) {
+        conversationAI.dialogueRL.trainModel().catch(err => {
+          console.error('[DIALOGUE_RL] Training error:', err.message);
+        });
+      }
+    }, 60000); // Train every 60 seconds
+    
+    // Dialogue RL model persistence
+    setInterval(() => {
+      if (conversationAI && conversationAI.dialogueRL) {
+        conversationAI.dialogueRL.saveModel();
+      }
+    }, 300000); // Save every 5 minutes
     
     // Equipment manager update loop
     if (bot.equipmentManager) {
