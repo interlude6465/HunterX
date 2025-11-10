@@ -27967,37 +27967,6 @@ function launch() {
   });
 }
 
-// === START ===
-const knowledgeBaseCount = (config && config.dupeDiscovery && config.dupeDiscovery.knowledgeBase && config.dupeDiscovery.knowledgeBase.historicalDupes) ? config.dupeDiscovery.knowledgeBase.historicalDupes.length : 0;
-console.log(`
-╔═══════════════════════════════════════════════════════╗
-║       HUNTERX v22.1 - INITIALIZING                    ║
-╠═══════════════════════════════════════════════════════╣
-║  ${neuralNetworksAvailable ? '✅' : '⚠️'} Neural networks ${neuralNetworksAvailable ? 'loaded (Enhanced LSTM)' : 'disabled (fallback mode)'}            ║
-║  ✅ God-Tier Crystal PvP System                       ║
-║  ✅ Combat AI ready                                   ║
-║  ✅ Conversation system active                        ║
-║  ✅ Dashboard running on :8080                        ║
-║  🔗 Supply Chain Dashboard on :8081                   ║
-║  ✅ Dupe knowledge base (${knowledgeBaseCount} methods)               ║
-║  ✅ Plugin analyzer ready                             ║
-║  ✅ Automated testing framework                       ║
-║  ⚡ ULTIMATE DUPE DISCOVERY ENGINE                     ║
-║  ✅ Swarm coordinator ready (port 9090)               ║
-║  ✅ Home base system initialized                      ║
-║  ✅ Ender chest logistics enabled                     ║
-║  🔗 Supply Chain Manager ready                       ║
-║  🤖 Smart Bot Spawner with Auto-Detection           ║
-╠═══════════════════════════════════════════════════════╣
-║  NEW: Smart server type detection (cracked/premium)  ║
-║  NEW: Dynamic bot spawning (start with 3, add more)  ║
-║  NEW: Help command - coordinate all bots to location ║
-║  NEW: Video feed infrastructure (WebSocket)          ║
-║  NEW: Swarm management commands (!spawn, !help)      ║
-║  NEW: Auto-detect & use appropriate auth method      ║
-╚═══════════════════════════════════════════════════════╝
-`);
-
 // === AUTOMATIC SETUP & CREDENTIAL MANAGEMENT ===
 
 // Check if dependencies are installed
@@ -28068,6 +28037,41 @@ function installDependencies() {
       resolve(false);
     });
   });
+}
+
+// Print startup banner after config is loaded
+function printStartupBanner() {
+  const knowledgeBaseCount = (config && config.dupeDiscovery && config.dupeDiscovery.knowledgeBase && config.dupeDiscovery.knowledgeBase.historicalDupes) 
+    ? config.dupeDiscovery.knowledgeBase.historicalDupes.length 
+    : 0;
+  console.log(`
+╔═══════════════════════════════════════════════════════╗
+║       HUNTERX v22.1 - INITIALIZING                    ║
+╠═══════════════════════════════════════════════════════╣
+║  ${neuralNetworksAvailable ? '✅' : '⚠️'} Neural networks ${neuralNetworksAvailable ? 'loaded (Enhanced LSTM)' : 'disabled (fallback mode)'}            ║
+║  ✅ God-Tier Crystal PvP System                       ║
+║  ✅ Combat AI ready                                   ║
+║  ✅ Conversation system active                        ║
+║  ✅ Dashboard running on :8080                        ║
+║  🔗 Supply Chain Dashboard on :8081                   ║
+║  ✅ Dupe knowledge base (${knowledgeBaseCount} methods)               ║
+║  ✅ Plugin analyzer ready                             ║
+║  ✅ Automated testing framework                       ║
+║  ⚡ ULTIMATE DUPE DISCOVERY ENGINE                     ║
+║  ✅ Swarm coordinator ready (port 9090)               ║
+║  ✅ Home base system initialized                      ║
+║  ✅ Ender chest logistics enabled                     ║
+║  🔗 Supply Chain Manager ready                       ║
+║  🤖 Smart Bot Spawner with Auto-Detection           ║
+╠═══════════════════════════════════════════════════════╣
+║  NEW: Smart server type detection (cracked/premium)  ║
+║  NEW: Dynamic bot spawning (start with 3, add more)  ║
+║  NEW: Help command - coordinate all bots to location ║
+║  NEW: Video feed infrastructure (WebSocket)          ║
+║  NEW: Swarm management commands (!spawn, !help)      ║
+║  NEW: Auto-detect & use appropriate auth method      ║
+╚═══════════════════════════════════════════════════════╝
+  `);
 }
 
 // Load configuration from file
@@ -28692,6 +28696,9 @@ async function initializeHunterX() {
     runSetupWizard();
     return; // Don't show menu yet, let setup wizard handle it
   }
+  
+  // Print startup banner after config is loaded successfully
+  printStartupBanner();
   
   // Show main menu
   showMenu();
