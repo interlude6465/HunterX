@@ -34,7 +34,7 @@
     "@tensorflow/tfjs-node": "^4.0.0",
     "brain.js": "^2.0.0-beta.24",
     "ml5": "^0.12.0",
-    "synaptic": "npm:null@*"
+    "synaptic": "^1.1.4"
   },
   "optionalDependenciesMeta": {
     "brain.js": {
