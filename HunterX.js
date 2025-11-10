@@ -28697,6 +28697,9 @@ async function initializeHunterX() {
     return; // Don't show menu yet, let setup wizard handle it
   }
   
+  // Initialize global config-dependent resources now that config is loaded
+  initializeGlobalConfigDependencies();
+  
   // Print startup banner after config is loaded successfully
   printStartupBanner();
   
@@ -28704,15 +28707,18 @@ async function initializeHunterX() {
   showMenu();
 }
 
-// Initialize proxy configuration in global config
-if (!config.proxy) {
-  config.proxy = {
-    enabled: false,
-    host: '',
-    port: '',
-    username: '',
-    password: ''
-  };
+// Initialize global config-dependent resources after config is loaded
+function initializeGlobalConfigDependencies() {
+  // Initialize proxy configuration if not already set
+  if (config && !config.proxy) {
+    config.proxy = {
+      enabled: false,
+      host: '',
+      port: '',
+      username: '',
+      password: ''
+    };
+  }
 }
 
 // =========================================================
@@ -30104,21 +30110,6 @@ if (typeof MessageInterceptor !== 'undefined') {
       last24hConversations: recentConversations.length
     };
   };
-}
-
-// Initialize global systems
-function initializeHunterX() {
-  try {
-    console.log('[INIT] Initializing HunterX systems...');
-    
-    // Initialize neural system
-    const neuralStatus = initializeNeuralSystem();
-    console.log('[INIT] Neural system status:', neuralStatus);
-    
-    console.log('[INIT] ✓ HunterX initialization complete');
-  } catch (error) {
-    console.error('[INIT] Failed to initialize HunterX:', error.message);
-  }
 }
 
 // === STARTUP CALL ===
