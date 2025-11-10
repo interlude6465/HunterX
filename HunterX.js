@@ -762,6 +762,30 @@ function safeWriteJson(filePath, data) {
   return safeWriteFile(filePath, JSON.stringify(data, null, 2));
 }
 
+// === CONVERSATIONAL AI UTILITIES ===
+
+// Cache key generators for conversational AI
+const CONVERSATION_CACHE_KEYS = {
+  LLM_RESPONSE: (query) => `llm_response_${Buffer.from(query).toString('base64').substring(0, 16)}`,
+  TIME_ZONE_QUERY: (query) => `timezone_${query.toLowerCase()}`,
+  LOCATION_QUERY: (query) => `location_${query.toLowerCase()}`,
+  STATUS_QUERY: (query) => `status_${query.toLowerCase()}`,
+  RATE_LIMIT: (player) => `rate_limit_${player.toLowerCase()}`,
+  PRIVATE_MSG_COOLDOWN: (player) => `private_msg_${player.toLowerCase()}`
+};
+
+// Time zone resolution helper
+function resolveTimeZoneAlias(alias) {
+  if (!alias || typeof alias !== 'string') return null;
+  
+  const normalized = alias.toLowerCase().trim();
+  return config.conversationalAI.timeZoneAliases[normalized] || null;
+}
+
+// Conversation cache helper
+function getConversationCacheKey(type, identifier) {
+  const keyGenerator = CONVERSATION_CACHE_KEYS[type];
+  return keyGenerator ? keyGenerator(identifier) : null;
 // === HEALTH TRACKING SYSTEM ===
 function initializeHealthTracking(bot) {
   if (!bot) {
@@ -1756,7 +1780,12 @@ const config = {
     messagesResponded: 0,
     commandsExecuted: 0,
     avgResponseTime: 0,
-    lastInteraction: null
+    lastInteraction: null,
+    naturalQueriesHandled: 0,
+    locationStatusReplies: 0,
+    privateMessagesAutoAnswered: 0,
+    llmCalls: 0,
+    llmErrors: 0
   },
   
   // Anti-cheat bypass system
@@ -1805,6 +1834,56 @@ const config = {
     fallbackVersion: '1.21.4',
     connectionTimeout: 10000,
     maxRetries: 3
+  },
+
+  // Conversational AI settings
+  conversationalAI: {
+    enabled: false,
+    useLLM: false,
+    provider: {
+      name: 'openai', // openai, anthropic, google, local
+      model: 'gpt-3.5-turbo',
+      endpoint: null,
+      maxTokens: 150,
+      temperature: 0.7
+    },
+    apiKey: '', // Placeholder for API key
+    requestTimeout: 10000, // ms
+    cacheTTL: 300000, // 5 minutes in ms
+    timeZoneAliases: {
+      'est': 'America/New_York',
+      'edt': 'America/New_York',
+      'cst': 'America/Chicago',
+      'cdt': 'America/Chicago',
+      'mst': 'America/Denver',
+      'mdt': 'America/Denver',
+      'pst': 'America/Los_Angeles',
+      'pdt': 'America/Los_Angeles',
+      'gmt': 'GMT',
+      'utc': 'UTC',
+      'bst': 'Europe/London',
+      'cet': 'Europe/Paris',
+      'jst': 'Asia/Tokyo',
+      'aest': 'Australia/Sydney'
+    },
+    rateLimit: {
+      maxRequests: 10,
+      windowMs: 60000 // 1 minute
+    },
+    autoReplyPrefix: '[AI] '
+  },
+
+  // Private messaging settings
+  privateMsg: {
+    enabled: false,
+    defaultTemplate: '{sender} says: {message}',
+    trustLevelRequirement: 'trusted', // guest, trusted, admin, owner
+    rateLimit: {
+      windowMs: 30000, // 30 seconds
+      maxMessages: 5
+    },
+    forwardToConsole: true,
+    perRecipientCooldown: new Map() // playerName -> timestamp
   }
 };
 
@@ -28020,6 +28099,64 @@ function loadConfiguration() {
           config.dangerEscape.playerProximityRadius = radius;
         }
       }
+      if (savedConfig.conversationalAI) {
+        const convoSettings = savedConfig.conversationalAI;
+        if (typeof convoSettings.enabled === 'boolean') {
+          config.conversationalAI.enabled = convoSettings.enabled;
+        }
+        if (typeof convoSettings.useLLM === 'boolean') {
+          config.conversationalAI.useLLM = convoSettings.useLLM;
+        }
+        if (convoSettings.provider && typeof convoSettings.provider === 'object') {
+          config.conversationalAI.provider = { ...config.conversationalAI.provider, ...convoSettings.provider };
+        }
+        if (typeof convoSettings.apiKey === 'string') {
+          config.conversationalAI.apiKey = convoSettings.apiKey;
+        }
+        if (typeof convoSettings.requestTimeout === 'number' && convoSettings.requestTimeout > 0) {
+          config.conversationalAI.requestTimeout = convoSettings.requestTimeout;
+        }
+        if (typeof convoSettings.cacheTTL === 'number' && convoSettings.cacheTTL > 0) {
+          config.conversationalAI.cacheTTL = convoSettings.cacheTTL;
+        }
+        if (convoSettings.timeZoneAliases && typeof convoSettings.timeZoneAliases === 'object') {
+          config.conversationalAI.timeZoneAliases = { ...config.conversationalAI.timeZoneAliases, ...convoSettings.timeZoneAliases };
+        }
+        if (convoSettings.rateLimit && typeof convoSettings.rateLimit === 'object') {
+          if (typeof convoSettings.rateLimit.maxRequests === 'number' && convoSettings.rateLimit.maxRequests > 0) {
+            config.conversationalAI.rateLimit.maxRequests = convoSettings.rateLimit.maxRequests;
+          }
+          if (typeof convoSettings.rateLimit.windowMs === 'number' && convoSettings.rateLimit.windowMs > 0) {
+            config.conversationalAI.rateLimit.windowMs = convoSettings.rateLimit.windowMs;
+          }
+        }
+        if (typeof convoSettings.autoReplyPrefix === 'string') {
+          config.conversationalAI.autoReplyPrefix = convoSettings.autoReplyPrefix;
+        }
+      }
+      if (savedConfig.privateMsg) {
+        const privateMsgSettings = savedConfig.privateMsg;
+        if (typeof privateMsgSettings.enabled === 'boolean') {
+          config.privateMsg.enabled = privateMsgSettings.enabled;
+        }
+        if (typeof privateMsgSettings.defaultTemplate === 'string') {
+          config.privateMsg.defaultTemplate = privateMsgSettings.defaultTemplate;
+        }
+        if (typeof privateMsgSettings.trustLevelRequirement === 'string') {
+          config.privateMsg.trustLevelRequirement = privateMsgSettings.trustLevelRequirement;
+        }
+        if (privateMsgSettings.rateLimit && typeof privateMsgSettings.rateLimit === 'object') {
+          if (typeof privateMsgSettings.rateLimit.windowMs === 'number' && privateMsgSettings.rateLimit.windowMs > 0) {
+            config.privateMsg.rateLimit.windowMs = privateMsgSettings.rateLimit.windowMs;
+          }
+          if (typeof privateMsgSettings.rateLimit.maxMessages === 'number' && privateMsgSettings.rateLimit.maxMessages > 0) {
+            config.privateMsg.rateLimit.maxMessages = privateMsgSettings.rateLimit.maxMessages;
+          }
+        }
+        if (typeof privateMsgSettings.forwardToConsole === 'boolean') {
+          config.privateMsg.forwardToConsole = privateMsgSettings.forwardToConsole;
+        }
+      }
       console.log('✅ Configuration loaded successfully!');
       return true;
     } else {
@@ -28052,6 +28189,24 @@ function saveConfiguration() {
     dangerEscape: {
       enabled: escapeSettings.enabled !== false,
       playerProximityRadius: normalizedRadius
+    },
+    conversationalAI: {
+      enabled: config.conversationalAI.enabled,
+      useLLM: config.conversationalAI.useLLM,
+      provider: config.conversationalAI.provider,
+      apiKey: config.conversationalAI.apiKey,
+      requestTimeout: config.conversationalAI.requestTimeout,
+      cacheTTL: config.conversationalAI.cacheTTL,
+      timeZoneAliases: config.conversationalAI.timeZoneAliases,
+      rateLimit: config.conversationalAI.rateLimit,
+      autoReplyPrefix: config.conversationalAI.autoReplyPrefix
+    },
+    privateMsg: {
+      enabled: config.privateMsg.enabled,
+      defaultTemplate: config.privateMsg.defaultTemplate,
+      trustLevelRequirement: config.privateMsg.trustLevelRequirement,
+      rateLimit: config.privateMsg.rateLimit,
+      forwardToConsole: config.privateMsg.forwardToConsole
     }
   };
   
@@ -28087,6 +28242,99 @@ function validateConfig(configToValidate) {
       if (!Number.isFinite(radius) || radius <= 0) {
         return false;
       }
+    }
+  }
+  
+  if (configToValidate.conversationalAI) {
+    const convoSettings = configToValidate.conversationalAI;
+    if (convoSettings.enabled !== undefined && typeof convoSettings.enabled !== 'boolean') {
+      return false;
+    }
+    if (convoSettings.useLLM !== undefined && typeof convoSettings.useLLM !== 'boolean') {
+      return false;
+    }
+    if (convoSettings.apiKey !== undefined && typeof convoSettings.apiKey !== 'string') {
+      return false;
+    }
+    if (convoSettings.requestTimeout !== undefined) {
+      const timeout = parseFloat(convoSettings.requestTimeout);
+      if (!Number.isFinite(timeout) || timeout <= 0) {
+        return false;
+      }
+    }
+    if (convoSettings.cacheTTL !== undefined) {
+      const ttl = parseFloat(convoSettings.cacheTTL);
+      if (!Number.isFinite(ttl) || ttl <= 0) {
+        return false;
+      }
+    }
+    if (convoSettings.provider) {
+      const validProviders = ['openai', 'anthropic', 'google', 'local'];
+      if (convoSettings.provider.name && !validProviders.includes(convoSettings.provider.name)) {
+        return false;
+      }
+      if (convoSettings.provider.maxTokens !== undefined) {
+        const tokens = parseInt(convoSettings.provider.maxTokens);
+        if (!Number.isFinite(tokens) || tokens <= 0) {
+          return false;
+        }
+      }
+      if (convoSettings.provider.temperature !== undefined) {
+        const temp = parseFloat(convoSettings.provider.temperature);
+        if (!Number.isFinite(temp) || temp < 0 || temp > 2) {
+          return false;
+        }
+      }
+    }
+    if (convoSettings.rateLimit) {
+      if (convoSettings.rateLimit.maxRequests !== undefined) {
+        const maxRequests = parseInt(convoSettings.rateLimit.maxRequests);
+        if (!Number.isFinite(maxRequests) || maxRequests <= 0) {
+          return false;
+        }
+      }
+      if (convoSettings.rateLimit.windowMs !== undefined) {
+        const windowMs = parseInt(convoSettings.rateLimit.windowMs);
+        if (!Number.isFinite(windowMs) || windowMs <= 0) {
+          return false;
+        }
+      }
+    }
+    if (convoSettings.autoReplyPrefix !== undefined && typeof convoSettings.autoReplyPrefix !== 'string') {
+      return false;
+    }
+  }
+  
+  if (configToValidate.privateMsg) {
+    const privateMsgSettings = configToValidate.privateMsg;
+    if (privateMsgSettings.enabled !== undefined && typeof privateMsgSettings.enabled !== 'boolean') {
+      return false;
+    }
+    if (privateMsgSettings.defaultTemplate !== undefined && typeof privateMsgSettings.defaultTemplate !== 'string') {
+      return false;
+    }
+    if (privateMsgSettings.trustLevelRequirement !== undefined) {
+      const validLevels = ['guest', 'trusted', 'admin', 'owner'];
+      if (!validLevels.includes(privateMsgSettings.trustLevelRequirement)) {
+        return false;
+      }
+    }
+    if (privateMsgSettings.rateLimit) {
+      if (privateMsgSettings.rateLimit.windowMs !== undefined) {
+        const windowMs = parseInt(privateMsgSettings.rateLimit.windowMs);
+        if (!Number.isFinite(windowMs) || windowMs <= 0) {
+          return false;
+        }
+      }
+      if (privateMsgSettings.rateLimit.maxMessages !== undefined) {
+        const maxMessages = parseInt(privateMsgSettings.rateLimit.maxMessages);
+        if (!Number.isFinite(maxMessages) || maxMessages <= 0) {
+          return false;
+        }
+      }
+    }
+    if (privateMsgSettings.forwardToConsole !== undefined && typeof privateMsgSettings.forwardToConsole !== 'boolean') {
+      return false;
     }
   }
   
