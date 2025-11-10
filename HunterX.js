@@ -1240,6 +1240,198 @@ function validateTrainingData(data) {
 }
 
 // === GLOBAL CONFIG ===
+// === CONVERSATION AI INTENT CLASSIFICATION & KNOWLEDGE BASE ===
+
+// Intent types for conversation classification
+const CONVERSATION_INTENTS = {
+  COMMAND: 'command',
+  KNOWLEDGE_QUERY: 'knowledge_query',
+  CRAFTING_QUESTION: 'crafting_question',
+  TIME_QUERY: 'time_query',
+  LOCATION_REQUEST: 'location_request',
+  STATUS_REQUEST: 'status_request',
+  GREETING: 'greeting',
+  FAREWELL: 'farewell',
+  GRATITUDE: 'gratitude',
+  HELP_REQUEST: 'help_request',
+  SMALL_TALK: 'small_talk',
+  UNKNOWN: 'unknown'
+};
+
+// Minecraft knowledge base for factual queries
+const MINECRAFT_KNOWLEDGE = {
+  facts: [
+    { question: ['what is the strongest block', 'strongest block', 'unbreakable block'], answer: 'Bedrock and barriers are the strongest blocks - they can\'t be broken in survival mode!' },
+    { question: ['what is the rarest ore', 'rarest ore minecraft'], answer: 'Ancient debris is the rarest ore, found only in the Nether below Y=15. Emerald ore is the rarest overworld ore.' },
+    { question: ['how to make a nether portal', 'nether portal recipe'], answer: 'Build a 4x5 obsidian frame (you can skip corners) and light it with flint and steel or a fire charge!' },
+    { question: ['what is the best armor', 'best armor minecraft'], answer: 'Netherite armor is the best, offering more protection and knockback resistance than diamond. It doesn\'t burn in lava!' },
+    { question: ['how to find diamonds', 'diamond level', 'diamond y level'], answer: 'Diamonds are most common between Y=-58 and Y=-63. Strip mining at Y=-59 is very effective!' },
+    { question: ['what do creepers drop', 'creeper drops'], answer: 'Creepers drop gunpowder, which is used for TNT, fireworks, and potions. If killed by a skeleton, they drop music discs!' },
+    { question: ['how to tame a cat', 'tame cat minecraft'], answer: 'Give a raw cod or salmon to a stray cat until hearts appear. Cats will repel creepers and phantoms!' },
+    { question: ['what is the end portal', 'how to find end portal'], answer: 'End portals are found in strongholds. Use eyes of ender to locate the stronghold, then find the portal room!' },
+    { question: ['how to breed villagers', 'villager breeding'], answer: 'Give two willing villagers 3 bread, 12 carrots, 12 potatoes, or 12 beetroots. They need beds and workspace!' },
+    { question: ['what is the wither', 'how to summon wither'], answer: 'The Wither is a boss mob summoned by placing 3 wither skulls in a T-shape on soul sand. It drops a nether star for beacons!' }
+  ],
+  
+  crafting: {
+    'torch': 'Stick + Coal or Charcoal = 4 Torches',
+    'crafting table': '4 Wood Planks in 2x2 square = Crafting Table',
+    'bed': '3 Wool + 3 Wood Planks = Bed (same color wool)',
+    'furnace': '8 Cobblestone in ring shape = Furnace',
+    'chest': '8 Wood Planks in ring shape = Chest',
+    'stick': '2 Wood Planks vertically = 4 Sticks',
+    'wood planks': '1 Wood Log = 4 Wood Planks',
+    'armor stand': '6 Sticks + 1 Smooth Stone Slab = Armor Stand',
+    'bookshelf': '6 Wood Planks + 3 Books = Bookshelf',
+    'enchanting table': '4 Obsidian + 2 Diamonds + 1 Book = Enchanting Table',
+    'brewing stand': '1 Blaze Rod + 3 Cobblestone = Brewing Stand',
+    'anvil': '3 Iron Blocks + 4 Iron Ingots = Anvil',
+    'shield': '6 Wood Planks + 1 Iron Ingot = Shield',
+    'bow': '3 Sticks + 3 String = Bow',
+    'arrow': '1 Flint + 1 Stick + 1 Feather = 4 Arrows',
+    'fishing rod': '3 Sticks + 2 String = Fishing Rod',
+    'bucket': '3 Iron Ingots in V shape = Bucket',
+    'shears': '2 Iron Ingots in diagonal shape = Shears',
+    'flint and steel': '1 Iron Ingot + 1 Flint = Flint and Steel',
+    'compass': '4 Iron Ingots + 1 Redstone = Compass',
+    'clock': '4 Gold Ingots + 1 Redstone = Clock',
+    'pickaxe': '3 Sticks + 3 Wood/Cobblestone/Iron/Gold/Diamond = Pickaxe',
+    'axe': '3 Sticks + 3 Wood/Cobblestone/Iron/Gold/Diamond = Axe',
+    'sword': '1 Stick + 2 Wood/Cobblestone/Iron/Gold/Diamond = Sword',
+    'shovel': '2 Sticks + 1 Wood/Cobblestone/Iron/Gold/Diamond = Shovel',
+    'hoe': '2 Sticks + 2 Wood/Cobblestone/Iron/Gold/Diamond = Hoe',
+    'door': '6 Wood Planks or Iron Ingots in 2x3 shape = Door',
+    'ladder': '7 Sticks in H shape = 3 Ladders',
+    'sign': '6 Wood Planks + 1 Stick = 3 Signs',
+    'boat': '5 Wood Planks in U shape = Boat',
+    'rails': '6 Iron Ingots + 1 Stick = 16 Rails',
+    'minecart': '5 Iron Ingots in U shape = Minecart',
+    'tnt': '5 Gunpowder + 4 Sand = TNT',
+    'paper': '3 Sugar Cane horizontally = 3 Paper',
+    'book': '3 Paper in vertical line = Book',
+    'bread': '3 Wheat horizontally = Bread',
+    'cake': '3 Milk Buckets + 2 Sugar + 1 Egg + 3 Wheat = Cake',
+    'cookie': '2 Wheat + 1 Cocoa Beans = 8 Cookies'
+  },
+  
+  time: {
+    'day length': '20 minutes total (10 min day, 1.5 min dusk, 7 min night, 1.5 min dawn)',
+    'night length': '7 minutes of darkness',
+    'sunrise': 'Starts at 0:00 game time',
+    'sunset': 'Starts at 12000 game time',
+    'midnight': '18000 game time',
+    'noon': '6000 game time'
+  },
+  
+  general: {
+    'hi': ['Hello there!', 'Hey!', 'Hi! How can I help you?'],
+    'hello': ['Hello!', 'Greetings!', 'Hi there!'],
+    'hey': ['Hey!', 'Hello!', 'Hi!'],
+    'thanks': ['You\'re welcome!', 'No problem!', 'Happy to help!'],
+    'thank you': ['You\'re welcome!', 'My pleasure!', 'Glad I could help!'],
+    'bye': ['Goodbye!', 'See you later!', 'Take care!'],
+    'goodbye': ['Goodbye!', 'Farewell!', 'See you around!']
+  }
+};
+
+// LLM Bridge class for optional external AI integration
+class LLMBridge {
+  constructor(config) {
+    this.config = config || {};
+    this.cache = new Map();
+    this.rateLimit = new Map();
+    this.enabled = this.config.useLLM || false;
+    this.timeout = this.config.timeout || 10000; // 10 second timeout
+    this.maxCacheSize = this.config.maxCacheSize || 100;
+    this.rateLimitWindow = this.config.rateLimitWindow || 60000; // 1 minute
+    this.rateLimitMax = this.config.rateLimitMax || 10; // 10 requests per minute
+  }
+  
+  async query(prompt, username = null) {
+    if (!this.enabled) {
+      return null;
+    }
+    
+    // Rate limiting
+    const key = username || 'anonymous';
+    const now = Date.now();
+    const userLimit = this.rateLimit.get(key);
+    
+    if (userLimit && userLimit.count >= this.rateLimitMax && now < userLimit.resetTime) {
+      console.log(`[LLM] Rate limited for user: ${key}`);
+      return null;
+    }
+    
+    // Check cache first
+    const cacheKey = this.generateCacheKey(prompt);
+    if (this.cache.has(cacheKey)) {
+      console.log(`[LLM] Cache hit for: ${prompt.substring(0, 50)}...`);
+      return this.cache.get(cacheKey);
+    }
+    
+    try {
+      const response = await this.makeRequest(prompt);
+      
+      // Update rate limit
+      if (!userLimit || now > userLimit.resetTime) {
+        this.rateLimit.set(key, { count: 1, resetTime: now + this.rateLimitWindow });
+      } else {
+        userLimit.count++;
+      }
+      
+      // Cache response
+      this.addToCache(cacheKey, response);
+      
+      return response;
+    } catch (error) {
+      console.warn(`[LLM] Query failed: ${error.message}`);
+      return null;
+    }
+  }
+  
+  async makeRequest(prompt) {
+    // This is a placeholder for actual LLM integration
+    // In a real implementation, this would make HTTP requests to OpenAI, Claude, etc.
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('LLM request timeout'));
+      }, this.timeout);
+      
+      // Simulate LLM response (replace with actual API call)
+      setTimeout(() => {
+        clearTimeout(timeout);
+        resolve(`LLM Response to: "${prompt.substring(0, 100)}..."`);
+      }, 100);
+    });
+  }
+  
+  generateCacheKey(prompt) {
+    // Simple hash for cache key
+    return prompt.toLowerCase().replace(/\s+/g, ' ').trim().substring(0, 100);
+  }
+  
+  addToCache(key, value) {
+    if (this.cache.size >= this.maxCacheSize) {
+      // Remove oldest entry
+      const firstKey = this.cache.keys().next().value;
+      this.cache.delete(firstKey);
+    }
+    this.cache.set(key, value);
+  }
+  
+  getStatus() {
+    return {
+      enabled: this.enabled,
+      cacheSize: this.cache.size,
+      rateLimits: Array.from(this.rateLimit.entries()).map(([user, limit]) => ({
+        user,
+        count: limit.count,
+        resetTime: new Date(limit.resetTime).toISOString()
+      }))
+    };
+  }
+}
+
 const config = {
   mode: null,
   server: null,
@@ -1326,6 +1518,7 @@ const config = {
     dupe: null, // Will be initialized by NeuralBrainManager
     conversation: null, // Will be initialized by NeuralBrainManager
     dialogue: null, // Will be initialized by DialogueRL
+    movement: null, // Will be initialized by MovementRL
     available: false, // Will be updated by NeuralBrainManager
     type: 'fallback', // Will be updated by NeuralBrainManager
     manager: null // Will be set to NeuralBrainManager instance
@@ -1338,6 +1531,38 @@ const config = {
     curious: true,
     cautious: true,
     name: 'Hunter'
+  },
+  
+  // Conversational AI with intent classification and LLM support
+  conversationalAI: {
+    enabled: true,
+    useLLM: false, // Set to true to enable external LLM integration
+    llmConfig: {
+      timeout: 10000, // 10 seconds
+      maxCacheSize: 100,
+      rateLimitWindow: 60000, // 1 minute
+      rateLimitMax: 10 // 10 requests per minute per user
+    },
+    metrics: {
+      totalQueries: 0,
+      knowledgeQueries: 0,
+      craftingQuestions: 0,
+      timeQueries: 0,
+      locationRequests: 0,
+      statusRequests: 0,
+      greetings: 0,
+      farewells: 0,
+      gratitude: 0,
+      helpRequests: 0,
+      smallTalk: 0,
+      commands: 0,
+      unknownIntents: 0,
+      llmQueries: 0,
+      llmFailures: 0,
+      cacheHits: 0
+    },
+    recentQA: [], // Store recent Q&A for monitoring
+    maxRecentQA: 50
   },
   
   // Task system
@@ -9661,16 +9886,17 @@ class CombatAI {
               crystalPvP = this.getCrystalPvP();
               console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
 
-              // Execute multi-crystal tactic
-              await crystalPvP.executeCrystalCombo(attacker);
-            } else {
-              // Use smart weapon switching for optimal attack
-              console.log('[COMBAT] 🎯 Smart weapon switching enabled!');
-              await this.executeSmartCombat(attacker);
-              await this.executeOptimalAttack(attacker);
-            }
-      
-      // Enhanced tactical combat loop
+         // Execute initial strategy
+         await crystalPvP.executeCrystalCombo(attacker);
+       } else {
+         // Use smart weapon switching for optimal attack
+         console.log('[COMBAT] 🎯 Smart weapon switching enabled!');
+         await this.executeSmartCombat(attacker);
+         await this.executeOptimalAttack(attacker);
+       }
+       this.isCurrentlyFighting = true;
+
+       // Enhanced tactical combat loop
       const combatLoop = setInterval(async () => {
         if (!this.isCurrentlyFighting || this.bot.health <= 0) {
           clearInterval(combatLoop);
@@ -14520,6 +14746,13 @@ class ConversationAI {
     this.maxContext = 10;
     this.trustLevels = ['guest', 'trusted', 'admin', 'owner'];
     this.itemHunter = new ItemHunter(bot);
+    
+    // Initialize LLM bridge if enabled
+    const llmConfig = {
+      ...config.conversationalAI.llmConfig,
+      useLLM: config.conversationalAI.useLLM
+    };
+    this.llmBridge = new LLMBridge(llmConfig);
     this.dialogueRL = new DialogueRL(bot);
   }
   
@@ -14609,6 +14842,431 @@ class ConversationAI {
     return `I'm not sure what you mean ${username}. Try commands like "find me [item]", "attack [player]", or "help" for options!`;
   }
   
+  // === INTENT-AWARE CONVERSATION METHODS ===
+  
+  // Analyze intent from normalized message
+  analyzeIntent(message) {
+    const lower = message.toLowerCase().trim();
+    
+    // Check for commands first (preserve existing behavior)
+    if (this.isCommand(message)) {
+      return CONVERSATION_INTENTS.COMMAND;
+    }
+    
+    // Check for greetings
+    if (/^(hi|hello|hey|greetings|yo|sup)$/i.test(lower) || 
+        lower.includes('good morning') || lower.includes('good evening')) {
+      return CONVERSATION_INTENTS.GREETING;
+    }
+    
+    // Check for farewells
+    if (/^(bye|goodbye|farewell|see you|cya|laters)$/i.test(lower) ||
+        lower.includes('see you later') || lower.includes('take care')) {
+      return CONVERSATION_INTENTS.FAREWELL;
+    }
+    
+    // Check for gratitude
+    if (/^(thanks|thank you|ty|thx)$/i.test(lower) ||
+        lower.includes('appreciate') || lower.includes('grateful')) {
+      return CONVERSATION_INTENTS.GRATITUDE;
+    }
+    
+    // Check for help requests
+    if (lower.includes('help') || lower.includes('what can you do') ||
+        lower.includes('how do i') || lower.includes('can you')) {
+      return CONVERSATION_INTENTS.HELP_REQUEST;
+    }
+    
+    // Check for crafting questions
+    if (lower.includes('craft') || lower.includes('recipe') || lower.includes('how to make') ||
+        lower.includes('how do i craft') || lower.includes('crafting')) {
+      return CONVERSATION_INTENTS.CRAFTING_QUESTION;
+    }
+    
+    // Check for time queries
+    if (lower.includes('what time') || lower.includes('time') || lower.includes('when') ||
+        lower.includes('day length') || lower.includes('night length') ||
+        lower.includes('sunrise') || lower.includes('sunset') || lower.includes('noon') || lower.includes('midnight')) {
+      return CONVERSATION_INTENTS.TIME_QUERY;
+    }
+    
+    // Check for location requests
+    if (lower.includes('where') || lower.includes('location') || lower.includes('coordinates') ||
+        lower.includes('position') || lower.includes('find me') && !lower.includes('item')) {
+      return CONVERSATION_INTENTS.LOCATION_REQUEST;
+    }
+    
+    // Check for status requests
+    if (lower.includes('status') || lower.includes('how are you') || lower.includes('what are you doing') ||
+        lower.includes('health') || lower.includes('inventory') || lower.includes('gear')) {
+      return CONVERSATION_INTENTS.STATUS_REQUEST;
+    }
+    
+    // Check for knowledge queries (Minecraft facts)
+    if (lower.includes('what is') || lower.includes('what are') || lower.includes('how to') ||
+        lower.includes('why') || lower.includes('which') || lower.includes('rarest') ||
+        lower.includes('strongest') || lower.includes('best') || lower.includes('minecraft')) {
+      return CONVERSATION_INTENTS.KNOWLEDGE_QUERY;
+    }
+    
+    // Default to small talk
+    return CONVERSATION_INTENTS.SMALL_TALK;
+  }
+  
+  // Handle knowledge queries using the knowledge base
+  async handleKnowledgeQuery(username, message) {
+    const lower = message.toLowerCase();
+    
+    // Search facts knowledge base
+    for (const fact of MINECRAFT_KNOWLEDGE.facts) {
+      for (const keyword of fact.question) {
+        if (lower.includes(keyword)) {
+          this.updateMetrics('knowledgeQueries');
+          this.logQA(username, message, fact.answer, 'knowledge');
+          return fact.answer;
+        }
+      }
+    }
+    
+    // Try LLM if enabled
+    if (config.conversationalAI.useLLM) {
+      const llmResponse = await this.queryLLM(username, message);
+      if (llmResponse) {
+        this.updateMetrics('knowledgeQueries');
+        this.updateMetrics('llmQueries');
+        this.logQA(username, message, llmResponse, 'llm_knowledge');
+        return llmResponse;
+      }
+    }
+    
+    // Fallback response
+    const fallbacks = [
+      "That's an interesting Minecraft question! I'm not sure about the specifics, but I can help you find items or navigate!",
+      "I'm still learning about Minecraft mechanics. Try asking me about crafting recipes or basic gameplay!",
+      "Great question! For detailed Minecraft info, you might want to check the Minecraft Wiki. Is there something specific I can help you with?"
+    ];
+    
+    this.updateMetrics('knowledgeQueries');
+    this.logQA(username, message, fallbacks[Math.floor(Math.random() * fallbacks.length)], 'knowledge_fallback');
+    return fallbacks[Math.floor(Math.random() * fallbacks.length)];
+  }
+  
+  // Handle crafting questions
+  async handleCraftingQuestion(username, message) {
+    const lower = message.toLowerCase();
+    
+    // Search crafting knowledge base
+    for (const [item, recipe] of Object.entries(MINECRAFT_KNOWLEDGE.crafting)) {
+      if (lower.includes(item)) {
+        this.updateMetrics('craftingQuestions');
+        this.logQA(username, message, recipe, 'crafting');
+        return recipe;
+      }
+    }
+    
+    // Try LLM if enabled
+    if (config.conversationalAI.useLLM) {
+      const llmResponse = await this.queryLLM(username, message);
+      if (llmResponse) {
+        this.updateMetrics('craftingQuestions');
+        this.updateMetrics('llmQueries');
+        this.logQA(username, message, llmResponse, 'llm_crafting');
+        return llmResponse;
+      }
+    }
+    
+    // Fallback response
+    this.updateMetrics('craftingQuestions');
+    this.logQA(username, message, "I'm not sure about that recipe. You can check the crafting table in-game or ask me about specific items!", 'crafting_fallback');
+    return "I'm not sure about that recipe. You can check the crafting table in-game or ask me about specific items!";
+  }
+  
+  // Handle time queries
+  async handleTimeQuery(username, message) {
+    const lower = message.toLowerCase();
+    
+    // Search time knowledge base
+    for (const [topic, info] of Object.entries(MINECRAFT_KNOWLEDGE.time)) {
+      if (lower.includes(topic)) {
+        this.updateMetrics('timeQueries');
+        this.logQA(username, message, info, 'time');
+        return info;
+      }
+    }
+    
+    // Get current game time
+    const gameTime = this.bot.time ? Math.floor(this.bot.time.timeOfDay / 1000) : 0;
+    const timeString = gameTime < 6000 ? 'Morning' : 
+                      gameTime < 12000 ? 'Day' : 
+                      gameTime < 14000 ? 'Sunset' : 
+                      gameTime < 18000 ? 'Night' : 'Midnight';
+    
+    this.updateMetrics('timeQueries');
+    this.logQA(username, message, `Current game time: ${timeString} (${gameTime})`, 'game_time');
+    return `Current game time: ${timeString} (${gameTime})`;
+  }
+  
+  // Handle location requests
+  async handleLocationRequest(username, message) {
+    const lower = message.toLowerCase();
+    
+    if (this.bot.entity && this.bot.entity.position) {
+      const pos = this.bot.entity.position;
+      const location = `I'm at ${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)}`;
+      
+      // Add dimension info if available
+      const dimension = this.bot.game?.dimension || 'overworld';
+      const fullLocation = `${location} in the ${dimension}`;
+      
+      this.updateMetrics('locationRequests');
+      this.logQA(username, message, fullLocation, 'location');
+      return fullLocation;
+    }
+    
+    this.updateMetrics('locationRequests');
+    this.logQA(username, message, "I'm not sure of my current location!", 'location_fallback');
+    return "I'm not sure of my current location!";
+  }
+  
+  // Handle status requests
+  async handleStatusRequest(username, message) {
+    const lower = message.toLowerCase();
+    
+    const health = this.bot.health || 0;
+    const food = this.bot.food || 0;
+    const experience = this.bot.experience?.level || 0;
+    
+    let status = `Health: ${health}/20, Hunger: ${food}/20, Level: ${experience}`;
+    
+    // Add armor info if available
+    if (this.bot.inventory?.slots) {
+      const armorPieces = ['helmet', 'chestplate', 'leggings', 'boots'];
+      const wornArmor = armorPieces.filter(slot => this.bot.inventory.slots[slot]);
+      if (wornArmor.length > 0) {
+        status += `, Armor: ${wornArmor.length}/4 pieces`;
+      }
+    }
+    
+    // Add activity info
+    if (config.tasks.current) {
+      status += `, Currently: ${config.tasks.current.type || 'working'}`;
+    }
+    
+    this.updateMetrics('statusRequests');
+    this.logQA(username, message, status, 'status');
+    return status;
+  }
+  
+  // Handle greetings
+  async handleGreeting(username, message) {
+    const lower = message.toLowerCase();
+    
+    // Find matching greeting from knowledge base
+    for (const [greeting, responses] of Object.entries(MINECRAFT_KNOWLEDGE.general)) {
+      if (lower.includes(greeting)) {
+        const response = responses[Math.floor(Math.random() * responses.length)];
+        this.updateMetrics('greetings');
+        this.logQA(username, message, response, 'greeting');
+        return response;
+      }
+    }
+    
+    // Default greeting
+    const defaultGreetings = ['Hello there!', 'Hey!', 'Hi! How can I help you?'];
+    const response = defaultGreetings[Math.floor(Math.random() * defaultGreetings.length)];
+    
+    this.updateMetrics('greetings');
+    this.logQA(username, message, response, 'greeting_default');
+    return response;
+  }
+  
+  // Handle farewells
+  async handleFarewell(username, message) {
+    const lower = message.toLowerCase();
+    
+    // Find matching farewell from knowledge base
+    for (const [farewell, responses] of Object.entries(MINECRAFT_KNOWLEDGE.general)) {
+      if (lower.includes(farewell) && ['bye', 'goodbye'].includes(farewell)) {
+        const response = responses[Math.floor(Math.random() * responses.length)];
+        this.updateMetrics('farewells');
+        this.logQA(username, message, response, 'farewell');
+        return response;
+      }
+    }
+    
+    // Default farewell
+    const defaultFarewells = ['Goodbye!', 'See you later!', 'Take care!'];
+    const response = defaultFarewells[Math.floor(Math.random() * defaultFarewells.length)];
+    
+    this.updateMetrics('farewells');
+    this.logQA(username, message, response, 'farewell_default');
+    return response;
+  }
+  
+  // Handle gratitude
+  async handleGratitude(username, message) {
+    const lower = message.toLowerCase();
+    
+    // Find matching gratitude response from knowledge base
+    for (const [thanks, responses] of Object.entries(MINECRAFT_KNOWLEDGE.general)) {
+      if (lower.includes(thanks) && ['thanks', 'thank you'].includes(thanks)) {
+        const response = responses[Math.floor(Math.random() * responses.length)];
+        this.updateMetrics('gratitude');
+        this.logQA(username, message, response, 'gratitude');
+        return response;
+      }
+    }
+    
+    // Default gratitude response
+    const defaultGratitude = ['You\'re welcome!', 'No problem!', 'Happy to help!'];
+    const response = defaultGratitude[Math.floor(Math.random() * defaultGratitude.length)];
+    
+    this.updateMetrics('gratitude');
+    this.logQA(username, message, response, 'gratitude_default');
+    return response;
+  }
+  
+  // Handle help requests
+  async handleHelpRequest(username, message) {
+    const helpText = `I can help with:
+• Finding items: "find me diamonds", "get me iron", "hunt wood"
+• Building: "build schematic", "build status"
+• Combat: "attack player", "defense status"
+• Navigation: "go home", "set home here"
+• Crafting questions: "how to make a torch"
+• Minecraft facts: "what is the rarest ore"
+• Time queries: "what time is it"
+• Status: "how are you", "status"
+• And many more commands! Try "help" for a full list.`;
+    
+    this.updateMetrics('helpRequests');
+    this.logQA(username, message, helpText, 'help');
+    return helpText;
+  }
+  
+  // Handle small talk
+  async handleSmallTalk(username, message) {
+    // Try LLM first if enabled for natural conversation
+    if (config.conversationalAI.useLLM) {
+      const llmResponse = await this.queryLLM(username, message);
+      if (llmResponse) {
+        this.updateMetrics('smallTalk');
+        this.updateMetrics('llmQueries');
+        this.logQA(username, message, llmResponse, 'llm_smalltalk');
+        return llmResponse;
+      }
+    }
+    
+    // Fallback small talk responses
+    const responses = [
+      "That's interesting! Is there something specific I can help you with in Minecraft?",
+      "I'm here to help with Minecraft tasks and commands. What would you like to do?",
+      "Cool! Try asking me about crafting, finding items, or Minecraft facts!",
+      "I'm focused on helping with Minecraft. Want to find some resources or build something?"
+    ];
+    
+    const response = responses[Math.floor(Math.random() * responses.length)];
+    
+    this.updateMetrics('smallTalk');
+    this.logQA(username, message, response, 'smalltalk_fallback');
+    return response;
+  }
+  
+  // Query LLM with safe fallbacks
+  async queryLLM(username, message) {
+    try {
+      const prompt = `As a helpful Minecraft bot named Hunter, respond naturally to: "${message}". Keep responses concise and Minecraft-related.`;
+      const response = await this.llmBridge.query(prompt, username);
+      
+      if (response) {
+        this.updateMetrics('cacheHits'); // Will be decremented if it was actually a cache hit
+        return response;
+      }
+      
+      this.updateMetrics('llmFailures');
+      return null;
+    } catch (error) {
+      console.warn(`[CONVERSATION] LLM query failed: ${error.message}`);
+      this.updateMetrics('llmFailures');
+      return null;
+    }
+  }
+  
+  // Update conversation metrics
+  updateMetrics(intentType) {
+    if (!config.conversationalAI.metrics) {
+      config.conversationalAI.metrics = {
+        totalQueries: 0,
+        knowledgeQueries: 0,
+        craftingQuestions: 0,
+        timeQueries: 0,
+        locationRequests: 0,
+        statusRequests: 0,
+        greetings: 0,
+        farewells: 0,
+        gratitude: 0,
+        helpRequests: 0,
+        smallTalk: 0,
+        commands: 0,
+        unknownIntents: 0,
+        llmQueries: 0,
+        llmFailures: 0,
+        cacheHits: 0
+      };
+    }
+    
+    config.conversationalAI.metrics.totalQueries++;
+    
+    const metricMap = {
+      [CONVERSATION_INTENTS.KNOWLEDGE_QUERY]: 'knowledgeQueries',
+      [CONVERSATION_INTENTS.CRAFTING_QUESTION]: 'craftingQuestions',
+      [CONVERSATION_INTENTS.TIME_QUERY]: 'timeQueries',
+      [CONVERSATION_INTENTS.LOCATION_REQUEST]: 'locationRequests',
+      [CONVERSATION_INTENTS.STATUS_REQUEST]: 'statusRequests',
+      [CONVERSATION_INTENTS.GREETING]: 'greetings',
+      [CONVERSATION_INTENTS.FAREWELL]: 'farewells',
+      [CONVERSATION_INTENTS.GRATITUDE]: 'gratitude',
+      [CONVERSATION_INTENTS.HELP_REQUEST]: 'helpRequests',
+      [CONVERSATION_INTENTS.SMALL_TALK]: 'smallTalk',
+      [CONVERSATION_INTENTS.COMMAND]: 'commands',
+      [CONVERSATION_INTENTS.UNKNOWN]: 'unknownIntents'
+    };
+    
+    const metric = metricMap[intentType];
+    if (metric && config.conversationalAI.metrics[metric] !== undefined) {
+      config.conversationalAI.metrics[metric]++;
+    }
+  }
+  
+  // Log Q&A for monitoring
+  logQA(username, question, answer, category) {
+    if (!config.conversationalAI.recentQA) {
+      config.conversationalAI.recentQA = [];
+    }
+    
+    const qaEntry = {
+      timestamp: Date.now(),
+      username,
+      question: question.substring(0, 100), // Limit length
+      answer: answer.substring(0, 200), // Limit length
+      category,
+      intent: this.analyzeIntent(question)
+    };
+    
+    config.conversationalAI.recentQA.unshift(qaEntry);
+    
+    // Keep only recent entries
+    const maxEntries = config.conversationalAI.maxRecentQA || 50;
+    if (config.conversationalAI.recentQA.length > maxEntries) {
+      config.conversationalAI.recentQA = config.conversationalAI.recentQA.slice(0, maxEntries);
+    }
+    
+    // Also log to MessageInterceptor if available
+    if (globalMessageInterceptor) {
+      globalMessageInterceptor.logConversation(qaEntry);
+    }
+  }
+  
   isWhitelisted(username) {
     return config.whitelist.some(entry => entry.name === username);
   }
@@ -14678,6 +15336,11 @@ class ConversationAI {
   async handleMessage(username, message) {
       console.log(`[CHAT] ${username}: ${message}`);
 
+      // Log message to interceptor
+      if (globalMessageInterceptor) {
+        globalMessageInterceptor.logMessage(username, message, 'chat');
+      }
+
       // Handle /msg relay for trusted+ users
       if (message.startsWith('/msg ') || message.startsWith('/w ') || message.startsWith('/tell ')) {
         await this.handlePrivateMessage(username, message);
@@ -14710,41 +15373,87 @@ class ConversationAI {
       this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
       if (this.context.length > this.maxContext) this.context.shift();
 
-      // Classify message type for RL
-      const messageType = this.classifyMessageType(normalizedMessage);
+// Normalize message (strip bot name, clean whitespace)
+const normalizedMessage = this.normalizeMessage(message, username);
 
-      // Check if it's a command (use normalized message)
-      if (this.isCommand(normalizedMessage)) {
-        console.log(`[CHAT] Command detected: ${normalizedMessage}`);
-        console.log(`[CHAT] Calling handleCommand...`);
+this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
+if (this.context.length > this.maxContext) this.context.shift();
 
-        const startTime = Date.now();
-        await this.handleCommand(username, normalizedMessage);
-        const responseTime = Date.now() - startTime;
+// === MERGED: Intent detection + RL tracking ===
+const intent = this.analyzeIntent(normalizedMessage);
+const messageType = this.classifyMessageType(normalizedMessage);
+console.log(`[CONVERSATION] Intent detected: ${intent} for message: "${normalizedMessage}"`);
 
-        // Record outcome for RL training
-        const trustLevel = this.getTrustLevel(username) || 'guest';
-        this.dialogueRL.recordOutcome(username, normalizedMessage, 'execute_parsed_command', {
-          success: true,
-          responseTime: responseTime,
-          trustViolation: false
-        }, messageType);
+const startTime = Date.now();
+let response;
 
-        console.log(`[CHAT] Command execution complete`);
-        return;
-      }
-
-      // Generate response
-      const response = this.generateResponse(username, normalizedMessage);
-      this.bot.chat(response);
+try {
+  switch (intent) {
+    case CONVERSATION_INTENTS.COMMAND:
+      console.log(`[CHAT] Command detected: ${normalizedMessage}`);
+      console.log(`[CHAT] Calling handleCommand...`);
+      await this.handleCommand(username, normalizedMessage);
+      console.log(`[CHAT] Command execution complete`);
       
-      // Record non-command interaction for RL
+      // Record outcome for RL training (from main)
+      const responseTime = Date.now() - startTime;
       const trustLevel = this.getTrustLevel(username) || 'guest';
-      this.dialogueRL.recordOutcome(username, normalizedMessage, 'fall_back_parser', {
+      this.dialogueRL.recordOutcome(username, normalizedMessage, 'execute_parsed_command', {
         success: true,
-        responseTime: 50,
+        responseTime: responseTime,
         trustViolation: false
       }, messageType);
+      return;
+
+    case CONVERSATION_INTENTS.GREETING:
+      response = await this.handleGreeting(username, normalizedMessage);
+      break;
+
+          case CONVERSATION_INTENTS.GRATITUDE:
+            response = await this.handleGratitude(username, normalizedMessage);
+            break;
+
+          case CONVERSATION_INTENTS.HELP_REQUEST:
+            response = await this.handleHelpRequest(username, normalizedMessage);
+            break;
+
+          case CONVERSATION_INTENTS.CRAFTING_QUESTION:
+            response = await this.handleCraftingQuestion(username, normalizedMessage);
+            break;
+
+          case CONVERSATION_INTENTS.TIME_QUERY:
+            response = await this.handleTimeQuery(username, normalizedMessage);
+            break;
+
+          case CONVERSATION_INTENTS.LOCATION_REQUEST:
+            response = await this.handleLocationRequest(username, normalizedMessage);
+            break;
+
+          case CONVERSATION_INTENTS.STATUS_REQUEST:
+            response = await this.handleStatusRequest(username, normalizedMessage);
+            break;
+
+          case CONVERSATION_INTENTS.KNOWLEDGE_QUERY:
+            response = await this.handleKnowledgeQuery(username, normalizedMessage);
+            break;
+
+          case CONVERSATION_INTENTS.SMALL_TALK:
+            response = await this.handleSmallTalk(username, normalizedMessage);
+            break;
+
+          default:
+            response = await this.handleSmallTalk(username, normalizedMessage);
+            this.updateMetrics('unknownIntents');
+            break;
+        }
+
+        if (response) {
+          this.bot.chat(response);
+        }
+      } catch (error) {
+        console.error(`[CONVERSATION] Error handling message: ${error.message}`);
+        this.bot.chat("Sorry, I had trouble processing that. Can you try again?");
+      }
     }
   
   async handlePrivateMessage(username, message) {
@@ -15959,6 +16668,131 @@ class ConversationAI {
       
       this.bot.chat("Usage: !rl dialogue [stats|reset|train|save|load]");
       return;
+      }
+
+      if (lower.includes('movement')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can control Movement RL!");
+        return;
+      }
+
+      if (lower.includes('stats')) {
+        const stats = this.bot.movementModeManager.getMovementRLStats();
+        this.bot.chat(`📊 Movement RL Stats:`);
+        this.bot.chat(`  Enabled: ${stats.enabled}, Initialized: ${stats.initialized}`);
+        this.bot.chat(`  Total movements: ${stats.stats.totalMovements}`);
+        this.bot.chat(`  Success rate: ${stats.successRate}`);
+        this.bot.chat(`  Training data: ${stats.trainingDataSize} examples`);
+        this.bot.chat(`  Scenario stats:`);
+        this.bot.chat(`    Overworld Hills: ${stats.stats.scenarioStats.overworld_hills.count} (${stats.stats.scenarioStats.overworld_hills.success} success)`);
+        this.bot.chat(`    Nether Highway: ${stats.stats.scenarioStats.nether_highway.count} (${stats.stats.scenarioStats.nether_highway.success} success)`);
+        this.bot.chat(`    Cave Navigation: ${stats.stats.scenarioStats.cave_navigation.count} (${stats.stats.scenarioStats.cave_navigation.success} success)`);
+        this.bot.chat(`  Actions: ${stats.stats.timeoutMovements} timeouts, ${stats.stats.safetyVetoes} safety vetoes`);
+        return;
+      }
+
+      if (lower.includes('reset')) {
+        this.bot.movementModeManager.resetMovementRLStats();
+        this.bot.chat("✅ Movement RL statistics reset!");
+        return;
+      }
+
+      if (lower.includes('train')) {
+        await this.bot.movementModeManager.trainMovementRL();
+        this.bot.chat("✅ Movement RL model trained!");
+        return;
+      }
+
+      if (lower.includes('save')) {
+        this.bot.movementModeManager.saveMovementRL();
+        this.bot.chat("✅ Movement RL model saved to disk!");
+        return;
+      }
+
+      if (lower.includes('load')) {
+        await this.bot.movementModeManager.loadMovementRL();
+        this.bot.chat("✅ Movement RL model loaded from disk!");
+        return;
+      }
+
+      this.bot.chat("Usage: !rl movement [stats|reset|train|save|load]");
+      return;
+      }
+
+      // Projectile & Mace commands
+    }
+    
+    // Global RL analytics commands
+    if (lower.startsWith('!rl') && lower.includes('status')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can view RL analytics!");
+        return;
+      }
+      
+      const allMetrics = globalRLAnalytics.getAllMetrics();
+      this.bot.chat("📊 RL Analytics Status:");
+      for (const domainName in allMetrics) {
+        const metrics = allMetrics[domainName];
+        this.bot.chat(`  ${domainName}: Episodes=${metrics.stats.totalInteractions}, AvgReward=${metrics.stats.averageReward.toFixed(2)}, Success=${metrics.successRate}, FallbackActive=${metrics.stats.emergencyFallbackActive}`);
+      }
+      return;
+    }
+    
+    if (lower.startsWith('!rl') && lower.includes('save')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can save RL models!");
+        return;
+      }
+      
+      const domainMatch = message.match(/!rl\s+save\s+(\w+)/i);
+      if (domainMatch) {
+        const domain = domainMatch[1];
+        const snapshot = globalRLAnalytics.exportSnapshot(domain);
+        if (snapshot) {
+          safeWriteJson(`./data/rl_snapshots/${domain}_${Date.now()}.json`, snapshot);
+          this.bot.chat(`✅ Saved ${domain} snapshot to disk!`);
+        } else {
+          this.bot.chat(`❌ Domain ${domain} not found!`);
+        }
+      } else {
+        this.bot.chat("Usage: !rl save <domain>");
+      }
+      return;
+    }
+    
+    if (lower.startsWith('!rl') && lower.includes('reset')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can reset RL stats!");
+        return;
+      }
+      
+      const domainMatch = message.match(/!rl\s+reset\s+(\w+)/i);
+      if (domainMatch) {
+        const domain = domainMatch[1];
+        globalRLAnalytics.resetDomain(domain);
+        this.bot.chat(`✅ Reset statistics for domain: ${domain}`);
+      } else {
+        this.bot.chat("Usage: !rl reset <domain>");
+      }
+      return;
+    }
+    
+    if (lower.startsWith('!rl') && (lower.includes('abtest') || lower.includes('a/b'))) {
+      if (!this.hasTrustLevel(username, 'owner')) {
+        this.bot.chat("Only owner can control A/B testing!");
+        return;
+      }
+      
+      if (lower.includes('on')) {
+        globalRLAnalytics.setABTestingEnabled(true);
+        this.bot.chat(`✅ A/B testing enabled (${(globalRLAnalytics.globalMetrics.abtestPercentage * 100).toFixed(0)}% through fallback)`);
+      } else if (lower.includes('off')) {
+        globalRLAnalytics.setABTestingEnabled(false);
+        this.bot.chat("✅ A/B testing disabled");
+      } else {
+        this.bot.chat(`Usage: !rl abtest on|off (Currently: ${globalRLAnalytics.globalMetrics.abtestingEnabled ? 'ON' : 'OFF'})`);
+      }
+      return;
     }
     
     // Projectile & Mace commands
@@ -16768,19 +17602,19 @@ class ConversationAI {
   }
 
   async executeResourceTask(task) {
-    if (!task || !task.item) return false;
+     if (!task || !task.item) return false;
 
-    try {
-      if (this.itemHunter) {
-        return await this.itemHunter.findItem(task.item, task.amount);
-      }
-      return false;
-    } catch (error) {
-      console.log(`[EXEC] Resource task failed: ${error.message}`);
-      this.bot.chat(`❌ Failed to get ${task.item}: ${error.message}`);
-      return false;
-    }
-  }
+     try {
+       if (this.itemHunter) {
+         return await this.itemHunter.findItem(task.item, task.amount);
+       }
+       return false;
+     } catch (error) {
+       console.log(`[EXEC] Resource task failed: ${error.message}`);
+       this.bot.chat(`❌ Failed to get ${task.item}: ${error.message}`);
+       return false;
+     }
+   }
 
   findNearestPlayer() {
     const players = Object.values(this.bot.entities).filter(e =>
@@ -17244,7 +18078,933 @@ class DialogueRL {
     if (this.initialized) {
       safeNeuralSave('dialogue', './models/dialogue_model.json');
       console.log('[DIALOGUE_RL] Dialogue model saved to disk');
+      }
+      }
+      }
+
+      // === MOVEMENT RL ===
+      class MovementRL {
+      constructor(bot) {
+      this.bot = bot;
+      this.enabled = config.neural && config.neural.available;
+      this.model = null;
+      this.replayBuffer = [];
+      this.maxBufferSize = 1000;
+      this.trainingData = [];
+      this.stats = {
+       totalMovements: 0,
+       successfulMovements: 0,
+       failedMovements: 0,
+       timeoutMovements: 0,
+       safetyVetoes: 0,
+       scenarioStats: {
+         overworld_hills: { count: 0, success: 0 },
+         nether_highway: { count: 0, success: 0 },
+         cave_navigation: { count: 0, success: 0 }
+       }
+      };
+      this.recentMovements = [];
+      this.maxRecentMovements = 20;
+      this.lastTrainingTime = 0;
+      this.trainingInterval = 60000; // Train every 60 seconds
+      this.confidenceThreshold = 0.7; // Below this, use fallback
+      this.initialized = false;
+      this.movementStartTime = 0;
+      this.lastRecalculations = 0;
+      this.lastStuckDetections = 0;
+
+      this.initializeModel();
+      }
+
+      initializeModel() {
+      try {
+       if (this.enabled && config.neural && config.neural.manager) {
+         // Network for movement action selection
+         // Input: [terrain (1), dimension (1), distance (1), elevation (1), hazard (1), equipment (1), dim_scalar (1)]
+         // Output: 7 possible movement actions
+         const inputSize = 7;
+         const outputSize = 7;
+
+         if (!config.neural.movement) {
+           config.neural.movement = config.neural.manager.createNetwork('movement', inputSize, outputSize);
+         }
+         this.model = config.neural.movement;
+         this.initialized = true;
+         console.log('[MOVEMENT_RL] Movement RL model initialized');
+       } else {
+         console.log('[MOVEMENT_RL] RL disabled or not available, using deterministic fallback');
+       }
+      } catch (error) {
+       console.error('[MOVEMENT_RL] Error initializing model:', error);
+       this.initialized = false;
+      }
+      }
+
+      // Classify terrain type from environment
+      classifyTerrain(pos) {
+      try {
+       if (!pos || !this.bot.world) return 'unknown';
+
+       const block = this.bot.blockAt(pos);
+       if (!block) return 'unknown';
+
+       const blockName = block.name || '';
+
+       if (blockName.includes('water')) return 'water';
+       if (blockName.includes('lava')) return 'lava';
+       if (blockName.includes('stone') || blockName.includes('ore')) return 'cave';
+       if (blockName.includes('grass') || blockName.includes('dirt')) return 'hill';
+       if (blockName.includes('nether')) return 'nether';
+       if (blockName.includes('sand')) return 'desert';
+
+       return 'terrain';
+      } catch (error) {
+       return 'unknown';
+      }
+      }
+
+      // Detect dimension
+      detectDimension() {
+      const dimension = this.bot.game?.dimension;
+      if (dimension === 'minecraft:the_nether' || dimension === 'nether') return 'nether';
+      if (dimension === 'minecraft:the_end' || dimension === 'end') return 'end';
+      return 'overworld';
+      }
+
+      // Get equipment availability
+      checkEquipment() {
+      try {
+       const inventory = this.bot.inventory.items();
+       const hasElytra = !!inventory.find(item => item.name === 'elytra');
+       const hasRockets = !!inventory.find(item => item.name === 'firework_rocket');
+       const hasWaterBucket = !!inventory.find(item => item.name === 'water_bucket');
+       const hasBlocks = !!inventory.find(item => item.name && item.name.includes('block'));
+
+       return { hasElytra, hasRockets, hasWaterBucket, hasBlocks };
+      } catch (error) {
+       return { hasElytra: false, hasRockets: false, hasWaterBucket: false, hasBlocks: false };
+      }
+      }
+
+      // Check for hazards near bot
+      checkHazards(pos) {
+      try {
+       if (!pos) pos = this.bot.entity.position;
+
+       let hazardScore = 0;
+       const checkRadius = 5;
+
+       for (let x = pos.x - checkRadius; x <= pos.x + checkRadius; x++) {
+         for (let y = pos.y - 2; y <= pos.y + 2; y++) {
+           for (let z = pos.z - checkRadius; z <= pos.z + checkRadius; z++) {
+             const block = this.bot.blockAt(new Vec3(x, y, z));
+             if (!block) continue;
+
+             if (block.name.includes('lava')) hazardScore += 0.5;
+             if (block.name.includes('fire')) hazardScore += 0.3;
+             if (block.name === 'air' && y < pos.y - 1) hazardScore += 0.2; // Falling risk
+           }
+         }
+       }
+
+       return Math.min(1.0, hazardScore);
+      } catch (error) {
+       return 0;
+      }
+      }
+
+      // Encode movement state into feature vector
+      encodeState(targetPos, scenario = 'unknown') {
+      try {
+       const features = [];
+
+       // 1. Terrain classification (normalized)
+       const terrainTypes = ['unknown', 'water', 'lava', 'cave', 'hill', 'nether', 'desert', 'terrain'];
+       const terrain = this.classifyTerrain(this.bot.entity.position);
+       const terrainIndex = terrainTypes.indexOf(terrain);
+       features.push((terrainIndex >= 0 ? terrainIndex : 0) / terrainTypes.length);
+
+       // 2. Dimension (normalized)
+       const dimensions = ['overworld', 'nether', 'end'];
+       const dimension = this.detectDimension();
+       const dimensionIndex = dimensions.indexOf(dimension);
+       features.push((dimensionIndex >= 0 ? dimensionIndex : 0) / dimensions.length);
+
+       // 3. Target distance (normalized)
+       const currentPos = this.bot.entity.position;
+       const distance = targetPos ? currentPos.distanceTo(targetPos) : 0;
+       features.push(Math.min(1.0, distance / 1000)); // Normalize to 0-1 for distances up to 1000 blocks
+
+       // 4. Elevation change (normalized)
+       const elevationChange = targetPos ? Math.abs(targetPos.y - currentPos.y) : 0;
+       features.push(Math.min(1.0, elevationChange / 256)); // Normalize to max world height
+
+       // 5. Hazard proximity (0-1 score)
+       const hazard = this.checkHazards(currentPos);
+       features.push(hazard);
+
+       // 6. Equipment availability score
+       const equipment = this.checkEquipment();
+       const equipScore = (equipment.hasElytra ? 0.5 : 0) +
+                         (equipment.hasRockets ? 0.2 : 0) +
+                         (equipment.hasWaterBucket ? 0.2 : 0) +
+                         (equipment.hasBlocks ? 0.1 : 0);
+       features.push(Math.min(1.0, equipScore));
+
+       // 7. Scenario context (normalized)
+       const scenarios = ['unknown', 'overworld_hills', 'nether_highway', 'cave_navigation'];
+       const scenarioIndex = scenarios.indexOf(scenario);
+       features.push((scenarioIndex >= 0 ? scenarioIndex : 0) / scenarios.length);
+
+       return features;
+      } catch (error) {
+       console.error('[MOVEMENT_RL] Error encoding state:', error);
+       return Array(7).fill(0.5);
+      }
+      }
+
+      // Detect scenario based on context
+      detectScenario(targetPos) {
+      try {
+       const dimension = this.detectDimension();
+       const terrain = this.classifyTerrain(this.bot.entity.position);
+
+       if (dimension === 'nether') {
+         return 'nether_highway';
+       } else if (terrain === 'cave' || terrain === 'water') {
+         return 'cave_navigation';
+       } else {
+         return 'overworld_hills';
+       }
+      } catch (error) {
+       return 'unknown';
+      }
+      }
+
+      // Select movement action based on RL
+      async selectAction(targetPos, scenario = null) {
+      if (!this.enabled || !this.initialized) {
+       return { action: 'standard_pathfinder', confidence: 0.0 };
+      }
+
+      try {
+       if (!scenario) {
+         scenario = this.detectScenario(targetPos);
+       }
+
+       const state = this.encodeState(targetPos, scenario);
+
+       const actionProbabilities = await safeNeuralPredict('movement', state, null);
+
+       if (!actionProbabilities) {
+         return { action: 'standard_pathfinder', confidence: 0.0 };
+       }
+
+       const actions = [
+         'highway_mode',
+         'standard_pathfinder',
+         'pillar_bridge',
+         'water_bucket_drop',
+         'elytra_travel',
+         'slow_walk',
+         'pause_scan'
+       ];
+
+       const probs = Array.isArray(actionProbabilities) ? actionProbabilities : [actionProbabilities];
+
+       let bestAction = 'standard_pathfinder';
+       let bestConfidence = 0;
+
+       for (let i = 0; i < Math.min(probs.length, actions.length); i++) {
+         const prob = Math.max(0, Math.min(1, parseFloat(probs[i]) || 0));
+         if (prob > bestConfidence) {
+           bestConfidence = prob;
+           bestAction = actions[i];
+         }
+       }
+
+       return {
+         action: bestAction,
+         confidence: bestConfidence,
+         probabilities: probs.slice(0, actions.length),
+         scenario
+       };
+      } catch (error) {
+       console.error('[MOVEMENT_RL] Error selecting action:', error);
+       return { action: 'standard_pathfinder', confidence: 0.0 };
+      }
+      }
+
+      // Safety gate: check if action is safe to execute
+      isSafeAction(action, scenario) {
+      try {
+       const equipment = this.checkEquipment();
+
+       // Elytra travel requires rockets
+       if (action === 'elytra_travel' && (!equipment.hasElytra || !equipment.hasRockets)) {
+         return false;
+       }
+
+       // Water bucket drop requires water bucket
+       if (action === 'water_bucket_drop' && !equipment.hasWaterBucket) {
+         return false;
+       }
+
+       // Pillar bridge requires blocks
+       if (action === 'pillar_bridge' && !equipment.hasBlocks) {
+         return false;
+       }
+
+       // Certain actions not safe over lava
+       const hazard = this.checkHazards();
+       if (hazard > 0.7 && (action === 'pillar_bridge' || action === 'water_bucket_drop')) {
+         return false;
+       }
+
+       return true;
+      } catch (error) {
+       return false;
+      }
+      }
+
+      // Record safety veto
+      recordSafetyVeto(action, reason) {
+      this.stats.safetyVetoes++;
+      console.log(`[MOVEMENT_RL] Safety veto: action=${action}, reason=${reason}`);
+      }
+
+      // Record movement outcome for training
+      recordOutcome(targetPos, action, outcome, scenario = 'unknown') {
+      try {
+       const success = outcome.success || false;
+       const reward = this.calculateReward(outcome, action);
+
+       // Update stats
+       this.stats.totalMovements++;
+       if (success) {
+         this.stats.successfulMovements++;
+       } else if (outcome.timeout) {
+         this.stats.timeoutMovements++;
+       } else {
+         this.stats.failedMovements++;
+       }
+
+       // Track scenario stats
+       if (this.stats.scenarioStats[scenario]) {
+         this.stats.scenarioStats[scenario].count++;
+         if (success) {
+           this.stats.scenarioStats[scenario].success++;
+         }
+       }
+
+       // Record in recent movements
+       this.recentMovements.push({ success, timestamp: Date.now(), scenario, action });
+       if (this.recentMovements.length > this.maxRecentMovements) {
+         this.recentMovements.shift();
+       }
+
+       // Store for training
+       this.trainingData.push({
+         action,
+         reward,
+         timestamp: Date.now(),
+         scenario,
+         travelTime: outcome.travelTime || 0,
+         distance: outcome.distance || 0,
+         recalculations: outcome.recalculations || 0,
+         stuckDetections: outcome.stuckDetections || 0
+       });
+
+       console.log(`[MOVEMENT_RL] Recorded movement: action=${action}, scenario=${scenario}, success=${success}, reward=${reward.toFixed(2)}`);
+      } catch (error) {
+       console.error('[MOVEMENT_RL] Error recording outcome:', error);
+      }
+      }
+
+      // Calculate reward signal for movement
+      calculateReward(outcome, action) {
+      let reward = 0;
+
+      if (outcome.success) {
+       // Reward successful movement
+       reward = 1.0;
+
+       // Bonus for efficiency (time-to-target)
+       if (outcome.travelTime && outcome.distance) {
+         const efficiency = outcome.distance / Math.max(1, outcome.travelTime / 1000); // blocks per second
+         if (efficiency > 5) {
+           reward += 0.3; // Fast travel bonus
+         }
+       }
+
+       // Bonus for smooth path (minimal recalculations)
+       if (outcome.recalculations !== undefined && outcome.recalculations < 3) {
+         reward += 0.2;
+       }
+
+       // Bonus for avoiding stuck situations
+       if (outcome.stuckDetections !== undefined && outcome.stuckDetections === 0) {
+         reward += 0.2;
+       }
+      } else {
+       // Penalize failures and timeouts
+       reward = outcome.timeout ? -0.3 : -0.5;
+      }
+
+      // Penalize fall damage
+      if (outcome.fallDamage && outcome.fallDamage > 0) {
+       reward -= Math.min(0.5, outcome.fallDamage / 20); // Normalized to max half heart
+      }
+
+      // Penalize lava contact
+      if (outcome.lavaContact) {
+       reward -= 1.0;
+      }
+
+      // Penalize loops/inefficiency
+      if (outcome.isLoop) {
+       reward -= 0.8;
+      }
+
+      return reward;
+      }
+
+      // Train the model periodically
+      async trainModel() {
+      if (!this.enabled || !this.initialized || this.trainingData.length === 0) {
+       return;
+      }
+
+      const now = Date.now();
+      if (now - this.lastTrainingTime < this.trainingInterval) {
+       return;
+      }
+
+      try {
+       const batchSize = Math.min(32, this.trainingData.length);
+       const batch = this.trainingData.slice(-batchSize);
+
+       const trainingExamples = batch.map(data => {
+         const target = Array(7).fill(0);
+         const actionIndex = [
+           'highway_mode',
+           'standard_pathfinder',
+           'pillar_bridge',
+           'water_bucket_drop',
+           'elytra_travel',
+           'slow_walk',
+           'pause_scan'
+         ].indexOf(data.action);
+
+         if (actionIndex >= 0) {
+           target[actionIndex] = Math.max(0, Math.min(1, (data.reward + 1) / 2));
+         }
+
+         return {
+           input: Array(7).fill(0.5),
+           output: target
+         };
+       });
+
+       const success = await safeNeuralTrain('movement', trainingExamples, {
+         iterations: 100,
+         errorThresh: 0.01
+       });
+
+       if (success) {
+         console.log('[MOVEMENT_RL] Model trained successfully on', batchSize, 'examples');
+         this.lastTrainingTime = now;
+
+         if (now % 300000 < this.trainingInterval) {
+           safeNeuralSave('movement', './models/movement_model.json');
+         }
+       }
+      } catch (error) {
+       console.error('[MOVEMENT_RL] Error training model:', error);
+      }
+      }
+
+      // Get RL stats
+      getStats() {
+      return {
+       enabled: this.enabled,
+       initialized: this.initialized,
+       stats: this.stats,
+       trainingDataSize: this.trainingData.length,
+       successRate: this.stats.totalMovements > 0
+         ? (this.stats.successfulMovements / this.stats.totalMovements * 100).toFixed(2) + '%'
+         : 'N/A'
+      };
+      }
+
+      // Reset stats
+      resetStats() {
+      this.stats = {
+       totalMovements: 0,
+       successfulMovements: 0,
+       failedMovements: 0,
+       timeoutMovements: 0,
+       safetyVetoes: 0,
+       scenarioStats: {
+         overworld_hills: { count: 0, success: 0 },
+         nether_highway: { count: 0, success: 0 },
+         cave_navigation: { count: 0, success: 0 }
+       }
+      };
+      this.recentMovements = [];
+      this.trainingData = [];
+      console.log('[MOVEMENT_RL] Statistics reset');
+      }
+
+      // Load persisted model
+      async loadModel() {
+      try {
+       await safeNeuralLoad('movement', './models/movement_model.json');
+       console.log('[MOVEMENT_RL] Movement model loaded from disk');
+      } catch (error) {
+       console.log('[MOVEMENT_RL] No persisted movement model found, starting fresh');
+      }
+      }
+
+      // Save model to disk
+      saveModel() {
+      if (this.initialized) {
+       safeNeuralSave('movement', './models/movement_model.json');
+       console.log('[MOVEMENT_RL] Movement model saved to disk');
+      }
+      }
+      }
+
+      // === COORDINATE SCRAPER ===
+// === RL ANALYTICS MANAGER ===
+// Manages per-domain RL metrics, analytics aggregation, A/B testing, and emergency fallback
+class RLAnalyticsManager {
+  constructor() {
+    this.domains = {}; // domain -> { metrics, stats, logs, rewardHistory, confidenceHistory }
+    this.globalMetrics = {
+      abtestingEnabled: false,
+      abtestPercentage: 0.1, // 10% of episodes through fallback
+      emergencyFallbackThreshold: -0.3, // Average reward below this triggers fallback
+      enableEmergencyFallback: true,
+      rewardWindowSize: 50 // Rolling average window
+    };
+    this.performanceHistory = {}; // Track improvement over time
+    this.learningLog = []; // Recent learning events
+    this.maxLearningLogSize = 1000;
+    this.wsServer = null; // Set by dashboard
+    this.initialized = false;
+    
+    this.initializePerformanceTracking();
+  }
+  
+  initializePerformanceTracking() {
+    // Load performance history from disk
+    try {
+      const perfData = safeReadJson('./data/rl_performance.json', {});
+      this.performanceHistory = perfData;
+      console.log('[RL_ANALYTICS] Performance history loaded');
+    } catch (err) {
+      console.log('[RL_ANALYTICS] Starting with fresh performance history');
     }
+    this.initialized = true;
+  }
+  
+  // Register a new RL domain for analytics tracking
+  registerDomain(domainName, initialModel = null) {
+    if (this.domains[domainName]) {
+      return; // Already registered
+    }
+    
+    this.domains[domainName] = {
+      name: domainName,
+      metrics: {
+        currentEpsilon: 0.5,
+        modelHash: this.calculateModelHash(initialModel),
+        bufferFillLevel: 0,
+        experienceCount: 0,
+        maxBufferSize: 1000
+      },
+      stats: {
+        totalEpisodes: 0,
+        successCount: 0,
+        failureCount: 0,
+        averageReward: 0,
+        rewardTrend: [], // Last N rewards
+        confidenceScores: [],
+        winStreak: 0,
+        lossStreak: 0,
+        maxWinStreak: 0,
+        maxLossStreak: 0,
+        emergencyFallbackActive: false
+      },
+      logs: {
+        recentDecisions: [], // Last 100 decisions
+        maxLogSize: 100,
+        highRewardEvents: [],
+        largeLossEvents: [],
+        fallbackEvents: []
+      },
+      timestamps: {
+        created: Date.now(),
+        lastUpdate: Date.now(),
+        lastTrain: null,
+        lastSave: null
+      }
+    };
+    
+    // Initialize performance history for this domain
+    if (!this.performanceHistory[domainName]) {
+      this.performanceHistory[domainName] = {
+        snapshots: [],
+        improvement: 0,
+        lastImprovement: 0
+      };
+    }
+    
+    console.log(`[RL_ANALYTICS] Registered domain: ${domainName}`);
+  }
+  
+  // Calculate hash of model for version tracking
+  calculateModelHash(model) {
+    if (!model) return 'uninitialized';
+    try {
+      const json = typeof model === 'string' ? model : JSON.stringify(model).substring(0, 1000);
+      let hash = 0;
+      for (let i = 0; i < json.length; i++) {
+        const char = json.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      return Math.abs(hash).toString(16);
+    } catch (err) {
+      return 'error';
+    }
+  }
+  
+  // Record a decision/episode outcome for analytics
+  recordEpisode(domainName, outcome = {}) {
+    if (!this.domains[domainName]) {
+      this.registerDomain(domainName);
+    }
+    
+    const domain = this.domains[domainName];
+    const { success = false, reward = 0, confidence = 0.5, action = 'unknown' } = outcome;
+    
+    // Update stats
+    domain.stats.totalEpisodes++;
+    if (success) {
+      domain.stats.successCount++;
+      domain.stats.winStreak++;
+      domain.stats.lossStreak = 0;
+    } else {
+      domain.stats.failureCount++;
+      domain.stats.lossStreak++;
+      domain.stats.winStreak = 0;
+    }
+    
+    // Track streaks
+    if (domain.stats.winStreak > domain.stats.maxWinStreak) {
+      domain.stats.maxWinStreak = domain.stats.winStreak;
+    }
+    if (domain.stats.lossStreak > domain.stats.maxLossStreak) {
+      domain.stats.maxLossStreak = domain.stats.lossStreak;
+    }
+    
+    // Update reward trend
+    domain.stats.rewardTrend.push(reward);
+    if (domain.stats.rewardTrend.length > this.globalMetrics.rewardWindowSize) {
+      domain.stats.rewardTrend.shift();
+    }
+    
+    // Calculate rolling average reward
+    const avgReward = domain.stats.rewardTrend.reduce((a, b) => a + b, 0) / domain.stats.rewardTrend.length;
+    domain.stats.averageReward = parseFloat(avgReward.toFixed(3));
+    
+    // Track confidence scores
+    domain.stats.confidenceScores.push(confidence);
+    if (domain.stats.confidenceScores.length > 50) {
+      domain.stats.confidenceScores.shift();
+    }
+    
+    // Log decision
+    domain.logs.recentDecisions.push({
+      timestamp: Date.now(),
+      success,
+      reward,
+      confidence,
+      action,
+      lossStreak: domain.stats.lossStreak,
+      winStreak: domain.stats.winStreak
+    });
+    if (domain.logs.recentDecisions.length > domain.logs.maxLogSize) {
+      domain.logs.recentDecisions.shift();
+    }
+    
+    // Check for significant events
+    this.checkSignificantEvents(domainName, outcome);
+    
+    // Check for emergency fallback trigger
+    if (this.globalMetrics.enableEmergencyFallback) {
+      this.checkEmergencyFallback(domainName);
+    }
+    
+    domain.timestamps.lastUpdate = Date.now();
+  }
+  
+  // Check for high reward or large loss events
+  checkSignificantEvents(domainName, outcome) {
+    const domain = this.domains[domainName];
+    const { reward = 0 } = outcome;
+    
+    // High reward event (above 90th percentile)
+    if (domain.stats.rewardTrend.length > 10) {
+      const sorted = [...domain.stats.rewardTrend].sort((a, b) => a - b);
+      const p90 = sorted[Math.floor(sorted.length * 0.9)];
+      
+      if (reward > p90) {
+        const event = {
+          timestamp: Date.now(),
+          type: 'high_reward',
+          reward,
+          p90
+        };
+        domain.logs.highRewardEvents.push(event);
+        if (domain.logs.highRewardEvents.length > 50) {
+          domain.logs.highRewardEvents.shift();
+        }
+        this.logLearningEvent(`HIGH_REWARD@${domainName}: ${reward.toFixed(2)}`);
+        this.broadcastEvent('high_reward', { domain: domainName, reward, p90 });
+      }
+    }
+    
+    // Large loss event (below 10th percentile and negative)
+    if (domain.stats.rewardTrend.length > 10) {
+      const sorted = [...domain.stats.rewardTrend].sort((a, b) => a - b);
+      const p10 = sorted[Math.floor(sorted.length * 0.1)];
+      
+      if (reward < p10 && reward < -0.3) {
+        const event = {
+          timestamp: Date.now(),
+          type: 'large_loss',
+          reward,
+          p10
+        };
+        domain.logs.largeLossEvents.push(event);
+        if (domain.logs.largeLossEvents.length > 50) {
+          domain.logs.largeLossEvents.shift();
+        }
+        this.logLearningEvent(`LARGE_LOSS@${domainName}: ${reward.toFixed(2)}`);
+        this.broadcastEvent('large_loss', { domain: domainName, reward, p10 });
+      }
+    }
+  }
+  
+  // Check if emergency fallback should be triggered
+  checkEmergencyFallback(domainName) {
+    const domain = this.domains[domainName];
+    
+    // Need at least 20 episodes to evaluate
+    if (domain.stats.totalEpisodes < 20) return;
+    
+    // Check if average reward is below threshold
+    if (domain.stats.averageReward < this.globalMetrics.emergencyFallbackThreshold) {
+      if (!domain.stats.emergencyFallbackActive) {
+        domain.stats.emergencyFallbackActive = true;
+        const event = {
+          timestamp: Date.now(),
+          type: 'emergency_fallback_activated',
+          avgReward: domain.stats.averageReward,
+          threshold: this.globalMetrics.emergencyFallbackThreshold
+        };
+        domain.logs.fallbackEvents.push(event);
+        this.logLearningEvent(`EMERGENCY_FALLBACK@${domainName}: avg_reward=${domain.stats.averageReward.toFixed(2)}`);
+        this.broadcastEvent('emergency_fallback', { 
+          domain: domainName, 
+          avgReward: domain.stats.averageReward,
+          action: 'disabled'
+        });
+      }
+    } else if (domain.stats.averageReward > (this.globalMetrics.emergencyFallbackThreshold + 0.2)) {
+      if (domain.stats.emergencyFallbackActive) {
+        domain.stats.emergencyFallbackActive = false;
+        const event = {
+          timestamp: Date.now(),
+          type: 'emergency_fallback_recovered',
+          avgReward: domain.stats.averageReward
+        };
+        domain.logs.fallbackEvents.push(event);
+        this.logLearningEvent(`FALLBACK_RECOVERED@${domainName}: avg_reward=${domain.stats.averageReward.toFixed(2)}`);
+        this.broadcastEvent('fallback_recovered', { domain: domainName, avgReward: domain.stats.averageReward });
+      }
+    }
+  }
+  
+  // Get metrics for a specific domain
+  getDomainMetrics(domainName) {
+    const domain = this.domains[domainName];
+    if (!domain) return null;
+    
+    return {
+      name: domainName,
+      metrics: domain.metrics,
+      stats: domain.stats,
+      performanceHistory: this.performanceHistory[domainName],
+      isInEmergencyFallback: domain.stats.emergencyFallbackActive,
+      averageReward: domain.stats.averageReward,
+      successRate: domain.stats.totalEpisodes > 0 
+        ? (domain.stats.successCount / domain.stats.totalEpisodes * 100).toFixed(2) + '%'
+        : 'N/A'
+    };
+  }
+  
+  // Get all domain metrics
+  getAllMetrics() {
+    const result = {};
+    for (const domainName in this.domains) {
+      result[domainName] = this.getDomainMetrics(domainName);
+    }
+    return result;
+  }
+  
+  // Get recent decisions for a domain
+  getRecentLogs(domainName, limit = 50) {
+    const domain = this.domains[domainName];
+    if (!domain) return [];
+    return domain.logs.recentDecisions.slice(-limit);
+  }
+  
+  // Get all recent learning events
+  getLearningEvents(limit = 50) {
+    return this.learningLog.slice(-limit);
+  }
+  
+  // Log a learning event
+  logLearningEvent(message) {
+    const event = {
+      timestamp: Date.now(),
+      message
+    };
+    this.learningLog.push(event);
+    if (this.learningLog.length > this.maxLearningLogSize) {
+      this.learningLog.shift();
+    }
+    
+    // Also append to learning.log file
+    try {
+      const logLine = `[${new Date().toISOString()}] ${message}\n`;
+      require('fs').appendFileSync('./logs/learning.log', logLine);
+    } catch (err) {
+      // Ignore file errors
+    }
+  }
+  
+  // Broadcast event via WebSocket
+  broadcastEvent(eventType, data) {
+    if (!this.wsServer) return;
+    
+    try {
+      const message = JSON.stringify({
+        type: 'rl_event',
+        eventType,
+        data,
+        timestamp: Date.now()
+      });
+      
+      // Send to all connected clients
+      if (this.wsServer.clients) {
+        this.wsServer.clients.forEach(client => {
+          if (client.readyState === 1) { // OPEN
+            try {
+              client.send(message);
+            } catch (err) {
+              // Ignore send errors
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.error('[RL_ANALYTICS] Broadcast error:', err.message);
+    }
+  }
+  
+  // Save performance metrics to disk
+  savePerformanceMetrics() {
+    try {
+      // Update performance snapshots with current metrics
+      for (const domainName in this.domains) {
+        const domain = this.domains[domainName];
+        if (!this.performanceHistory[domainName]) {
+          this.performanceHistory[domainName] = { snapshots: [], improvement: 0 };
+        }
+        
+        this.performanceHistory[domainName].snapshots.push({
+          timestamp: Date.now(),
+          stats: domain.stats
+        });
+        
+        // Keep only last 100 snapshots
+        if (this.performanceHistory[domainName].snapshots.length > 100) {
+          this.performanceHistory[domainName].snapshots.shift();
+        }
+      }
+      
+      safeWriteJson('./data/rl_performance.json', this.performanceHistory);
+      console.log('[RL_ANALYTICS] Performance metrics saved');
+    } catch (err) {
+      console.error('[RL_ANALYTICS] Error saving performance metrics:', err);
+    }
+  }
+  
+  // Toggle A/B testing
+  setABTestingEnabled(enabled) {
+    this.globalMetrics.abtestingEnabled = enabled;
+    console.log(`[RL_ANALYTICS] A/B testing ${enabled ? 'enabled' : 'disabled'}`);
+    this.logLearningEvent(`ABTEST_${enabled ? 'ON' : 'OFF'}`);
+  }
+  
+  // Should this episode use fallback? (for A/B testing)
+  shouldUseFallback() {
+    if (!this.globalMetrics.abtestingEnabled) return false;
+    return Math.random() < this.globalMetrics.abtestPercentage;
+  }
+  
+  // Reset domain statistics
+  resetDomain(domainName) {
+    if (this.domains[domainName]) {
+      const domain = this.domains[domainName];
+      domain.stats = {
+        totalEpisodes: 0,
+        successCount: 0,
+        failureCount: 0,
+        averageReward: 0,
+        rewardTrend: [],
+        confidenceScores: [],
+        winStreak: 0,
+        lossStreak: 0,
+        maxWinStreak: 0,
+        maxLossStreak: 0,
+        emergencyFallbackActive: false
+      };
+      domain.logs.recentDecisions = [];
+      console.log(`[RL_ANALYTICS] Domain reset: ${domainName}`);
+      this.logLearningEvent(`DOMAIN_RESET@${domainName}`);
+    }
+  }
+  
+  // Export analytics snapshot
+  exportSnapshot(domainName) {
+    const domain = this.domains[domainName];
+    if (!domain) return null;
+    
+    return {
+      domain: domainName,
+      timestamp: Date.now(),
+      metrics: domain.metrics,
+      stats: domain.stats,
+      recentLogs: domain.logs.recentDecisions.slice(-20),
+      highRewardEvents: domain.logs.highRewardEvents.slice(-10),
+      largeLossEvents: domain.logs.largeLossEvents.slice(-10)
+    };
   }
 }
 
@@ -18270,6 +20030,7 @@ class HighwayNavigator {
   constructor(bot, movementManager) {
     this.bot = bot;
     this.movementManager = movementManager;
+    this.movementRL = movementManager ? movementManager.movementRL : new MovementRL(bot);
     this.active = false;
     this.destination = null;
     this.currentAxis = null; // 'x' or 'z'
@@ -18625,6 +20386,7 @@ class MovementModeManager {
     this.bot = bot;
     this.currentMode = 'default';
     this.highwayNavigator = new HighwayNavigator(bot, this);
+    this.movementRL = new MovementRL(bot);
     this.modes = {
       default: {
         name: 'Default',
@@ -18635,6 +20397,9 @@ class MovementModeManager {
         description: 'Nether highway travel mode'
       }
     };
+    this.travelStartTime = 0;
+    this.travelRecalculations = 0;
+    this.travelStuckDetections = 0;
   }
   
   async setMode(mode) {
@@ -18655,28 +20420,86 @@ class MovementModeManager {
   
   async travelToCoords(x, y, z, fromOverworld = false) {
     const destination = new Vec3(x, y, z);
-    
-    // Check if we should use highway travel
-    if (this.highwayNavigator.isInNether()) {
-      const distance = this.bot.entity.position.distanceTo(destination);
-      
-      // Use highway for long distances (> 500 blocks)
-      if (distance > 500 || fromOverworld) {
-        console.log('[MOVEMENT] 🛣️ Using highway travel for long distance');
-        await this.setMode('highway');
-        return await this.highwayNavigator.startHighwayTravel(destination, fromOverworld);
+    this.travelStartTime = Date.now();
+    this.travelRecalculations = 0;
+    this.travelStuckDetections = 0;
+
+    // Query RL for movement action selection
+    const rlDecision = await this.movementRL.selectAction(destination);
+    let action = rlDecision.action;
+
+    // Check if RL suggestion passes safety filters
+    if (rlDecision.confidence >= this.movementRL.confidenceThreshold) {
+      if (!this.movementRL.isSafeAction(action, rlDecision.scenario)) {
+        this.movementRL.recordSafetyVeto(action, 'missing_prerequisites');
+        action = 'standard_pathfinder';
       }
-    } else if (fromOverworld) {
-      // Need to enter nether first
-      console.log('[MOVEMENT] ⚠️ Need to enter Nether first for highway travel');
-      this.bot.chat('I need to enter a Nether portal first for highway travel!');
+    } else {
+      // Low confidence, use fallback
+      action = 'standard_pathfinder';
+    }
+
+    console.log(`[MOVEMENT] RL Decision: ${action} (confidence: ${rlDecision.confidence.toFixed(2)}, scenario: ${rlDecision.scenario})`);
+
+    try {
+      // Check if we should use highway travel
+      if (this.highwayNavigator.isInNether()) {
+        const distance = this.bot.entity.position.distanceTo(destination);
+
+        // Use highway for long distances or RL suggests it
+        if (action === 'highway_mode' || distance > 500 || fromOverworld) {
+          console.log('[MOVEMENT] 🛣️ Using highway travel for long distance');
+          await this.setMode('highway');
+          return await this.highwayNavigator.startHighwayTravel(destination, fromOverworld);
+        }
+      } else if (fromOverworld) {
+        console.log('[MOVEMENT] ⚠️ Need to enter Nether first for highway travel');
+        this.bot.chat('I need to enter a Nether portal first for highway travel!');
+        return false;
+      }
+
+      // Execute selected action or fall back to standard pathfinder
+      await this.setMode('default');
+
+      if (action === 'pillar_bridge') {
+        console.log('[MOVEMENT] 🧱 Attempting pillar bridge navigation');
+      } else if (action === 'water_bucket_drop') {
+        console.log('[MOVEMENT] 💧 Using water bucket for safe descent');
+      } else if (action === 'elytra_travel') {
+        console.log('[MOVEMENT] 🦅 Attempting elytra travel');
+      } else if (action === 'slow_walk') {
+        console.log('[MOVEMENT] 🚶 Using slow careful walk');
+      } else if (action === 'pause_scan') {
+        console.log('[MOVEMENT] 🔍 Pausing for environment scan');
+      }
+
+      // Default: use standard pathfinder
+      this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2)).catch(() => {});
+
+      // Record outcome after movement attempt
+      const travelTime = Date.now() - this.travelStartTime;
+      const distance = this.bot.entity.position.distanceTo(destination);
+      this.movementRL.recordOutcome(destination, action, {
+        success: distance < 10,
+        travelTime,
+        distance,
+        recalculations: this.travelRecalculations,
+        stuckDetections: this.travelStuckDetections
+      }, rlDecision.scenario);
+
+      return true;
+    } catch (error) {
+      console.error('[MOVEMENT] Error in travelToCoords:', error);
+      const travelTime = Date.now() - this.travelStartTime;
+      this.movementRL.recordOutcome(destination, action, {
+        success: false,
+        travelTime,
+        distance: 0,
+        recalculations: this.travelRecalculations,
+        stuckDetections: this.travelStuckDetections
+      }, rlDecision.scenario);
       return false;
     }
-    
-    // Use default pathfinder for short distances or overworld
-    await this.setMode('default');
-    this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2)).catch(() => {});
-    return true;
   }
   
   getMode() {
@@ -18686,7 +20509,27 @@ class MovementModeManager {
   getHighwayStatus() {
     return this.highwayNavigator.getStatus();
   }
-  
+
+  getMovementRLStats() {
+    return this.movementRL.getStats();
+  }
+
+  async trainMovementRL() {
+    await this.movementRL.trainModel();
+  }
+
+  saveMovementRL() {
+    this.movementRL.saveModel();
+  }
+
+  async loadMovementRL() {
+    await this.movementRL.loadModel();
+  }
+
+  resetMovementRLStats() {
+    this.movementRL.resetStats();
+  }
+
   broadcastDefenseAlert(incident) {
     // Broadcast urgent chat warnings to trusted players
     const alertMessage = `🚨 HOME UNDER ATTACK! ${incident.type.toUpperCase()} by ${incident.attacker} at home base!`;
@@ -21710,17 +23553,18 @@ class BotSpawner {
 let globalBotSpawner = null;
 
 // === MOVEMENT FRAMEWORK ===
-class MovementFramework {
-  constructor(bot) {
-    this.bot = bot;
-    this.currentMode = 'standard';
-    this.exploits = {
-      elytraFly: false,
-      boatPhase: false,
-      pearlExploit: false,
-      horseSpeed: false
-    };
-  }
+ class MovementFramework {
+   constructor(bot) {
+     this.bot = bot;
+     this.currentMode = 'standard';
+     this.movementRL = new MovementRL(bot);
+     this.exploits = {
+       elytraFly: false,
+       boatPhase: false,
+       pearlExploit: false,
+       horseSpeed: false
+     };
+   }
   
   setMode(mode) {
     config.movement.currentMode = mode;
@@ -21747,7 +23591,27 @@ class MovementFramework {
       modeHistory: config.movement.modeHistory.slice(-5)
     };
   }
-}
+
+  getMovementRLStats() {
+    return this.movementRL.getStats();
+  }
+
+  async trainMovementRL() {
+    await this.movementRL.trainModel();
+  }
+
+  saveMovementRL() {
+    this.movementRL.saveModel();
+  }
+
+  async loadMovementRL() {
+    await this.movementRL.loadModel();
+  }
+
+  resetMovementRLStats() {
+    this.movementRL.resetStats();
+  }
+  }
 
 // === HOME DEFENSE SYSTEM ===
 class HomeDefenseSystem {
@@ -23368,6 +25232,7 @@ let globalSwarmCoordinator = null;
 let globalSupplyChainManager = null;
 let globalIntelligenceDB = null;
 let globalBaseMonitor = null;
+let globalRLAnalytics = new RLAnalyticsManager();
 let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
 let globalSchematicLoader = new SchematicLoader();
@@ -23976,8 +25841,67 @@ http.createServer((req, res) => {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: 'Schematic not found' }));
       }
-    })();
-  } else if (req.url === '/command' && req.method === 'POST') {
+      })();
+      } else if (req.url === '/api/rl/metrics' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      metrics: globalRLAnalytics.getAllMetrics(),
+      globalSettings: globalRLAnalytics.globalMetrics,
+      timestamp: Date.now()
+      }));
+      } else if (req.url.startsWith('/api/rl/metrics/') && req.method === 'GET') {
+      const domainName = req.url.split('/').pop();
+      const metrics = globalRLAnalytics.getDomainMetrics(domainName);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: !!metrics,
+      metrics,
+      timestamp: Date.now()
+      }));
+      } else if (req.url.startsWith('/api/rl/logs/') && req.method === 'GET') {
+      const domainName = req.url.split('/').pop();
+      const limit = parseInt(req.url.split('?limit=')[1] || '50', 10);
+      const logs = globalRLAnalytics.getRecentLogs(domainName, limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      logs,
+      domain: domainName,
+      timestamp: Date.now()
+      }));
+      } else if (req.url === '/api/rl/events' && req.method === 'GET') {
+      const limit = parseInt(req.url.split('?limit=')[1] || '50', 10);
+      const events = globalRLAnalytics.getLearningEvents(limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      events,
+      timestamp: Date.now()
+      }));
+      } else if (req.url === '/api/rl/performance' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      performance: globalRLAnalytics.performanceHistory,
+      timestamp: Date.now()
+      }));
+      } else if (req.url.startsWith('/api/rl/export/') && req.method === 'GET') {
+      const domainName = req.url.split('/').pop();
+      const snapshot = globalRLAnalytics.exportSnapshot(domainName);
+      if (snapshot) {
+      safeWriteJson(`./data/rl_snapshots/${domainName}_${Date.now()}.json`, snapshot);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        snapshot,
+        exportedTo: `./data/rl_snapshots/${domainName}_${Date.now()}.json`
+      }));
+      } else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Domain not found' }));
+      }
+      } else if (req.url === '/command' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
@@ -24482,7 +26406,10 @@ async function launchBot(username, role = 'fighter') {
   
   // Load persisted dialogue RL model if available
   await conversationAI.dialogueRL.loadModel();
-  
+
+  // Load persisted movement RL model if available
+  await bot.movementModeManager.loadMovementRL();
+
   const schematicLoader = new SchematicLoader(bot);
   const intelligenceDB = new IntelligenceDatabase(bot);
   let stashScanner = null;
@@ -24616,6 +26543,12 @@ async function launchBot(username, role = 'fighter') {
       globalSwarmCoordinator = new SwarmCoordinator(9090);
       console.log('[SWARM] Coordinator initialized');
       
+      // Set WebSocket server for RL analytics broadcasting
+      if (config.swarm.wsServer) {
+        globalRLAnalytics.wsServer = config.swarm.wsServer;
+        console.log('[RL_ANALYTICS] WebSocket server connected for event broadcasting');
+      }
+      
       globalSchematicBuilder = new SchematicBuilder(globalSwarmCoordinator);
       console.log('[BUILD] Schematic builder initialized');
     }
@@ -24634,6 +26567,11 @@ async function launchBot(username, role = 'fighter') {
     }
     
     bot.swarmCoordinator = globalSwarmCoordinator;
+    
+    // Initialize RL Analytics performance tracking
+    safeSetInterval(() => {
+      globalRLAnalytics.savePerformanceMetrics();
+    }, 300000, 'rl-analytics-saver'); // Every 5 minutes
     
     // Start periodic memory cleanup
     setInterval(cleanupOldData, 300000); // Every 5 minutes
@@ -25108,7 +27046,23 @@ async function launchBot(username, role = 'fighter') {
         conversationAI.dialogueRL.saveModel();
       }
     }, 300000); // Save every 5 minutes
-    
+
+    // Movement RL training loop
+    setInterval(() => {
+      if (bot.movementModeManager && bot.movementModeManager.movementRL) {
+        bot.movementModeManager.trainMovementRL().catch(err => {
+          console.error('[MOVEMENT_RL] Training error:', err.message);
+        });
+      }
+    }, 60000); // Train every 60 seconds
+
+    // Movement RL model persistence
+    setInterval(() => {
+      if (bot.movementModeManager && bot.movementModeManager.movementRL) {
+        bot.movementModeManager.saveMovementRL();
+      }
+    }, 300000); // Save every 5 minutes
+
     // Equipment manager update loop
     if (bot.equipmentManager) {
       setInterval(() => {
@@ -27863,6 +29817,57 @@ class ProductionTracker {
     return Object.entries(this.stats.bot_performance)
       .sort((a, b) => b[1].items - a[1].items)
       .map(([botId, stats]) => ({ botId, ...stats }));
+  }
+}
+
+// Extend existing MessageInterceptor with conversation logging methods
+if (typeof MessageInterceptor !== 'undefined') {
+  // Add conversation logging methods to existing MessageInterceptor class
+  MessageInterceptor.prototype.logConversation = function(qaEntry) {
+    if (!this.conversations) {
+      this.conversations = [];
+      this.maxConversations = 100;
+    }
+    
+    this.conversations.unshift(qaEntry);
+    
+    // Keep only recent conversations
+    if (this.conversations.length > this.maxConversations) {
+      this.conversations = this.conversations.slice(0, this.maxConversations);
+    }
+  };
+  
+  MessageInterceptor.prototype.getRecentConversations = function(limit = 20) {
+    if (!this.conversations) return [];
+    return this.conversations.slice(0, limit);
+  };
+  
+  MessageInterceptor.prototype.getConversationMetrics = function() {
+    if (!this.conversations) return { totalConversations: 0 };
+    
+    const now = Date.now();
+    const last24h = now - (24 * 60 * 60 * 1000);
+    const recentConversations = this.conversations.filter(c => c.timestamp > last24h);
+    
+    return {
+      totalConversations: this.conversations.length,
+      last24hConversations: recentConversations.length
+    };
+  };
+}
+
+// Initialize global systems
+function initializeHunterX() {
+  try {
+    console.log('[INIT] Initializing HunterX systems...');
+    
+    // Initialize neural system
+    const neuralStatus = initializeNeuralSystem();
+    console.log('[INIT] Neural system status:', neuralStatus);
+    
+    console.log('[INIT] ✓ HunterX initialization complete');
+  } catch (error) {
+    console.error('[INIT] Failed to initialize HunterX:', error.message);
   }
 }
 
