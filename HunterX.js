@@ -15452,12 +15452,6 @@ class ConversationAI {
       this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
       if (this.context.length > this.maxContext) this.context.shift();
 
-// Normalize message (strip bot name, clean whitespace)
-const normalizedMessage = this.normalizeMessage(message, username);
-
-this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
-if (this.context.length > this.maxContext) this.context.shift();
-
 // === MERGED: Intent detection + RL tracking ===
 const intent = this.analyzeIntent(normalizedMessage);
 const messageType = this.classifyMessageType(normalizedMessage);
@@ -16750,56 +16744,53 @@ try {
       }
 
       if (lower.includes('movement')) {
-      if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can control Movement RL!");
+        if (!this.hasTrustLevel(username, 'admin')) {
+          this.bot.chat("Only admin+ can control Movement RL!");
+          return;
+        }
+
+        if (lower.includes('stats')) {
+          const stats = this.bot.movementModeManager.getMovementRLStats();
+          this.bot.chat(`📊 Movement RL Stats:`);
+          this.bot.chat(`  Enabled: ${stats.enabled}, Initialized: ${stats.initialized}`);
+          this.bot.chat(`  Total movements: ${stats.stats.totalMovements}`);
+          this.bot.chat(`  Success rate: ${stats.successRate}`);
+          this.bot.chat(`  Training data: ${stats.trainingDataSize} examples`);
+          this.bot.chat(`  Scenario stats:`);
+          this.bot.chat(`    Overworld Hills: ${stats.stats.scenarioStats.overworld_hills.count} (${stats.stats.scenarioStats.overworld_hills.success} success)`);
+          this.bot.chat(`    Nether Highway: ${stats.stats.scenarioStats.nether_highway.count} (${stats.stats.scenarioStats.nether_highway.success} success)`);
+          this.bot.chat(`    Cave Navigation: ${stats.stats.scenarioStats.cave_navigation.count} (${stats.stats.scenarioStats.cave_navigation.success} success)`);
+          this.bot.chat(`  Actions: ${stats.stats.timeoutMovements} timeouts, ${stats.stats.safetyVetoes} safety vetoes`);
+          return;
+        }
+
+        if (lower.includes('reset')) {
+          this.bot.movementModeManager.resetMovementRLStats();
+          this.bot.chat("✅ Movement RL statistics reset!");
+          return;
+        }
+
+        if (lower.includes('train')) {
+          await this.bot.movementModeManager.trainMovementRL();
+          this.bot.chat("✅ Movement RL model trained!");
+          return;
+        }
+
+        if (lower.includes('save')) {
+          this.bot.movementModeManager.saveMovementRL();
+          this.bot.chat("✅ Movement RL model saved to disk!");
+          return;
+        }
+
+        if (lower.includes('load')) {
+          await this.bot.movementModeManager.loadMovementRL();
+          this.bot.chat("✅ Movement RL model loaded from disk!");
+          return;
+        }
+
+        this.bot.chat("Usage: !rl movement [stats|reset|train|save|load]");
         return;
       }
-
-      if (lower.includes('stats')) {
-        const stats = this.bot.movementModeManager.getMovementRLStats();
-        this.bot.chat(`📊 Movement RL Stats:`);
-        this.bot.chat(`  Enabled: ${stats.enabled}, Initialized: ${stats.initialized}`);
-        this.bot.chat(`  Total movements: ${stats.stats.totalMovements}`);
-        this.bot.chat(`  Success rate: ${stats.successRate}`);
-        this.bot.chat(`  Training data: ${stats.trainingDataSize} examples`);
-        this.bot.chat(`  Scenario stats:`);
-        this.bot.chat(`    Overworld Hills: ${stats.stats.scenarioStats.overworld_hills.count} (${stats.stats.scenarioStats.overworld_hills.success} success)`);
-        this.bot.chat(`    Nether Highway: ${stats.stats.scenarioStats.nether_highway.count} (${stats.stats.scenarioStats.nether_highway.success} success)`);
-        this.bot.chat(`    Cave Navigation: ${stats.stats.scenarioStats.cave_navigation.count} (${stats.stats.scenarioStats.cave_navigation.success} success)`);
-        this.bot.chat(`  Actions: ${stats.stats.timeoutMovements} timeouts, ${stats.stats.safetyVetoes} safety vetoes`);
-        return;
-      }
-
-      if (lower.includes('reset')) {
-        this.bot.movementModeManager.resetMovementRLStats();
-        this.bot.chat("✅ Movement RL statistics reset!");
-        return;
-      }
-
-      if (lower.includes('train')) {
-        await this.bot.movementModeManager.trainMovementRL();
-        this.bot.chat("✅ Movement RL model trained!");
-        return;
-      }
-
-      if (lower.includes('save')) {
-        this.bot.movementModeManager.saveMovementRL();
-        this.bot.chat("✅ Movement RL model saved to disk!");
-        return;
-      }
-
-      if (lower.includes('load')) {
-        await this.bot.movementModeManager.loadMovementRL();
-        this.bot.chat("✅ Movement RL model loaded from disk!");
-        return;
-      }
-
-      this.bot.chat("Usage: !rl movement [stats|reset|train|save|load]");
-      return;
-      }
-
-      // Projectile & Mace commands
-    }
     
     // Global RL analytics commands
     if (lower.startsWith('!rl') && lower.includes('status')) {
@@ -18160,9 +18151,10 @@ class DialogueRL {
       }
       }
       }
+}
 
-      // === MOVEMENT RL ===
-      class MovementRL {
+// === MOVEMENT RL ===
+class MovementRL {
       constructor(bot) {
       this.bot = bot;
       this.enabled = config.neural && config.neural.available;
