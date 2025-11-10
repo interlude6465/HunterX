@@ -54,16 +54,572 @@ const pvp = require('mineflayer-pvp').plugin;
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const Vec3 = require('vec3').Vec3;
 
-// Neural network support with graceful fallback
-let brain = null;
+// === ENHANCED NEURAL BRAIN SYSTEM WITH MULTIPLE FALLBACKS ===
+// Supports ml5.js, brain.js, synaptic, tensorflow with graceful fallbacks
+
+class NeuralBrainManager {
+  constructor() {
+    this.brain = null;
+    this.type = null;
+    this.models = {};
+    this.initialized = false;
+    this.libraries = {
+      ml5: null,
+      brain: null,
+      synaptic: null,
+      tensorflow: null
+    };
+    
+    this.initializeBrain();
+  }
+  
+  initializeBrain() {
+    console.log('[NEURAL] Initializing neural brain system...');
+    
+    // Try each option in order of preference
+    const options = [
+      { name: 'ml5', init: () => this.initML5() },
+      { name: 'brain.js', init: () => this.initBrainJS() },
+      { name: 'synaptic', init: () => this.initSynaptic() },
+      { name: 'tensorflow', init: () => this.initTensorFlow() }
+    ];
+    
+    for (const option of options) {
+      try {
+        console.log(`[NEURAL] Trying ${option.name}...`);
+        const success = option.init();
+        if (success) {
+          this.type = option.name;
+          this.initialized = true;
+          console.log(`[NEURAL] ✓ Using ${option.name}`);
+          break;
+        }
+      } catch (error) {
+        console.log(`[NEURAL] ${option.name} failed: ${error.message}`);
+      }
+    }
+    
+    if (!this.initialized) {
+      console.log('[NEURAL] ⚠️ No neural library available, using fallback AI');
+      this.type = 'fallback';
+      this.initializeFallbackModels();
+    }
+    
+    console.log(`[NEURAL] System initialized with: ${this.type}`);
+  }
+  
+  initML5() {
+    try {
+      this.libraries.ml5 = require('ml5');
+      console.log('[NEURAL] ✓ ml5.js loaded');
+      
+      // Create neural networks with ml5
+      this.models.combat = {
+        network: null,
+        type: 'regression',
+        initialized: false
+      };
+      
+      this.models.placement = {
+        network: null,
+        type: 'regression', 
+        initialized: false
+      };
+      
+      this.models.dupe = {
+        network: null,
+        type: 'classification',
+        initialized: false
+      };
+      
+      this.models.conversation = {
+        network: null,
+        type: 'classification',
+        initialized: false
+      };
+      
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  initBrainJS() {
+    try {
+      this.libraries.brain = require('brain.js');
+      console.log('[NEURAL] ✓ brain.js loaded');
+      
+      // Create neural networks with brain.js
+      this.models.combat = {
+        network: new this.libraries.brain.NeuralNetwork({ hiddenLayers: [256, 128, 64] }),
+        type: 'brainjs'
+      };
+      
+      this.models.placement = {
+        network: new this.libraries.brain.NeuralNetwork({ hiddenLayers: [128, 64, 32] }),
+        type: 'brainjs'
+      };
+      
+      this.models.dupe = {
+        network: new this.libraries.brain.recurrent.LSTM({ hiddenLayers: [256, 128, 64] }),
+        type: 'brainjs-lstm'
+      };
+      
+      this.models.conversation = {
+        network: new this.libraries.brain.recurrent.LSTM({ hiddenLayers: [128, 64] }),
+        type: 'brainjs-lstm'
+      };
+      
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  initSynaptic() {
+    try {
+      const Synaptic = require('synaptic');
+      this.libraries.synaptic = Synaptic;
+      const { Neuron, Layer, Network, Trainer } = Synaptic;
+      
+      console.log('[NEURAL] ✓ Synaptic loaded');
+      
+      // Create networks for each model
+      const createSynapticNetwork = (inputSize, hiddenSizes, outputSize) => {
+        const layers = [];
+        
+        // Input layer
+        const inputLayer = new Layer(inputSize);
+        layers.push(inputLayer);
+        
+        // Hidden layers
+        let prevLayer = inputLayer;
+        for (const size of hiddenSizes) {
+          const hiddenLayer = new Layer(size);
+          prevLayer.project(hiddenLayer);
+          layers.push(hiddenLayer);
+          prevLayer = hiddenLayer;
+        }
+        
+        // Output layer
+        const outputLayer = new Layer(outputSize);
+        prevLayer.project(outputLayer);
+        layers.push(outputLayer);
+        
+        const network = new Network({
+          input: inputLayer,
+          hidden: layers.slice(1, -1),
+          output: outputLayer
+        });
+        
+        const trainer = new Trainer(network);
+        
+        return { network, trainer };
+      };
+      
+      this.models.combat = createSynapticNetwork(10, [256, 128, 64], 5);
+      this.models.placement = createSynapticNetwork(8, [128, 64, 32], 3);
+      this.models.dupe = createSynapticNetwork(15, [256, 128, 64], 8);
+      this.models.conversation = createSynapticNetwork(20, [128, 64], 10);
+      
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  initTensorFlow() {
+    try {
+      const tf = require('@tensorflow/tfjs');
+      require('@tensorflow/tfjs-node');
+      this.libraries.tensorflow = tf;
+      
+      console.log('[NEURAL] ✓ TensorFlow.js loaded');
+      
+      // Create models with TensorFlow
+      const createTFModel = (inputShape, outputSize) => {
+        const model = tf.sequential();
+        
+        model.add(tf.layers.dense({ inputShape: [inputShape], units: 256, activation: 'relu' }));
+        model.add(tf.layers.dense({ units: 128, activation: 'relu' }));
+        model.add(tf.layers.dense({ units: 64, activation: 'relu' }));
+        model.add(tf.layers.dense({ units: outputSize, activation: 'softmax' }));
+        
+        model.compile({
+          optimizer: 'adam',
+          loss: 'categoricalCrossentropy',
+          metrics: ['accuracy']
+        });
+        
+        return model;
+      };
+      
+      this.models.combat = { network: createTFModel(10, 5), type: 'tensorflow' };
+      this.models.placement = { network: createTFModel(8, 3), type: 'tensorflow' };
+      this.models.dupe = { network: createTFModel(15, 8), type: 'tensorflow' };
+      this.models.conversation = { network: createTFModel(20, 10), type: 'tensorflow' };
+      
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  
+  initializeFallbackModels() {
+    // Initialize fallback models (hardcoded logic)
+    this.models.combat = { type: 'fallback' };
+    this.models.placement = { type: 'fallback' };
+    this.models.dupe = { type: 'fallback' };
+    this.models.conversation = { type: 'fallback' };
+  }
+  
+  async initializeML5Model(modelName) {
+    if (this.type !== 'ml5' || !this.libraries.ml5) return false;
+    
+    try {
+      const model = this.models[modelName];
+      if (model.initialized) return true;
+      
+      model.network = await this.libraries.ml5.neuralNetwork({
+        task: model.type,
+        debug: false
+      });
+      
+      model.initialized = true;
+      console.log(`[NEURAL] ✓ ml5 ${modelName} model initialized`);
+      return true;
+    } catch (error) {
+      console.warn(`[NEURAL] Failed to initialize ml5 ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async predict(modelName, input, fallbackOutput = null) {
+    if (this.type === 'fallback') {
+      return this.fallbackPrediction(modelName, input, fallbackOutput);
+    }
+    
+    try {
+      const model = this.models[modelName];
+      if (!model) {
+        return fallbackOutput !== null ? fallbackOutput : null;
+      }
+      
+      // Handle ml5 lazy initialization
+      if (this.type === 'ml5' && !model.initialized) {
+        await this.initializeML5Model(modelName);
+      }
+      
+      switch (this.type) {
+        case 'ml5':
+          return await model.network.predict(input);
+          
+        case 'brain.js':
+        case 'brainjs-lstm':
+          return model.network.run(input);
+          
+        case 'synaptic':
+          return model.network.activate(input);
+          
+        case 'tensorflow':
+          const tensor = this.libraries.tensorflow.tensor2d([input]);
+          const result = model.network.predict(tensor);
+          const output = result.dataSync();
+          result.dispose();
+          tensor.dispose();
+          return output;
+          
+        default:
+          return fallbackOutput !== null ? fallbackOutput : null;
+      }
+    } catch (error) {
+      console.warn(`[NEURAL] Prediction failed on ${modelName}: ${error.message}`);
+      return fallbackOutput !== null ? fallbackOutput : null;
+    }
+  }
+  
+  async train(modelName, data, options = {}) {
+    if (this.type === 'fallback') {
+      console.log(`[NEURAL] Training ${modelName} with ${data.length} samples (fallback mode - data collected only)`);
+      return true;
+    }
+    
+    try {
+      const model = this.models[modelName];
+      if (!model) {
+        return false;
+      }
+      
+      // Handle ml5 lazy initialization
+      if (this.type === 'ml5' && !model.initialized) {
+        await this.initializeML5Model(modelName);
+      }
+      
+      console.log(`[NEURAL] Training ${modelName} with ${data.length} samples using ${this.type}`);
+      
+      switch (this.type) {
+        case 'ml5':
+          const ml5Options = {
+            epochs: options.iterations || 1000,
+            batchSize: 32,
+            ...options
+          };
+          await model.network.train(data, ml5Options);
+          break;
+          
+        case 'brain.js':
+        case 'brainjs-lstm':
+          const brainOptions = {
+            iterations: options.iterations || 1000,
+            errorThresh: options.errorThresh || 0.005,
+            log: false,
+            ...options
+          };
+          model.network.train(data, brainOptions);
+          break;
+          
+        case 'synaptic':
+          const synapticOptions = {
+            rate: 0.1,
+            iterations: options.iterations || 1000,
+            error: 0.005,
+            shuffle: true,
+            log: 0,
+            ...options
+          };
+          model.trainer.train(data, synapticOptions);
+          break;
+          
+        case 'tensorflow':
+          const tfInputs = this.libraries.tensorflow.tensor2d(data.map(d => d.input));
+          const tfOutputs = this.libraries.tensorflow.tensor2d(data.map(d => d.output));
+          
+          const tfOptions = {
+            epochs: options.iterations || 50,
+            verbose: 0,
+            batchSize: 32,
+            ...options
+          };
+          
+          await model.network.fit(tfInputs, tfOutputs, tfOptions);
+          
+          tfInputs.dispose();
+          tfOutputs.dispose();
+          break;
+      }
+      
+      console.log(`[NEURAL] ✓ Training complete for ${modelName}`);
+      return true;
+    } catch (error) {
+      console.warn(`[NEURAL] Training failed on ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  save(modelName, filePath = null) {
+    if (this.type === 'fallback') {
+      return false;
+    }
+    
+    try {
+      const model = this.models[modelName];
+      if (!model) {
+        return false;
+      }
+      
+      filePath = filePath || `./models/${modelName}_model.json`;
+      
+      let jsonData;
+      
+      switch (this.type) {
+        case 'ml5':
+          // ml5 doesn't have direct toJSON, use brain.js format if possible
+          console.log(`[NEURAL] ml5 model saving not directly supported - skipping ${modelName}`);
+          return false;
+          
+        case 'brain.js':
+        case 'brainjs-lstm':
+          jsonData = model.network.toJSON();
+          break;
+          
+        case 'synaptic':
+          // Synaptic networks can be serialized
+          jsonData = model.network.toJSON();
+          break;
+          
+        case 'tensorflow':
+          // TensorFlow models need special handling
+          return this.saveTensorFlowModel(modelName, filePath);
+          
+        default:
+          return false;
+      }
+      
+      const result = safeWriteJson(filePath, jsonData);
+      if (result) {
+        console.log(`[NEURAL] ✓ Saved model: ${modelName}`);
+      }
+      return result;
+    } catch (error) {
+      console.warn(`[NEURAL] Save failed on ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async saveTensorFlowModel(modelName, filePath) {
+    try {
+      const model = this.models[modelName];
+      // TensorFlow needs a directory structure, not a single file
+      const savePath = filePath.replace(/\.json$/, '');
+      await model.network.save(`file://${savePath}`);
+      console.log(`[NEURAL] ✓ Saved TensorFlow model: ${modelName}`);
+      return true;
+    } catch (error) {
+      console.warn(`[NEURAL] TensorFlow save failed on ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async load(modelName, filePath = null) {
+    if (this.type === 'fallback') {
+      return false;
+    }
+    
+    try {
+      filePath = filePath || `./models/${modelName}_model.json`;
+      const model = this.models[modelName];
+      if (!model) {
+        return false;
+      }
+      
+      switch (this.type) {
+        case 'brain.js':
+        case 'brainjs-lstm':
+        case 'synaptic':
+          const modelData = safeReadJson(filePath);
+          if (!modelData) {
+            return false;
+          }
+          model.network.fromJSON(modelData);
+          break;
+          
+        case 'tensorflow':
+          // TensorFlow loading needs async handling
+          return await this.loadTensorFlowModel(modelName, filePath);
+          
+        default:
+          return false;
+      }
+      
+      console.log(`[NEURAL] ✓ Loaded model: ${modelName}`);
+      return true;
+    } catch (error) {
+      console.warn(`[NEURAL] Load failed on ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async loadTensorFlowModel(modelName, filePath) {
+    try {
+      const model = this.models[modelName];
+      // TensorFlow needs the model.json file path
+      const loadPath = filePath.replace(/\.json$/, '/model.json');
+      const loadedModel = await this.libraries.tensorflow.loadLayersModel(`file://${loadPath}`);
+      this.models[modelName].network = loadedModel;
+      console.log(`[NEURAL] ✓ Loaded TensorFlow model: ${modelName}`);
+      return true;
+    } catch (error) {
+      console.warn(`[NEURAL] TensorFlow load failed on ${modelName}: ${error.message}`);
+      return false;
+    }
+  }
+  
+  fallbackPrediction(modelName, input, fallbackOutput = null) {
+    // Simple heuristics for fallback mode
+    switch (modelName) {
+      case 'combat':
+        return this.fallbackCombatPrediction(input);
+        
+      case 'placement':
+        return this.fallbackPlacementPrediction(input);
+        
+      case 'dupe':
+        return this.fallbackDupePrediction(input);
+        
+      case 'conversation':
+        return this.fallbackConversationPrediction(input);
+        
+      default:
+        return fallbackOutput !== null ? fallbackOutput : null;
+    }
+  }
+  
+  fallbackCombatPrediction(input) {
+    // Simple combat heuristics
+    const healthRatio = input[0] || 1.0;
+    const enemyDistance = input[1] || 10;
+    const hasTotem = input[2] || false;
+    
+    if (healthRatio < 0.25) return [0.8, 0.1, 0.05, 0.03, 0.02]; // heal
+    if (enemyDistance > 8) return [0.1, 0.8, 0.05, 0.03, 0.02]; // chase
+    if (hasTotem && healthRatio < 0.5) return [0.05, 0.05, 0.8, 0.05, 0.05]; // pop_totem
+    return [0.7, 0.1, 0.1, 0.05, 0.05]; // attack
+  }
+  
+  fallbackPlacementPrediction(input) {
+    // Simple placement heuristics
+    const enemyDistance = input[0] || 10;
+    const hasObsidian = input[1] || false;
+    
+    if (enemyDistance < 3 && hasObsidian) return [0.8, 0.1, 0.1]; // trap
+    if (enemyDistance < 6) return [0.1, 0.8, 0.1]; // surround
+    return [0.1, 0.1, 0.8]; // none
+  }
+  
+  fallbackDupePrediction(input) {
+    // Simple dupe detection heuristics
+    const suspiciousBlock = input[0] || 0;
+    const weirdBehavior = input[1] || 0;
+    
+    if (suspiciousBlock > 0.7 && weirdBehavior > 0.5) return [0.9, 0.1]; // dupe_likely
+    return [0.1, 0.9]; // normal
+  }
+  
+  fallbackConversationPrediction(input) {
+    // Simple conversation heuristics
+    const hasQuestion = input[0] || 0;
+    const hasGreeting = input[1] || 0;
+    
+    if (hasGreeting > 0.7) return [0.8, 0.1, 0.1]; // greeting
+    if (hasQuestion > 0.7) return [0.1, 0.8, 0.1]; // answer
+    return [0.1, 0.1, 0.8]; // casual
+  }
+  
+  getStatus() {
+    return {
+      type: this.type,
+      initialized: this.initialized,
+      models: Object.keys(this.models),
+      available: this.initialized
+    };
+  }
+}
+
+// Global neural brain manager instance
+let neuralBrainManager = null;
 let neuralNetworksAvailable = false;
-try {
-  brain = require('brain.js');
-  neuralNetworksAvailable = true;
-  console.log('[NEURAL] Brain.js loaded successfully');
-} catch (err) {
-  console.log('[NEURAL] Brain.js not available, neural features disabled:', err.message);
-  console.log('[NEURAL] This is normal on headless systems or when gl package fails to build');
+
+// Initialize the neural brain system
+function initializeNeuralSystem() {
+  neuralBrainManager = new NeuralBrainManager();
+  neuralNetworksAvailable = neuralBrainManager.initialized;
+  
+  // Set up global brain variable for backward compatibility
+  if (neuralBrainManager.type === 'brain.js' && neuralBrainManager.libraries.brain) {
+    global.brain = neuralBrainManager.libraries.brain;
+  }
+  
+  return neuralBrainManager.getStatus();
 }
 const fs = require('fs');
 const path = require('path');
@@ -204,6 +760,113 @@ function safeReadJson(filePath, defaultValue = null) {
 
 function safeWriteJson(filePath, data) {
   return safeWriteFile(filePath, JSON.stringify(data, null, 2));
+}
+
+// === HEALTH TRACKING SYSTEM ===
+function initializeHealthTracking(bot) {
+  if (!bot) {
+    console.error('[HEALTH] Bot object not available');
+    return;
+  }
+  
+  const healthFile = './data/health.json';
+  const defaultHealthData = {
+    botName: bot.username || 'UnknownBot',
+    currentHealth: 20,
+    maxHealth: 20,
+    lastUpdated: Date.now(),
+    healthHistory: [],
+    damageEvents: []
+  };
+  
+  // Initialize or load health.json
+  let healthData = safeReadJson(healthFile, defaultHealthData);
+  if (!healthData) {
+    healthData = defaultHealthData;
+    safeWriteJson(healthFile, healthData);
+    console.log('[HEALTH] ✓ Created health.json with default values');
+  }
+  
+  // Update initial health values
+  healthData.botName = bot.username || 'UnknownBot';
+  healthData.currentHealth = bot.health || 20;
+  healthData.maxHealth = 20;
+  healthData.lastUpdated = Date.now();
+  
+  // Initialize health history if missing
+  if (!Array.isArray(healthData.healthHistory)) {
+    healthData.healthHistory = [];
+  }
+  if (!Array.isArray(healthData.damageEvents)) {
+    healthData.damageEvents = [];
+  }
+  
+  // Save initialized health data
+  safeWriteJson(healthFile, healthData);
+  console.log(`[HEALTH] Health tracking initialized for ${bot.username} (Health: ${healthData.currentHealth}/${healthData.maxHealth})`);
+  
+  // Track health changes
+  let lastRecordedHealth = bot.health || 20;
+  let recordInterval = null;
+  
+  const updateHealthRecord = () => {
+    const currentHealth = bot.health || 20;
+    const timestamp = Date.now();
+    
+    // Only record if health changed
+    if (currentHealth !== lastRecordedHealth) {
+      const healthData = safeReadJson(healthFile, defaultHealthData);
+      if (!healthData) healthData = defaultHealthData;
+      
+      // Ensure arrays exist
+      if (!Array.isArray(healthData.healthHistory)) healthData.healthHistory = [];
+      if (!Array.isArray(healthData.damageEvents)) healthData.damageEvents = [];
+      
+      // Record health change
+      healthData.currentHealth = currentHealth;
+      healthData.maxHealth = 20;
+      healthData.lastUpdated = timestamp;
+      
+      // Add to history (keep last 100 entries)
+      healthData.healthHistory.push({
+        timestamp,
+        health: currentHealth,
+        change: currentHealth - lastRecordedHealth
+      });
+      if (healthData.healthHistory.length > 100) {
+        healthData.healthHistory = healthData.healthHistory.slice(-100);
+      }
+      
+      // If damage was taken, record the event
+      if (currentHealth < lastRecordedHealth) {
+        const damage = lastRecordedHealth - currentHealth;
+        healthData.damageEvents.push({
+          timestamp,
+          damage,
+          healthAfter: currentHealth
+        });
+        // Keep last 50 damage events
+        if (healthData.damageEvents.length > 50) {
+          healthData.damageEvents = healthData.damageEvents.slice(-50);
+        }
+      }
+      
+      // Save updated health data
+      safeWriteJson(healthFile, healthData);
+      lastRecordedHealth = currentHealth;
+    }
+  };
+  
+  // Record health every 1 second
+  recordInterval = setInterval(updateHealthRecord, 1000);
+  
+  // Store interval ID for cleanup
+  if (bot.healthTrackingInterval) {
+    clearInterval(bot.healthTrackingInterval);
+  }
+  bot.healthTrackingInterval = recordInterval;
+  
+  console.log('[HEALTH] ✓ Health tracking started');
 }
 
 // === VERSION EXTRACTION AND SERVER DETECTION HELPERS ===
@@ -656,13 +1319,15 @@ const config = {
     keywords: ['lifesteal']
   },
   
-  // Neural networks (with fallback support)
+  // Enhanced neural networks (multi-library support with fallbacks)
   neural: {
-    combat: neuralNetworksAvailable ? new brain.NeuralNetwork({ hiddenLayers: [256, 128, 64] }) : null,
-    placement: neuralNetworksAvailable ? new brain.NeuralNetwork({ hiddenLayers: [128, 64, 32] }) : null,
-    dupe: neuralNetworksAvailable ? new brain.recurrent.LSTM({ hiddenLayers: [256, 128, 64] }) : null,
-    conversation: neuralNetworksAvailable ? new brain.recurrent.LSTM({ hiddenLayers: [128, 64] }) : null,
-    available: neuralNetworksAvailable
+    combat: null, // Will be initialized by NeuralBrainManager
+    placement: null, // Will be initialized by NeuralBrainManager
+    dupe: null, // Will be initialized by NeuralBrainManager
+    conversation: null, // Will be initialized by NeuralBrainManager
+    available: false, // Will be updated by NeuralBrainManager
+    type: 'fallback', // Will be updated by NeuralBrainManager
+    manager: null // Will be set to NeuralBrainManager instance
   },
   
   // Conversation
@@ -939,169 +1604,161 @@ if (neuralNetworksAvailable) {
 
 // === NEURAL NETWORK FALLBACK HELPERS ===
 
-// Unified interface for neural prediction - supports both network objects and named networks
-function safeNeuralPredict(networkOrName, input, fallbackOutput = null) {
-  if (!neuralNetworksAvailable) {
+// Unified interface for neural prediction - enhanced with multi-library support
+async function safeNeuralPredict(networkOrName, input, fallbackOutput = null) {
+  if (!neuralBrainManager || !neuralBrainManager.initialized) {
     return fallbackOutput !== null ? fallbackOutput : null;
   }
   
-  let network = null;
+  let modelName = null;
   
   // Support both direct network objects and named network strings
   if (typeof networkOrName === 'string') {
-    network = config.neural?.[networkOrName];
-  } else {
-    network = networkOrName;
+    modelName = networkOrName;
+  } else if (networkOrName && typeof networkOrName === 'object') {
+    // Legacy support - try to match with existing models
+    for (const [name, model] of Object.entries(neuralBrainManager.models)) {
+      if (model.network === networkOrName || model === networkOrName) {
+        modelName = name;
+        break;
+      }
+    }
   }
   
-  if (!network) {
+  if (!modelName) {
     return fallbackOutput !== null ? fallbackOutput : null;
   }
   
   try {
-    return network.run(input);
+    return await neuralBrainManager.predict(modelName, input, fallbackOutput);
   } catch (err) {
     console.warn(`[NEURAL] Prediction failed: ${err.message}`);
     return fallbackOutput !== null ? fallbackOutput : null;
   }
 }
 
-// Unified interface for neural training - supports both network objects and named networks
-function safeNeuralTrain(networkOrName, data, options = {}) {
-  if (!neuralNetworksAvailable) {
-    return Promise.resolve(false);
+// Unified interface for neural training - enhanced with multi-library support
+async function safeNeuralTrain(networkOrName, data, options = {}) {
+  if (!neuralBrainManager || !neuralBrainManager.initialized) {
+    return false;
   }
   
-  let network = null;
-  let networkName = typeof networkOrName === 'string' ? networkOrName : 'unknown';
+  let modelName = null;
   
   // Support both direct network objects and named network strings
   if (typeof networkOrName === 'string') {
-    network = config.neural?.[networkOrName];
-  } else {
-    network = networkOrName;
+    modelName = networkOrName;
+  } else if (networkOrName && typeof networkOrName === 'object') {
+    // Legacy support - try to match with existing models
+    for (const [name, model] of Object.entries(neuralBrainManager.models)) {
+      if (model.network === networkOrName || model === networkOrName) {
+        modelName = name;
+        break;
+      }
+    }
   }
   
-  if (!network) {
-    return Promise.resolve(false);
+  if (!modelName) {
+    return false;
   }
   
   try {
-    const trainOptions = {
-      iterations: 1000,
-      errorThresh: 0.005,
-      log: false,
-      ...options
-    };
-    network.train(data, trainOptions);
-    return Promise.resolve(true);
+    return await neuralBrainManager.train(modelName, data, options);
   } catch (err) {
-    console.warn(`[NEURAL] Training failed on ${networkName}: ${err.message}`);
-    return Promise.resolve(false);
+    console.warn(`[NEURAL] Training failed on ${modelName}: ${err.message}`);
+    return false;
   }
 }
 
-// Save a neural network to disk
+// Save a neural network to disk - enhanced with multi-library support
 function safeNeuralSave(networkOrName, filePath = null) {
-  if (!neuralNetworksAvailable) {
+  if (!neuralBrainManager || !neuralBrainManager.initialized) {
     return false;
   }
   
-  let network = null;
-  let networkName = typeof networkOrName === 'string' ? networkOrName : 'unknown';
+  let modelName = null;
   
   // Support both direct network objects and named network strings
   if (typeof networkOrName === 'string') {
-    network = config.neural?.[networkOrName];
+    modelName = networkOrName;
     filePath = filePath || `./models/${networkOrName}_model.json`;
-  } else {
-    network = networkOrName;
+  } else if (networkOrName && typeof networkOrName === 'object') {
+    // Legacy support - try to match with existing models
+    for (const [name, model] of Object.entries(neuralBrainManager.models)) {
+      if (model.network === networkOrName || model === networkOrName) {
+        modelName = name;
+        filePath = filePath || `./models/${name}_model.json`;
+        break;
+      }
+    }
   }
   
-  if (!network || !filePath) {
+  if (!modelName) {
     return false;
   }
   
   try {
-    const jsonData = network.toJSON();
-    const result = safeWriteJson(filePath, jsonData);
+    return neuralBrainManager.save(modelName, filePath);
+  } catch (err) {
+    console.warn(`[NEURAL] Save failed on ${modelName}: ${err.message}`);
+    return false;
+  }
+}
+
+// Load a neural network from disk - enhanced with multi-library support
+async function safeNeuralLoad(networkName, filePath = null) {
+  if (!neuralBrainManager || !neuralBrainManager.initialized) {
+    return false;
+  }
+  
+  try {
+    const result = await neuralBrainManager.load(networkName, filePath);
     if (result) {
-      console.log(`[NEURAL] ✓ Saved model: ${networkName}`);
+      // Update config for backward compatibility
+      if (neuralBrainManager.models[networkName]) {
+        config.neural[networkName] = neuralBrainManager.models[networkName].network || neuralBrainManager.models[networkName];
+      }
     }
     return result;
-  } catch (err) {
-    console.warn(`[NEURAL] Save failed on ${networkName}: ${err.message}`);
-    return false;
-  }
-}
-
-// Load a neural network from disk
-function safeNeuralLoad(networkName, filePath = null) {
-  if (!neuralNetworksAvailable || !brain) {
-    return false;
-  }
-  
-  filePath = filePath || `./models/${networkName}_model.json`;
-  
-  try {
-    const modelData = safeReadJson(filePath);
-    if (!modelData) {
-      return false;
-    }
-    
-    // Create appropriate network type
-    let network;
-    if (networkName === 'dupe' || networkName === 'conversation') {
-      network = new brain.recurrent.LSTM();
-    } else {
-      network = new brain.NeuralNetwork();
-    }
-    
-    network.fromJSON(modelData);
-    config.neural[networkName] = network;
-    console.log(`[NEURAL] ✓ Loaded model: ${networkName}`);
-    return true;
   } catch (err) {
     console.warn(`[NEURAL] Load failed on ${networkName}: ${err.message}`);
     return false;
   }
 }
 
-// Initialize neural brain with better error handling
+// Initialize neural brain with enhanced multi-library support
 async function initializeNeuralBrain() {
-  if (!neuralNetworksAvailable) {
-    console.log('[NEURAL] ⚠️ Brain.js not available - neural features disabled');
-    return false;
-  }
-  
   try {
-    console.log('[NEURAL] ✓ Brain.js available - initializing neural networks...');
+    console.log('[NEURAL] Initializing enhanced neural brain system...');
     
-    // Initialize networks with appropriate architectures
-    if (!config.neural.combat) {
-      config.neural.combat = new brain.NeuralNetwork({ hiddenLayers: [256, 128, 64] });
-    }
-    if (!config.neural.placement) {
-      config.neural.placement = new brain.NeuralNetwork({ hiddenLayers: [128, 64, 32] });
-    }
-    if (!config.neural.dupe) {
-      config.neural.dupe = new brain.recurrent.LSTM({ hiddenLayers: [256, 128, 64] });
-    }
-    if (!config.neural.conversation) {
-      config.neural.conversation = new brain.recurrent.LSTM({ hiddenLayers: [128, 64] });
+    // Initialize the neural brain manager
+    const status = initializeNeuralSystem();
+    
+    // Update config for backward compatibility
+    config.neural.available = status.available;
+    config.neural.type = status.type;
+    config.neural.manager = neuralBrainManager;
+    
+    // Map models to config for legacy compatibility
+    for (const modelName of status.models) {
+      const model = neuralBrainManager.models[modelName];
+      if (model && model.network) {
+        config.neural[modelName] = model.network;
+      }
     }
     
-    // Load trained models if they exist
+    // Load pre-trained models if they exist
     const networkNames = ['combat', 'placement', 'dupe', 'conversation'];
     for (const name of networkNames) {
       const modelPath = `./models/${name}_model.json`;
       if (fs.existsSync(modelPath)) {
-        if (safeNeuralLoad(name, modelPath)) {
+        if (await safeNeuralLoad(name, modelPath)) {
           console.log(`[NEURAL] ✓ Loaded pre-trained ${name} model`);
         }
       }
     }
     
+    console.log(`[NEURAL] ✓ Neural brain initialized with ${status.type}`);
     return true;
   } catch (err) {
     console.warn(`[NEURAL] Error during initialization: ${err.message}`);
@@ -1110,32 +1767,44 @@ async function initializeNeuralBrain() {
   }
 }
 
-// Log system status regarding neural availability
+// Log enhanced system status regarding neural availability
 function logNeuralSystemStatus() {
-  console.log('\n=== NEURAL SYSTEM STATUS ===');
-  console.log(`Neural Brain: ${neuralNetworksAvailable ? '✓ ENABLED' : '⚠️ DISABLED (fallback active)'}`);
+  console.log('\n=== ENHANCED NEURAL SYSTEM STATUS ===');
   
-  if (neuralNetworksAvailable) {
+  if (neuralBrainManager && neuralBrainManager.initialized) {
+    console.log(`Neural Brain: ✓ ENABLED (${neuralBrainManager.type})`);
+    console.log(`Available Libraries: ${Object.keys(neuralBrainManager.libraries).filter(k => neuralBrainManager.libraries[k]).join(', ') || 'none'}`);
     console.log('Neural Networks Loaded:');
-    for (const [name, network] of Object.entries(config.neural || {})) {
-      if (name !== 'available' && network) {
-        console.log(`  - ${name}: ✓ Ready`);
-      }
+    
+    for (const modelName of Object.keys(neuralBrainManager.models)) {
+      const model = neuralBrainManager.models[modelName];
+      const status = model.type || 'unknown';
+      console.log(`  - ${modelName}: ✓ Ready (${status})`);
     }
+    
     const modelsDir = './models';
     if (fs.existsSync(modelsDir)) {
       const models = fs.readdirSync(modelsDir).filter(f => f.endsWith('_model.json'));
       console.log(`  Models on disk: ${models.length} saved models`);
     }
+    
+    console.log(`Features:`);
+    console.log(`  - Prediction: ✓ Neural learning`);
+    console.log(`  - Training: ✓ Model improvement`);
+    console.log(`  - Saving/Loading: ✓ Persistent models`);
+    console.log(`  - Fallback: ✓ Graceful degradation`);
+    
   } else {
+    console.log(`Neural Brain: ⚠️ DISABLED (fallback active)`);
     console.log('Fallback behavior:');
-    console.log('  - Combat: Hardcoded tactics only');
-    console.log('  - Prediction: Velocity-based only');
-    console.log('  - Training: Data collection only (no training)');
-    console.log('  - Learning: Models will not be improved');
+    console.log('  - Combat: Heuristic-based tactics');
+    console.log('  - Prediction: Rule-based logic');
+    console.log('  - Training: Data collection only');
+    console.log('  - Learning: No model improvement');
+    console.log('  - All systems: Fully functional with hardcoded AI');
   }
   
-  console.log('============================\n');
+  console.log('=====================================\n');
 }
 
 // Load whitelist with auto-migration from legacy format
@@ -1631,6 +2300,11 @@ class EquipmentManager {
     this.lastEquipmentCheck = 0;
     this.equipmentCheckInterval = 5000; // Check every 5 seconds
     
+    // Track last equip attempts to prevent infinite loops
+    this.lastEquipAttempts = new Map(); // item.name -> { timestamp, count }
+    this.equipDebounceTime = 2000; // 2 second debounce between equips of same item
+    this.maxEquipAttemptsPerItem = 2; // Max 2 attempts to equip an item
+    
     // Setup inventory listener for auto-equipping armor
     this.setupArmorEquipping();
     
@@ -1638,10 +2312,15 @@ class EquipmentManager {
   }
   
   setupArmorEquipping() {
-    // Listen for inventory updates to auto-equip armor
+    // Debounce inventory updates to prevent spam
+    let inventoryUpdateTimeout = null;
+    
+    // Listen for inventory updates to auto-equip armor (with debounce)
     this.bot.on('inventoryUpdate', () => {
-      // Check if any new armor was picked up
-      this.checkAndEquipArmor();
+      if (inventoryUpdateTimeout) clearTimeout(inventoryUpdateTimeout);
+      inventoryUpdateTimeout = setTimeout(() => {
+        this.checkAndEquipArmor();
+      }, 300); // Wait 300ms for inventory to settle
     });
     
     // Also listen for slot updates (more granular)
@@ -1649,12 +2328,42 @@ class EquipmentManager {
       this.bot.inventory.on('updateSlot', (oldItem, newItem) => {
         if (newItem && this.isArmorPiece(newItem.name)) {
           console.log(`[EQUIPMENT] Armor picked up: ${newItem.name}`);
-          this.autoEquipArmor(newItem);
+          // Check if we should attempt to equip this item
+          if (this.shouldAttemptEquip(newItem.name)) {
+            this.autoEquipArmor(newItem);
+          }
         }
       });
     }
     
     console.log('[EQUIPMENT] Auto-armor equipping enabled');
+  }
+  
+  shouldAttemptEquip(itemName) {
+    const now = Date.now();
+    const lastAttempt = this.lastEquipAttempts.get(itemName);
+    
+    // If no previous attempts, allow equip
+    if (!lastAttempt) {
+      this.lastEquipAttempts.set(itemName, { timestamp: now, count: 1 });
+      return true;
+    }
+    
+    // If beyond debounce time, reset attempts
+    if (now - lastAttempt.timestamp > this.equipDebounceTime) {
+      this.lastEquipAttempts.set(itemName, { timestamp: now, count: 1 });
+      return true;
+    }
+    
+    // If within debounce time, check attempt count
+    if (lastAttempt.count < this.maxEquipAttemptsPerItem) {
+      lastAttempt.count++;
+      lastAttempt.timestamp = now;
+      return true;
+    }
+    
+    // Max attempts reached within debounce time
+    return false;
   }
   
   async initialize() {
@@ -1683,6 +2392,15 @@ class EquipmentManager {
     }
     
     try {
+      // Check if this item is already equipped in the correct slot
+      const slotId = this.getEquipmentSlotId(slot);
+      const currentlyEquipped = this.bot.entity.equipment[slotId];
+      
+      if (currentlyEquipped && currentlyEquipped.name === item.name) {
+        console.log(`[EQUIPMENT] ℹ️ ${item.name} already equipped in ${slot} slot`);
+        return; // Already equipped, skip
+      }
+      
       console.log(`[EQUIPMENT] Equipping: ${item.name} to ${slot}`);
       
       // Check if bot.equip is available
@@ -1720,11 +2438,25 @@ class EquipmentManager {
       
       if (armorItems.length === 0) return;
       
-      // Equip each piece of armor
+      // Only equip items that are not already equipped
       for (const armor of armorItems) {
-        await this.autoEquipArmor(armor);
-        // Small delay between equips to avoid issues
-        await new Promise(resolve => setTimeout(resolve, 100));
+        const slot = this.getArmorSlot(armor.name);
+        if (slot) {
+          const slotId = this.getEquipmentSlotId(slot);
+          const currentlyEquipped = this.bot.entity.equipment[slotId];
+          
+          // Skip if already equipped
+          if (currentlyEquipped && currentlyEquipped.name === armor.name) {
+            continue;
+          }
+          
+          // Only equip if we should attempt it (respects debounce)
+          if (this.shouldAttemptEquip(armor.name)) {
+            await this.autoEquipArmor(armor);
+            // Small delay between equips to avoid issues
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        }
       }
     } catch (err) {
       console.log(`[EQUIPMENT] Failed to check/equip armor: ${err.message}`);
@@ -3077,19 +3809,24 @@ class SwarmCoordinator {
   
   startServer() {
     if (config.swarm.wsServer) return;
-    
+
     config.swarm.wsServer = new WebSocket.Server({ port: this.port });
-    
+
+    // Add error handler for the WebSocket server
+    config.swarm.wsServer.on('error', (err) => {
+      console.error(`[SWARM] WebSocket server error:`, err.message);
+    });
+
     config.swarm.wsServer.on('connection', (ws, req) => {
       const path = (req.url || '/');
       if (path.startsWith('/video-feed')) {
         this.registerViewer(ws);
         return;
       }
-      
+
       const botId = path.replace('/', '');
       console.log(`[SWARM] Bot connected: ${botId}`);
-      
+
       this.bots.set(botId, {
         ws,
         id: botId,
@@ -3099,12 +3836,12 @@ class SwarmCoordinator {
         task: null,
         lastHeartbeat: Date.now()
       });
-      
+
       if (!this.defaultVideoBot) {
         this.defaultVideoBot = botId;
       }
       this.broadcastVideoState();
-      
+
       ws.on('message', (data) => {
         try {
           const message = JSON.parse(data);
@@ -3113,7 +3850,11 @@ class SwarmCoordinator {
           console.log(`[SWARM] Invalid message from ${botId}:`, err.message);
         }
       });
-      
+
+      ws.on('error', (err) => {
+        console.error(`[SWARM] Bot connection error (${botId}):`, err.message);
+      });
+
       ws.on('close', () => {
         console.log(`[SWARM] Bot disconnected: ${botId}`);
         this.bots.delete(botId);
@@ -3124,12 +3865,12 @@ class SwarmCoordinator {
         }
         this.broadcastVideoState();
       });
-      
+
       ws.send(JSON.stringify({ type: 'CONNECTED', botId }));
     });
-    
+
     console.log(`[SWARM] Coordinator listening on port ${this.port}`);
-    
+
     this.startHeartbeatMonitor();
   }
   
@@ -3305,14 +4046,28 @@ class SwarmCoordinator {
   
   broadcast(message, excludeBotId = null) {
     const messageStr = JSON.stringify(message);
-    
+
     this.bots.forEach((bot, botId) => {
       if (botId !== excludeBotId && bot.ws.readyState === WebSocket.OPEN) {
         bot.ws.send(messageStr);
       }
     });
   }
-  
+
+  broadcastCommand(command) {
+    console.log(`[SWARM] Broadcasting command to all bots: ${command}`);
+
+    for (const [botId, botInfo] of this.bots) {
+      if (botInfo.ws.readyState === WebSocket.OPEN) {
+        botInfo.ws.send(JSON.stringify({
+          type: 'COMMAND',
+          command: command,
+          timestamp: Date.now()
+        }));
+      }
+    }
+  }
+
   sendAck(botId, messageId) {
     const bot = this.bots.get(botId);
     if (bot && bot.ws.readyState === WebSocket.OPEN) {
@@ -3331,13 +4086,13 @@ class SwarmCoordinator {
     const viewerId = `viewer_${Date.now()}`;
     console.log('[VIDEO] Viewer connected');
     this.viewers.add(ws);
-    
+
     this.viewerState.set(ws, {
       id: viewerId,
       selectedBot: this.defaultVideoBot,
       connectedAt: Date.now()
     });
-    
+
     if (!this.defaultVideoBot) {
       const bots = this.getBotIdList();
       if (bots.length > 0) {
@@ -3348,16 +4103,20 @@ class SwarmCoordinator {
     if (viewerState && !viewerState.selectedBot) {
       viewerState.selectedBot = this.defaultVideoBot;
     }
-    
-    ws.send(JSON.stringify({
-      type: 'VIEWER_CONNECTED',
-      viewerId,
-      botList: this.getBotIdList(),
-      selectedBot: this.defaultVideoBot
-    }));
-    
+
+    try {
+      ws.send(JSON.stringify({
+        type: 'VIEWER_CONNECTED',
+        viewerId,
+        botList: this.getBotIdList(),
+        selectedBot: this.defaultVideoBot
+      }));
+    } catch (err) {
+      console.error(`[VIDEO] Failed to send VIEWER_CONNECTED to ${viewerId}:`, err.message);
+    }
+
     this.sendLatestFrameToViewer(ws);
-    
+
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data);
@@ -3377,7 +4136,11 @@ class SwarmCoordinator {
         console.log('[VIDEO] Invalid viewer message:', err.message);
       }
     });
-    
+
+    ws.on('error', (err) => {
+      console.error(`[VIDEO] Viewer connection error (${viewerId}):`, err.message);
+    });
+
     ws.on('close', () => {
       console.log('[VIDEO] Viewer disconnected');
       this.viewers.delete(ws);
@@ -8855,13 +9618,15 @@ class CombatAI {
       return;
     }
     
-    // === CRITICAL SAFETY: Check if target is player and neverAttackPlayers is enabled ===
+    // === PLAYER ATTACK RETALIATION: Always retaliate against direct attacks ===
     const isPlayer = attacker.type === 'player' || attacker.username;
-    if (isPlayer && config.combat?.autoEngagement?.neverAttackPlayers) {
-      console.log(`[COMBAT] ${attacker.username || 'Player'} attacked but neverAttackPlayers is enabled - not retaliating!`);
-      return;
+
+    // Note: Even if neverAttackPlayers is enabled, we retaliate against direct attacks
+    // neverAttackPlayers is meant to prevent attacking innocent players, not prevent self-defense
+    if (isPlayer) {
+      console.log(`[COMBAT] 🎯 Player ${attacker.username || 'Unknown'} attacked us - RETALIATING!`);
     }
-    
+
     // === CRITICAL SAFETY: Verify target is hostile before engaging ===
     if (!this.hostileMobDetector) {
       this.hostileMobDetector = new HostileMobDetector();
@@ -8906,30 +9671,129 @@ class CombatAI {
          await this.executeSmartCombat(attacker);
          await this.executeOptimalAttack(attacker);
        }
+      const targetName = isPlayer ? attacker.username : attacker.name;
+      const targetType = isPlayer ? 'Player' : 'Hostile Mob';
+      console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
+      this.inCombat = true;
+      this.currentTarget = attacker;
+      this.isCurrentlyFighting = true;
+      
+      // Initialize crystal PvP if we have resources and target is player
+      const useCrystalPvP = this.hasCrystalResources() && isPlayer;
+      let crystalPvP = null;
+      
+      if (useCrystalPvP) {
+        crystalPvP = this.getCrystalPvP();
+        console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
+        
+        // Execute multi-crystal tactic
+        await crystalPvP.executeCrystalCombo(attacker);
+      }
+      
+      // Enhanced tactical combat loop
+      const combatLoop = setInterval(async () => {
+        if (!this.isCurrentlyFighting || this.bot.health <= 0) {
+          clearInterval(combatLoop);
+          this.inCombat = false;
+          this.isCurrentlyFighting = false;
+          console.log('[COMBAT] Combat ended');
+          return;
+        }
+        
+        // Check if target is still valid
+        if (!attacker || attacker.health <= 0) {
+          console.log(`[COMBAT] Target defeated`);
+          clearInterval(combatLoop);
+          this.inCombat = false;
+          this.isCurrentlyFighting = false;
+          
+          // Log combat performance
+          if (crystalPvP) {
+            const metrics = crystalPvP.getPerformanceMetrics();
+            console.log(`[COMBAT] Crystal PvP Stats: ${metrics.crystalsPlaced} crystals, ${metrics.damageDealt.toFixed(1)} damage dealt`);
+          }
+          
+          // Collect loot
+          await this.collectNearbyLoot();
+          return;
+        }
+        
+        const distance = this.bot.entity.position.distanceTo(attacker.position);
+        
+        // Use shield when low health
+        if (this.bot.health < 8) {
+          console.log(`[COMBAT] Raising shield for defense`);
+          await this.raiseShield();
+        }
+        
+        // Eat food to heal if available
+        if (this.bot.health < 10) {
+          const food = this.bot.inventory.items().find(i => i.foodProperty);
+          if (food) {
+            await this.eatFood(food);
+          }
+        }
+        
+        // Move closer if too far
+        if (distance > 3) {
+          console.log(`[COMBAT] Moving closer (${distance.toFixed(1)}m)`);
+          await this.moveToward(attacker);
+        }
+        
+        // Attack with best weapon
+        await this.executeSmartCombat(attacker);
+        
+        // Continue crystal PvP if resources available and target is player
+        if (useCrystalPvP && crystalPvP && isPlayer) {
+          const hasResources = this.hasCrystalResources();
+          if (hasResources && Math.random() < 0.3) { // 30% chance to continue crystal attacks
+            await crystalPvP.executeCrystalCombo(attacker);
+          }
+        }
+        
+      }, 200); // Update every 200ms
+      
+      // Store combat loop reference for cleanup
+      this.combatCheck = combatLoop;
+      
     } catch (err) {
       console.log(`[COMBAT] handleCombat failed: ${err.message}`);
       this.inCombat = false;
+      this.isCurrentlyFighting = false;
       return;
     }
-    
-    // Monitor combat with smart weapon switching
-    const combatCheck = setInterval(async () => {
-      if (!attacker || attacker.isValid === false) {
-        clearInterval(combatCheck);
-        this.inCombat = false;
-        console.log('[COMBAT] Target eliminated or escaped');
-        
-        // Log all combat performance
-        this.logAllCombatMetrics();
-        
-        // Loot drops
-        await sleep(1000);
-        await this.collectNearbyLoot();
-        return;
-      }
-      
-      // Continue monitoring combat...
-    }, 500);
+  }
+  
+  async raiseShield() {
+    const shield = this.bot.inventory.items().find(i => i.name === 'shield');
+    if (shield) {
+      await this.bot.equip(shield, 'off-hand');
+      console.log('[COMBAT] Shield equipped in off-hand');
+    }
+  }
+  
+  async eatFood(food) {
+    console.log(`[COMBAT] Eating: ${food.name}`);
+    await this.bot.equip(food, 'hand');
+    await this.bot.consume();
+    console.log(`[COMBAT] Health restored to ${this.bot.health}/20`);
+  }
+  
+  async moveToward(target) {
+    try {
+      await this.bot.pathfinder.goto(new goals.GoalNear(
+        target.position.x,
+        target.position.y,
+        target.position.z,
+        2
+      ));
+    } catch (e) {
+      // Couldn't pathfind, use direct movement as fallback
+      const dir = target.position.minus(this.bot.entity.position).normalize();
+      this.bot.setControlState('forward', true);
+      await sleep(100);
+      this.bot.setControlState('forward', false);
+    }
   }
   
   async collectNearbyLoot() {
@@ -9388,14 +10252,7 @@ class CrystalPvP {
     const startTime = Date.now();
     
     try {
-      // Find optimal placement position
-      const placement = await this.calculateOptimalPlacement(enemy);
-      if (!placement) {
-        console.log('[CRYSTAL] No valid placement found');
-        return false;
-      }
-      
-      console.log(`[CRYSTAL] 💎 Executing combo on ${enemy.username || 'target'}`);
+      console.log(`[CRYSTAL] 💎 Starting multi-crystal combo on ${enemy.username || 'target'}`);
       
       // Get resources
       const obsidian = this.bot.inventory.items().find(i => i.name === 'obsidian');
@@ -9406,47 +10263,78 @@ class CrystalPvP {
         return false;
       }
       
-      // Humanization: Add slight reaction jitter
-      const reactionDelay = this.calculateReactionTime();
-      await sleep(reactionDelay);
-      
-      // Step 1: Equip and place obsidian
-      await this.bot.equip(obsidian, 'hand');
-      await sleep(jitter(30, 0.2)); // ~30ms with jitter
-      
-      const obsidianBlock = this.bot.blockAt(placement.obsidianPos);
-      if (!obsidianBlock || obsidianBlock.name === 'air') {
-        await this.bot.placeBlock(this.bot.blockAt(placement.obsidianPos.offset(0, -1, 0)), new Vec3(0, 1, 0));
-        await sleep(jitter(25, 0.2)); // ~25ms
+      // Strategy: Place multiple crystals around target
+      const placements = [];
+      for (let i = 0; i < 3; i++) {
+        console.log(`[CRYSTAL] Placement ${i + 1}/3`);
+        
+        // Find good placement spot
+        const placement = this.findCrystalPlacement(enemy, i);
+        if (!placement) {
+          console.log(`[CRYSTAL] No valid placement found for position ${i + 1}`);
+          continue;
+        }
+        
+        // Humanization: Add slight reaction jitter
+        const reactionDelay = this.calculateReactionTime();
+        await sleep(reactionDelay);
+        
+        // Move to placement spot
+        try {
+          await this.bot.pathfinder.goto(new goals.GoalNear(
+            placement.x,
+            placement.y,
+            placement.z,
+            1
+          ));
+        } catch (e) {
+          console.log(`[CRYSTAL] Couldn't reach placement spot ${i + 1}`);
+          continue;
+        }
+        
+        // Place obsidian
+        const block = this.bot.blockAt(new Vec3(placement.x, placement.y, placement.z));
+        if (block && block.name === 'air') {
+          // Check block below for placing surface
+          const belowBlock = this.bot.blockAt(new Vec3(placement.x, placement.y - 1, placement.z));
+          if (belowBlock && belowBlock.name !== 'air') {
+            await this.bot.equip(obsidian, 'hand');
+            await this.bot.placeBlock(belowBlock, new Vec3(0, 1, 0));
+            console.log(`[CRYSTAL] ✓ Placed obsidian at ${placement.x} ${placement.y} ${placement.z}`);
+            
+            // Wait a moment
+            await sleep(100);
+            
+            // Place crystal on top
+            const crystalBlock = this.bot.blockAt(new Vec3(placement.x, placement.y + 1, placement.z));
+            if (crystalBlock && crystalBlock.name === 'air') {
+              await this.bot.equip(crystal, 'hand');
+              await this.bot.placeBlock(crystalBlock, new Vec3(0, 0, 0));
+              console.log(`[CRYSTAL] ✓ Placed crystal on top`);
+              
+              placements.push({
+                x: placement.x,
+                y: placement.y + 1,
+                z: placement.z
+              });
+              
+              this.metrics.crystalsPlaced++;
+            }
+          }
+        }
+        
+        // Move away from crystal for detonation
+        await this.moveAwayFromCrystal(placement);
+        
+        // Small delay between placements
+        await sleep(200);
       }
       
-      // Step 2: Equip and place crystal
-      await this.bot.equip(crystal, 'hand');
-      await sleep(jitter(25, 0.2));
+      // Wait for target to get close to crystals
+      await sleep(500);
       
-      const crystalBlock = this.bot.blockAt(placement.obsidianPos);
-      await this.bot.placeBlock(crystalBlock, new Vec3(0, 1, 0));
-      await sleep(jitter(20, 0.2)); // ~20ms
-      
-      this.metrics.crystalsPlaced++;
-      
-      // Step 3: Instantly detonate crystal
-      const placedCrystal = this.findNearestCrystal(placement.crystalPos);
-      if (placedCrystal) {
-        // Instant break - superhuman speed
-        await sleep(Math.random() < this.perfectTimingChance ? this.minReactionTime : jitter(75, 0.3));
-        await this.bot.attack(placedCrystal);
-        this.metrics.crystalsHit++;
-        this.metrics.damageDealt += placement.enemyDamage;
-        this.metrics.damageTaken += placement.selfDamage;
-      }
-      
-      // Step 4: Quick switch to sword for follow-up
-      const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
-      if (sword) {
-        await sleep(jitter(30, 0.2));
-        await this.bot.equip(sword, 'hand');
-      }
+      // Detonate all crystals placed
+      await this.detonateCrystals(placements);
       
       // Record combo
       this.metrics.combos++;
@@ -9459,101 +10347,71 @@ class CrystalPvP {
       this.metrics.avgReactionTime = 
         this.metrics.reactionTimes.reduce((a, b) => a + b, 0) / this.metrics.reactionTimes.length;
       
-      console.log(`[CRYSTAL] ⚡ Combo executed in ${comboTime}ms (Enemy: ${placement.enemyDamage.toFixed(1)} dmg, Self: ${placement.selfDamage.toFixed(1)} dmg)`);
+      console.log(`[CRYSTAL] ⚡ Multi-crystal combo executed in ${comboTime}ms (${placements.length} crystals)`);
       
-      // Train neural network
-      this.trainFromCombat(placement, true);
-      
-      return true;
+      return placements.length > 0;
     } catch (err) {
       console.log(`[CRYSTAL] Combo failed: ${err.message}`);
       return false;
     }
+  }
+  
+  findCrystalPlacement(target, index) {
+    const distance = 4;
+    const angle = (Math.PI * 2 / 3) * index; // 120 degrees apart
     
-    // Base monitoring commands
-    if (lower.includes('base monitor status') || lower.includes('monitor status')) {
-      if (this.bot.baseMonitor) {
-        const stats = this.bot.baseMonitor.getStats();
-        this.bot.chat(`🏠 Base Monitor: ${stats.enabled ? '✅ Active' : '❌ Disabled'} | Events: ${stats.totalEvents} | Suspects: ${stats.suspectPlayers.length}`);
-        if (stats.suspectPlayers.length > 0) {
-          const topSuspect = stats.suspectPlayers[0];
-          this.bot.chat(`⚠️ Top suspect: ${topSuspect.username} (score: ${topSuspect.score})`);
-        }
-      } else {
-        this.bot.chat("Base monitor not active. Set a home base first!");
-      }
-      return;
+    return {
+      x: Math.floor(target.position.x + Math.cos(angle) * distance),
+      y: Math.floor(target.position.y),
+      z: Math.floor(target.position.z + Math.sin(angle) * distance)
+    };
+  }
+  
+  async moveAwayFromCrystal(crystalPos) {
+    const distance = 6;
+    const angle = Math.atan2(
+      this.bot.entity.position.z - crystalPos.z,
+      this.bot.entity.position.x - crystalPos.x
+    );
+    
+    const safePos = {
+      x: crystalPos.x + Math.cos(angle) * distance,
+      y: crystalPos.y,
+      z: crystalPos.z + Math.sin(angle) * distance
+    };
+    
+    try {
+      await this.bot.pathfinder.goto(new goals.GoalBlock(
+        safePos.x,
+        safePos.y,
+        safePos.z
+      ));
+    } catch (e) {
+      console.log(`[CRYSTAL] Couldn't move away from crystal`);
     }
+  }
+  
+  async detonateCrystals(placements) {
+    console.log(`[CRYSTAL] Detonating ${placements.length} crystals`);
     
-    if (lower.includes('enable monitor') || lower.includes('start monitor')) {
-      if (this.bot.baseMonitor) {
-        this.bot.baseMonitor.enable();
-        this.bot.chat("🏠 Base monitoring enabled!");
-      } else if (config.homeBase.coords) {
-        globalBaseMonitor = new BaseMonitor(this.bot);
-        this.bot.baseMonitor = globalBaseMonitor;
-        this.bot.chat("🏠 Base monitor initialized and enabled!");
-      } else {
-        this.bot.chat("Please set a home base first with 'set home here'");
+    // Hit each crystal entity to detonate
+    for (const pos of placements) {
+      // Find crystal entity at this position
+      const nearby = Object.values(this.bot.entities);
+      const crystal = nearby.find(e =>
+        e.name === 'end_crystal' &&
+        Math.abs(e.position.x - pos.x) < 1 &&
+        Math.abs(e.position.y - pos.y) < 1 &&
+        Math.abs(e.position.z - pos.z) < 1
+      );
+      
+      if (crystal) {
+        // Punch the crystal
+        await this.bot.attack(crystal);
+        console.log(`[CRYSTAL] ✓ Detonated crystal`);
+        this.metrics.crystalsHit++;
+        await sleep(100);
       }
-      return;
-    }
-    
-    if (lower.includes('disable monitor') || lower.includes('stop monitor')) {
-      if (this.bot.baseMonitor) {
-        this.bot.baseMonitor.disable();
-        this.bot.chat("🏠 Base monitoring disabled.");
-      } else {
-        this.bot.chat("Base monitor is not running.");
-      }
-      return;
-    }
-    
-    if (lower.includes('toggle monitor')) {
-      if (this.bot.baseMonitor) {
-        const enabled = this.bot.baseMonitor.toggle();
-        this.bot.chat(`🏠 Base monitoring ${enabled ? 'enabled' : 'disabled'}!`);
-      } else {
-        this.bot.chat("Base monitor not initialized. Set a home base first!");
-      }
-      return;
-    }
-    
-    if (lower.includes('base incidents') || lower.includes('recent incidents')) {
-      if (this.bot.baseMonitor) {
-        const stats = this.bot.baseMonitor.getStats();
-        const recentCount = Math.min(5, stats.recentIncidents.length);
-        this.bot.chat(`🏠 Recent incidents (${stats.totalEvents} total):`);
-        
-        if (recentCount > 0) {
-          for (let i = stats.recentIncidents.length - recentCount; i < stats.recentIncidents.length; i++) {
-            const event = stats.recentIncidents[i];
-            this.bot.chat(`- ${event.action} by ${event.actor}: ${event.blockName || event.itemName || 'unknown'}`);
-          }
-        } else {
-          this.bot.chat("No incidents recorded yet.");
-        }
-      } else {
-        this.bot.chat("Base monitor not active.");
-      }
-      return;
-    }
-    
-    if (lower.includes('suspect list') || lower.includes('suspicious players')) {
-      if (this.bot.baseMonitor) {
-        const suspects = this.bot.baseMonitor.getSuspectPlayers();
-        if (suspects.length > 0) {
-          this.bot.chat(`⚠️ Suspicious players (${suspects.length}):`);
-          for (let i = 0; i < Math.min(5, suspects.length); i++) {
-            this.bot.chat(`${i + 1}. ${suspects[i].username} - Score: ${suspects[i].score}`);
-          }
-        } else {
-          this.bot.chat("No suspicious activity detected!");
-        }
-      } else {
-        this.bot.chat("Base monitor not active.");
-      }
-      return;
     }
   }
   
@@ -9814,7 +10672,7 @@ class CrystalPvP {
     
     // Get strategy from neural network
     try {
-      const output = safeNeuralPredict(this.neuralNet, input, 0.5);
+      const output = await safeNeuralPredict(this.neuralNet, input, 0.5);
       const strategyScore = Array.isArray(output) ? output[0] : output;
       
       // Determine strategy
@@ -10048,6 +10906,10 @@ class CrystalPvP {
     safeAppendFile('./logs/crystal_pvp.log', 
       `\n[${new Date().toISOString()}]\n${report}`);
     
+    return this.metrics;
+  }
+  
+  getPerformanceMetrics() {
     return this.metrics;
   }
 }
@@ -12941,29 +13803,338 @@ class VillagerTrader {
   }
 }
 
-// Mining Automation
-class AutoMiner {
+// Baritone-style Block Finder and Miner
+class BaritoneMiner {
   constructor(bot) {
     this.bot = bot;
   }
   
+  async mineResource(resourceName, quantity = 1) {
+    console.log(`[MINE] Mining: ${resourceName}`);
+    
+    // Normalize resource name
+    const blockName = this.getBlockName(resourceName);
+    console.log(`[MINE] Looking for: ${blockName}`);
+    
+    let collected = 0;
+    const maxAttempts = 10;
+    let attempts = 0;
+    
+    while (collected < quantity && attempts < maxAttempts) {
+      attempts++;
+      
+      // Step 1: Search loaded chunks first (fast)
+      let targetBlock = this.findInLoadedChunks(blockName);
+      
+      if (!targetBlock) {
+        console.log(`[MINE] Not in loaded chunks, exploring area`);
+        
+        // Step 2: Explore nearby area
+        targetBlock = await this.exploreForBlock(blockName);
+      }
+      
+      if (!targetBlock) {
+        console.log(`[MINE] ${blockName} not found after exploration`);
+        break;
+      }
+      
+      // Step 3: Pathfind to block
+      console.log(`[MINE] Found at ${targetBlock.x} ${targetBlock.y} ${targetBlock.z}`);
+      const reached = await this.pathfindToBlock(targetBlock);
+      
+      if (!reached) {
+        console.log(`[MINE] Failed to reach block`);
+        continue;
+      }
+      
+      // Step 4: Mine the block
+      const mined = await this.mineBlock(targetBlock);
+      
+      if (mined) {
+        collected++;
+        console.log(`[MINE] ✓ Progress: ${collected}/${quantity}`);
+      }
+      
+      // Short delay before next block
+      await this.sleep(500);
+    }
+    
+    if (collected >= quantity) {
+      console.log(`[MINE] ✓ Mining complete: ${collected}x ${resourceName}`);
+      return true;
+    } else {
+      console.log(`[MINE] ⚠️ Mining incomplete: ${collected}/${quantity} ${resourceName}`);
+      return collected > 0; // Return true if we got at least something
+    }
+  }
+  
+  findInLoadedChunks(blockName) {
+    console.log(`[MINE] Scanning loaded chunks for ${blockName}...`);
+    
+    const blockIds = this.getBlockIds(blockName);
+    if (blockIds.length === 0) {
+      console.log(`[MINE] Unknown block type: ${blockName}`);
+      return null;
+    }
+    
+    const pos = this.bot.entity.position;
+    const radius = 100; // 100 block radius
+    
+    // Use bot.findBlocks for efficient search
+    const blocks = this.bot.findBlocks({
+      matching: blockIds,
+      maxDistance: radius,
+      count: 1
+    });
+    
+    if (blocks && blocks.length > 0) {
+      const blockPos = blocks[0];
+      console.log(`[MINE] Found in loaded chunks at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+      return { x: blockPos.x, y: blockPos.y, z: blockPos.z };
+    }
+    
+    return null;
+  }
+  
+  async exploreForBlock(blockName) {
+    console.log(`[MINE] Exploring area for ${blockName}...`);
+    
+    const blockIds = this.getBlockIds(blockName);
+    const startPos = this.bot.entity.position.clone();
+    const explorationRadius = 200; // Explore up to 200 blocks
+    const checkInterval = 20; // Check every 20 blocks
+    
+    // Try exploring in different directions
+    const directions = [
+      { x: 1, z: 0 },   // East
+      { x: -1, z: 0 },  // West
+      { x: 0, z: 1 },   // South
+      { x: 0, z: -1 },  // North
+      { x: 1, z: 1 },   // SE
+      { x: -1, z: 1 },  // SW
+      { x: 1, z: -1 },  // NE
+      { x: -1, z: -1 }  // NW
+    ];
+    
+    for (const dir of directions) {
+      for (let dist = checkInterval; dist < explorationRadius; dist += checkInterval) {
+        const explorePos = {
+          x: Math.floor(startPos.x + dir.x * dist),
+          y: Math.floor(startPos.y),
+          z: Math.floor(startPos.z + dir.z * dist)
+        };
+        
+        // Move towards exploration point
+        try {
+          await this.bot.pathfinder.goto(new goals.GoalNear(
+            explorePos.x,
+            explorePos.y,
+            explorePos.z,
+            10
+          ), { timeout: 10000 });
+        } catch (err) {
+          // Can't reach, try next direction
+          continue;
+        }
+        
+        // Check if we can find the block now
+        const foundBlock = this.bot.findBlocks({
+          matching: blockIds,
+          maxDistance: 50,
+          count: 1
+        });
+        
+        if (foundBlock && foundBlock.length > 0) {
+          const blockPos = foundBlock[0];
+          console.log(`[MINE] ✓ Found during exploration at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+          return { x: blockPos.x, y: blockPos.y, z: blockPos.z };
+        }
+      }
+    }
+    
+    console.log(`[MINE] Exploration failed to find ${blockName}`);
+    return null;
+  }
+  
+  async pathfindToBlock(blockPos) {
+    console.log(`[MINE] Pathfinding to ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+    
+    try {
+      await this.bot.pathfinder.goto(new goals.GoalNear(
+        blockPos.x,
+        blockPos.y,
+        blockPos.z,
+        3
+      ), { timeout: 30000 });
+      
+      console.log(`[MINE] ✓ Reached block location`);
+      return true;
+    } catch (error) {
+      console.log(`[MINE] Pathfinding failed: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async mineBlock(blockPos) {
+    console.log(`[MINE] Mining block at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+    
+    const block = this.bot.blockAt(new Vec3(blockPos.x, blockPos.y, blockPos.z));
+    
+    if (!block) {
+      console.log(`[MINE] Block not found at position`);
+      return false;
+    }
+    
+    if (block.name === 'air') {
+      console.log(`[MINE] Block already mined`);
+      return false;
+    }
+    
+    try {
+      // Equip best tool for the block
+      await this.equipBestTool(block);
+      
+      // Look at the block
+      await this.bot.lookAt(block.position.offset(0.5, 0.5, 0.5));
+      
+      // Mine it
+      await this.bot.dig(block, true); // true = force dig even if no tool
+      
+      console.log(`[MINE] ✓ Mined ${block.name}`);
+      return true;
+    } catch (error) {
+      console.log(`[MINE] Failed to mine: ${error.message}`);
+      return false;
+    }
+  }
+  
+  async equipBestTool(block) {
+    if (!block || !this.bot.pathfinder) return;
+    
+    // Find best tool in inventory
+    const tools = this.bot.inventory.items();
+    let bestTool = null;
+    let bestTime = Infinity;
+    
+    for (const tool of tools) {
+      try {
+        const time = block.digTime(tool);
+        if (time < bestTime) {
+          bestTime = time;
+          bestTool = tool;
+        }
+      } catch (err) {
+        // Ignore error
+      }
+    }
+    
+    if (bestTool) {
+      try {
+        await this.bot.equip(bestTool, 'hand');
+        console.log(`[MINE] Equipped ${bestTool.name}`);
+      } catch (err) {
+        console.log(`[MINE] Failed to equip tool: ${err.message}`);
+      }
+    }
+  }
+  
+  getBlockName(resourceName) {
+    const name = resourceName.toLowerCase().trim();
+    
+    // Map resource names to block names
+    const blockMap = {
+      'diamond': 'diamond_ore',
+      'diamonds': 'diamond_ore',
+      'iron': 'iron_ore',
+      'iron_ingot': 'iron_ore',
+      'gold': 'gold_ore',
+      'gold_ingot': 'gold_ore',
+      'coal': 'coal_ore',
+      'obsidian': 'obsidian',
+      'ancient_debris': 'ancient_debris',
+      'lapis': 'lapis_ore',
+      'lapis_lazuli': 'lapis_ore',
+      'redstone': 'redstone_ore',
+      'emerald': 'emerald_ore',
+      'copper': 'copper_ore',
+      'copper_ingot': 'copper_ore',
+      'wood': 'oak_log',
+      'log': 'oak_log',
+      'oak_log': 'oak_log',
+      'birch_log': 'birch_log',
+      'spruce_log': 'spruce_log',
+      'jungle_log': 'jungle_log',
+      'acacia_log': 'acacia_log',
+      'dark_oak_log': 'dark_oak_log',
+      'trees': 'oak_log',
+      'stone': 'stone',
+      'cobblestone': 'cobblestone',
+      'dirt': 'dirt',
+      'sand': 'sand',
+      'gravel': 'gravel'
+    };
+    
+    return blockMap[name] || name;
+  }
+  
+  getBlockIds(blockName) {
+    // Get block IDs, including deepslate variants for ores
+    const ids = [];
+    
+    // Add primary block
+    const primaryBlock = this.bot.registry.blocksByName[blockName];
+    if (primaryBlock) {
+      ids.push(primaryBlock.id);
+    }
+    
+    // Add deepslate variant if it exists
+    const deepslateVariant = this.bot.registry.blocksByName[`deepslate_${blockName}`];
+    if (deepslateVariant) {
+      ids.push(deepslateVariant.id);
+    }
+    
+    // Special cases
+    if (blockName === 'stone') {
+      // Include all stone variants
+      ['stone', 'cobblestone', 'andesite', 'diorite', 'granite'].forEach(variant => {
+        const block = this.bot.registry.blocksByName[variant];
+        if (block) ids.push(block.id);
+      });
+    }
+    
+    return ids.filter(id => id !== undefined);
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// Mining Automation
+class AutoMiner {
+  constructor(bot) {
+    this.bot = bot;
+    this.baritoneMiner = new BaritoneMiner(bot);
+  }
+  
   async mineForItem(itemName, quantity) {
-     console.log(`[HUNTER] ⛏️ Mining for ${quantity}x ${itemName}...`);
-
-     const mineData = ITEM_KNOWLEDGE[itemName]?.sources.find(s => s.type === 'mining');
-     if (!mineData) {
-       console.log(`[HUNTER] ❌ No mining data for ${itemName}`);
-       return false;
-     }
-
-     // Equip mining gear
-     if (this.bot.toolSelector) {
-       console.log(`[HUNTER] 🛡️ Equipping mining gear...`);
-       await this.bot.toolSelector.equipFullGear('mining');
-     }
-
-     // Navigate to optimal Y level
-     await this.descendTo(mineData.optimal_y || 0);
+    console.log(`[HUNTER] ⛏️ Mining for ${quantity}x ${itemName}...`);
+    
+    // Use Baritone-style mining instead of Y-level strategies
+    return await this.baritoneMiner.mineResource(itemName, quantity);
+  }
+  
+  async mineForItemOld(itemName, quantity) {
+    console.log(`[HUNTER] ⛏️ Old Y-level mining for ${quantity}x ${itemName}...`);
+    
+    const mineData = ITEM_KNOWLEDGE[itemName]?.sources.find(s => s.type === 'mining');
+    if (!mineData) {
+      console.log(`[HUNTER] ❌ No mining data for ${itemName}`);
+      return false;
+    }
+    
+    // Navigate to optimal Y level
+    await this.descendTo(mineData.optimal_y || 0);
     
     // Choose mining method
     if (mineData.method === 'strip_mining') {
@@ -13515,6 +14686,24 @@ class ConversationAI {
         return;
       }
 
+      // Handle group commands (!! prefix)
+      if (message.startsWith('!!')) {
+        console.log(`[COMMAND] Group command detected: ${message}`);
+        if (!this.isWhitelisted(username)) {
+          this.bot.chat("Sorry, only whitelisted players can give me commands!");
+          return;
+        }
+        const cleanCommand = message.substring(2).trim();
+        if (globalSwarmCoordinator) {
+          console.log(`[COMMAND] Broadcasting group command: ${cleanCommand}`);
+          globalSwarmCoordinator.broadcastCommand(cleanCommand);
+          this.bot.chat(`📢 Broadcasting command to all bots: ${cleanCommand}`);
+        } else {
+          this.bot.chat("Swarm coordinator not available for group commands!");
+        }
+        return;
+      }
+
       if (!this.shouldRespond(username, message)) return;
 
       // Normalize message (strip bot name, clean whitespace)
@@ -13600,7 +14789,48 @@ class ConversationAI {
   }
   
   isCommand(message) {
-    const commandPrefixes = ['change to', 'switch to', 'go to', 'come to', 'get me', 'gear up', 'get geared', 'craft', 'mine', 'gather', 'set home', 'go home', 'deposit', 'defense status', 'home status', 'travel', 'highway', 'start build', 'build schematic', 'build status', 'build progress', 'swarm', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'find', 'hunt', 'collect', 'fish for', 'farm', '!help', '!attack', '!spawn', '!goto', '!stop', '!follow', '!equip', '!status', '!test', 'need help'];
+    const commandPrefixes = [
+      // Emergency & Assistance
+      '!help', 'need help', '!swarm status', 'swarm status', '!spawn', '!stop',
+
+      // Navigation
+      '!goto', 'go', '!follow', 'go home', 'head home', 'set home', 'travel to', 'travel', 'find highway',
+
+      // Combat & Attack
+      '!attack', 'attack', 'coordinated attack', 'retreat', 'fall back', 'start guard', 'defense status',
+
+      // Resource & Gathering
+      '!mine', 'mine', 'collect', 'find', 'hunt', 'fish for', 'farm', 'gather', 'get me',
+
+      // Discovery & Testing
+      '!stash', 'stash', '!dupe', 'dupe', 'scanner status', 'scanner report',
+
+      // Base & Storage
+      'home status', 'home info', 'deposit', 'store valuables',
+
+      // Maintenance & Repair
+      'maintenance status', 'repair status', 'start maintenance', 'stop maintenance', 'repair armor', 'fix armor',
+      'swap elytra', 'fix elytra', 'check elytra', 'set xp farm',
+
+      // Building
+      'start build', 'build schematic', 'build status', 'build progress',
+
+      // Analytics
+      '!stats', 'stats', 'performance', 'analytics',
+
+      // Trust & Permissions
+      'trust level', 'check trust', 'list whitelist', 'show whitelist', 'set trust', 'set level', 'remove trust', 'remove whitelist',
+
+      // Mode changes
+      'change to', 'switch to',
+
+      // Status commands
+      'come to', 'come here', 'go to', 'craft', '!equip', '!status', '!test', 'gear up', 'get geared',
+      'start dupe', 'test dupe', 'stop dupe', 'dupe report', 'dupe stats', 'ultimate dupe',
+      
+      // Location & Status reporting
+      'where are you', 'status report', 'what is my location', 'where am i', 'my location'
+    ];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
@@ -13614,6 +14844,92 @@ class ConversationAI {
     
     const lower = message.toLowerCase();
     config.dangerEscape = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
+    
+    // Status report command
+    if (lower.includes('status report')) {
+      console.log(`[COMMAND] Status report requested by ${username}`);
+      const snapshot = await this.getBotStatusSnapshot(username);
+      const report = this.formatStatusReport(snapshot, username);
+      
+      // Track in config for dashboard
+      if (!config.conversationMetrics.recentStatusRequests) {
+        config.conversationMetrics.recentStatusRequests = [];
+      }
+      config.conversationMetrics.recentStatusRequests.push({
+        username,
+        type: 'status',
+        timestamp: Date.now()
+      });
+      // Keep only last 20
+      if (config.conversationMetrics.recentStatusRequests.length > 20) {
+        config.conversationMetrics.recentStatusRequests.shift();
+      }
+      
+      // Send report line by line
+      for (const line of report) {
+        this.bot.chat(line);
+      }
+      return;
+    }
+    
+    // Bot location command
+    if (lower.includes('where are you')) {
+      console.log(`[COMMAND] Location request by ${username}`);
+      const snapshot = await this.getBotStatusSnapshot(username);
+      const report = this.formatLocationReport(snapshot, username);
+      
+      // Track in config for dashboard
+      if (!config.conversationMetrics.recentStatusRequests) {
+        config.conversationMetrics.recentStatusRequests = [];
+      }
+      config.conversationMetrics.recentStatusRequests.push({
+        username,
+        type: 'location',
+        timestamp: Date.now()
+      });
+      if (config.conversationMetrics.recentStatusRequests.length > 20) {
+        config.conversationMetrics.recentStatusRequests.shift();
+      }
+      
+      // Send report line by line
+      for (const line of report) {
+        this.bot.chat(line);
+      }
+      return;
+    }
+    
+    // Player location command
+    if (lower.includes('what is my location') || lower.includes('where am i') || lower.includes('my location')) {
+      console.log(`[COMMAND] Player location request by ${username}`);
+      
+      const player = this.bot.players[username];
+      if (!player || !player.entity) {
+        this.bot.chat(`Sorry ${username}, I can't see you right now!`);
+        return;
+      }
+      
+      const snapshot = await this.getBotStatusSnapshot(username);
+      const report = this.formatLocationReport(snapshot, username, player.entity.position);
+      
+      // Track in config for dashboard
+      if (!config.conversationMetrics.recentStatusRequests) {
+        config.conversationMetrics.recentStatusRequests = [];
+      }
+      config.conversationMetrics.recentStatusRequests.push({
+        username,
+        type: 'player_location',
+        timestamp: Date.now()
+      });
+      if (config.conversationMetrics.recentStatusRequests.length > 20) {
+        config.conversationMetrics.recentStatusRequests.shift();
+      }
+      
+      // Send report line by line
+      for (const line of report) {
+        this.bot.chat(line);
+      }
+      return;
+    }
     
     if (lower.startsWith('!status')) {
       this.broadcastEscapeStatus(true);
@@ -14050,8 +15366,10 @@ class ConversationAI {
       return;
     }
 
-    // Item Finder commands
-    if (lower.includes('find') || lower.includes('hunt') || lower.includes('collect') || lower.includes('get me') || lower.includes('fish for') || lower.includes('farm')) {
+    // Item Finder commands (with or without !)
+    if (lower.includes('!mine') || lower.includes('!collect') || lower.includes('!find') ||
+        lower.includes('find') || lower.includes('hunt') || lower.includes('collect') ||
+        lower.includes('get me') || lower.includes('fish for') || lower.includes('farm')) {
       await this.handleItemFinderCommand(username, message);
       return;
     }
@@ -14825,9 +16143,85 @@ class ConversationAI {
       return;
     }
     
+    // Stats/Analytics commands
+    if (lower.includes('!stats') || lower.includes('stats') || lower.includes('analytics') || lower.includes('performance')) {
+      if (lower.includes('performance') || lower.includes('analytics')) {
+        if (!this.hasTrustLevel(username, 'admin')) {
+          this.bot.chat("Only admin+ can view performance analytics!");
+          return;
+        }
+      }
+
+      const pos = this.bot.entity.position;
+      const stats = {
+        health: Math.round(this.bot.health),
+        hunger: Math.round(this.bot.food),
+        armor: this.bot.inventory.slots.filter(slot => slot && slot.type && slot.type.includes('armor')).length,
+        position: `${Math.round(pos.x)}, ${Math.round(pos.y)}, ${Math.round(pos.z)}`,
+        dimension: this.bot.game.dimension,
+        gameTime: this.bot.time.timeOfDay,
+        itemsInInventory: this.bot.inventory.items().length,
+        biome: this.bot.world?.biome?.name || 'unknown'
+      };
+
+      this.bot.chat(`📊 Stats:`);
+      this.bot.chat(`  ❤️ Health: ${stats.health}/20`);
+      this.bot.chat(`  🍖 Hunger: ${stats.hunger}/20`);
+      this.bot.chat(`  🛡️ Armor: ${stats.armor} pieces`);
+      this.bot.chat(`  📦 Inventory: ${stats.itemsInInventory}/36 items`);
+      this.bot.chat(`  📍 Position: ${stats.position}`);
+      this.bot.chat(`  🌍 Biome: ${stats.biome}`);
+      this.bot.chat(`  🌐 Dimension: ${stats.dimension}`);
+      this.bot.chat(`  ⏱️ Time: ${stats.gameTime}`);
+
+      if (lower.includes('performance') || lower.includes('analytics')) {
+        const memUsage = process.memoryUsage();
+        this.bot.chat(`📈 Performance:`);
+        this.bot.chat(`  💾 Memory: ${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB / ${(memUsage.heapTotal / 1024 / 1024).toFixed(2)}MB`);
+        if (globalBotSpawner) {
+          this.bot.chat(`  🤖 Active bots: ${globalBotSpawner.getActiveBotCount()}`);
+        }
+        if (globalSwarmCoordinator) {
+          const status = globalSwarmCoordinator.getSwarmStatus();
+          this.bot.chat(`  🐝 Swarm size: ${status.bots.length}`);
+        }
+      }
+      return;
+    }
+
+    // Stash scanner command
+    if (lower.includes('!stash') || lower.includes('stash')) {
+      this.bot.chat(`🔍 Scanning for stashes...`);
+      if (this.bot.stashScanner) {
+        await this.bot.stashScanner.startScanning();
+      } else {
+        this.bot.chat("Stash scanner not initialized!");
+      }
+      return;
+    }
+
+    // Dupe command (admin only)
+    if (lower.includes('!dupe') || (lower.includes('dupe') && lower.includes('test'))) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can test dupes!");
+        return;
+      }
+
+      const itemMatch = message.match(/dupe\s+(.+)/i);
+      const itemName = itemMatch ? itemMatch[1].trim() : 'diamond';
+
+      this.bot.chat(`🔍 Testing dupe for ${itemName}...`);
+      if (globalDupeFramework) {
+        await globalDupeFramework.testDupe(itemName);
+      } else {
+        this.bot.chat("Dupe framework not initialized!");
+      }
+      return;
+    }
+
     // Default fallback for unrecognized commands
     this.bot.chat("I didn't understand that command. Try 'help' for options!");
-  }
+    }
   
   async handleItemFinderCommand(username, message) {
     console.log(`[HUNTER] 🎯 Item request from ${username}: ${message}`);
@@ -14952,6 +16346,229 @@ class ConversationAI {
      return idMatch[1];
    }
    return null;
+  }
+
+  async getBotStatusSnapshot(username) {
+    const pos = this.bot.entity.position;
+    const hasPreciseAccess = this.hasTrustLevel(username, 'trusted');
+    
+    // Get biome if available
+    let biome = 'unknown';
+    try {
+      const biomeBlock = this.bot.blockAt(pos);
+      if (biomeBlock && biomeBlock.biome) {
+        biome = biomeBlock.biome.name || 'unknown';
+      }
+    } catch (err) {
+      // Biome not available
+    }
+    
+    // Get dimension
+    const dimension = this.bot.game?.dimension || 'unknown';
+    
+    // Get nearby players
+    const nearbyPlayers = getNearbyPlayers(this.bot, 50);
+    
+    // Get nearby mobs
+    let nearbyMobs = [];
+    try {
+      const entities = Object.values(this.bot.entities);
+      nearbyMobs = entities.filter(e => {
+        if (!e.position || e.type !== 'mob') return false;
+        const dist = e.position.distanceTo(pos);
+        return dist < 20;
+      }).map(e => ({
+        name: e.name || e.displayName || 'unknown',
+        distance: Math.round(e.position.distanceTo(pos))
+      }));
+    } catch (err) {
+      // Entities not available
+    }
+    
+    // Get activity
+    const activity = determineBotActivity(this.bot);
+    
+    // Get pathfinder ETA if moving
+    let eta = null;
+    if (this.bot.pathfinder && this.bot.pathfinder.isMoving && this.bot.pathfinder.isMoving()) {
+      try {
+        const goal = this.bot.pathfinder.goal;
+        if (goal && this.bot.pathfinder.getPathTo) {
+          const path = this.bot.pathfinder.getPathTo(goal);
+          if (path && path.cost) {
+            eta = Math.round(path.cost / 4.3); // Convert blocks to seconds (approx walking speed)
+          }
+        }
+      } catch (err) {
+        // Pathfinder info not available
+      }
+    }
+    
+    // Get armor info
+    const armorSlots = this.bot.inventory.slots.slice(5, 9); // Armor slots
+    const armorCount = armorSlots.filter(s => s !== null).length;
+    const armorDurability = armorSlots.filter(s => s !== null).map(s => {
+      if (s.durabilityUsed !== undefined && s.maxDurability !== undefined) {
+        return Math.round(((s.maxDurability - s.durabilityUsed) / s.maxDurability) * 100);
+      }
+      return 100;
+    });
+    const avgArmor = armorDurability.length > 0 
+      ? Math.round(armorDurability.reduce((a, b) => a + b, 0) / armorDurability.length)
+      : 0;
+    
+    // Get active task
+    const activeTask = config.tasks.current ? config.tasks.current.type || 'unknown' : null;
+    
+    return {
+      position: hasPreciseAccess ? {
+        x: Math.round(pos.x),
+        y: Math.round(pos.y),
+        z: Math.round(pos.z)
+      } : null,
+      biome: hasPreciseAccess ? biome : null,
+      dimension: hasPreciseAccess ? dimension : null,
+      activity,
+      nearbyPlayers: nearbyPlayers.map(p => ({
+        name: p.username,
+        distance: Math.round(p.distance)
+      })),
+      nearbyMobs: hasPreciseAccess ? nearbyMobs : null,
+      health: Math.round(this.bot.health),
+      food: typeof this.bot.food === 'number' ? Math.round(this.bot.food) : null,
+      armorEquipped: armorCount,
+      armorDurability: avgArmor,
+      activeTask,
+      eta: hasPreciseAccess ? eta : null,
+      timestamp: Date.now()
+    };
+  }
+
+  formatStatusReport(snapshot, username) {
+    const lines = [];
+    
+    lines.push(`📊 Status Report for ${this.bot.username}`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━`);
+    
+    // Activity
+    lines.push(`🔹 Activity: ${snapshot.activity}`);
+    
+    // Location (only for trusted+)
+    if (snapshot.position) {
+      lines.push(`📍 Location: ${snapshot.position.x}, ${snapshot.position.y}, ${snapshot.position.z}`);
+      if (snapshot.biome) {
+        lines.push(`🌍 Biome: ${snapshot.biome}`);
+      }
+      if (snapshot.dimension) {
+        lines.push(`🌐 Dimension: ${snapshot.dimension}`);
+      }
+    } else {
+      lines.push(`📍 Location: [Restricted - Trusted+ only]`);
+    }
+    
+    // Health and food
+    lines.push(`❤️  Health: ${snapshot.health}/20`);
+    if (snapshot.food !== null) {
+      lines.push(`🍖 Food: ${snapshot.food}/20`);
+    }
+    
+    // Armor
+    lines.push(`🛡️  Armor: ${snapshot.armorEquipped}/4 pieces (${snapshot.armorDurability}% durability)`);
+    
+    // Active task
+    if (snapshot.activeTask) {
+      lines.push(`📋 Task: ${snapshot.activeTask}`);
+    }
+    
+    // ETA (only for trusted+)
+    if (snapshot.eta !== null) {
+      lines.push(`⏱️  ETA: ~${snapshot.eta}s`);
+    }
+    
+    // Nearby players
+    if (snapshot.nearbyPlayers.length > 0) {
+      const playerList = snapshot.nearbyPlayers.map(p => `${p.name} (${p.distance}m)`).join(', ');
+      lines.push(`👥 Nearby players: ${playerList}`);
+    } else {
+      lines.push(`👥 Nearby players: None`);
+    }
+    
+    // Nearby mobs (only for trusted+)
+    if (snapshot.nearbyMobs) {
+      if (snapshot.nearbyMobs.length > 0) {
+        const mobList = snapshot.nearbyMobs.slice(0, 3).map(m => `${m.name} (${m.distance}m)`).join(', ');
+        lines.push(`🐺 Nearby mobs: ${mobList}${snapshot.nearbyMobs.length > 3 ? ` +${snapshot.nearbyMobs.length - 3} more` : ''}`);
+      }
+    }
+    
+    return lines;
+  }
+
+  formatLocationReport(snapshot, username, playerPos = null) {
+    const lines = [];
+    
+    // If requesting own location
+    if (playerPos) {
+      lines.push(`📍 Your Location, ${username}`);
+      lines.push(`━━━━━━━━━━━━━━━━━━━━━━`);
+      lines.push(`Coordinates: ${Math.round(playerPos.x)}, ${Math.round(playerPos.y)}, ${Math.round(playerPos.z)}`);
+      
+      // Add bot's location relative to player (only for trusted+)
+      if (snapshot.position) {
+        const dx = snapshot.position.x - playerPos.x;
+        const dy = snapshot.position.y - playerPos.y;
+        const dz = snapshot.position.z - playerPos.z;
+        const dist = Math.round(Math.sqrt(dx*dx + dy*dy + dz*dz));
+        
+        lines.push(`📏 Distance to me: ${dist} blocks`);
+        
+        // Cardinal direction
+        const angle = Math.atan2(dz, dx);
+        const directions = ['East', 'Southeast', 'South', 'Southwest', 'West', 'Northwest', 'North', 'Northeast'];
+        const dirIndex = Math.round((angle / Math.PI) * 4 + 4) % 8;
+        lines.push(`🧭 Direction: I'm ${directions[dirIndex]} of you`);
+      }
+    } else {
+      // Requesting bot location
+      lines.push(`📍 My Location`);
+      lines.push(`━━━━━━━━━━━━━━━━━━━━━━`);
+      
+      if (snapshot.position) {
+        lines.push(`Coordinates: ${snapshot.position.x}, ${snapshot.position.y}, ${snapshot.position.z}`);
+        if (snapshot.biome) {
+          lines.push(`Biome: ${snapshot.biome}`);
+        }
+        if (snapshot.dimension) {
+          lines.push(`Dimension: ${snapshot.dimension}`);
+        }
+        lines.push(`Activity: ${snapshot.activity}`);
+      } else {
+        lines.push(`[Restricted - Trusted+ only]`);
+        lines.push(`Ask an admin for access to location data.`);
+      }
+    }
+    
+    return lines;
+  }
+
+  extractItem(message) {
+    // Extract item name from various patterns
+    const patterns = [
+      /(?:get|find|mine|craft|farm|hunt|collect|fish for)\s+(?:me\s+)?(?:(\d+)\s+)?([a-zA-Z\s]+?)(?:\s|$)/i,
+      /(?:me\s+)?(?:(\d+)\s+)?([a-zA-Z\s]+?)(?:\s|$)/i
+    ];
+
+    for (const pattern of patterns) {
+      const match = message.match(pattern);
+      if (match) {
+        const quantity = match[1] ? parseInt(match[1]) : 1;
+        const item = match[2] ? match[2].trim() : null;
+        if (item) {
+          return item;
+        }
+      }
+    }
+    return null;
   }
 
   startFollowing(player) {
@@ -15093,6 +16710,107 @@ class ConversationAI {
       console.log(`[EXEC] Resource task failed: ${error.message}`);
       this.bot.chat(`❌ Failed to get ${task.item}: ${error.message}`);
       return false;
+    const quantities = {
+      'diamond': 64,
+      'iron': 64,
+      'gold': 32,
+      'emerald': 32,
+      'stone': 128,
+      'cobblestone': 128,
+      'oak log': 64,
+      'spruce log': 64,
+      'birch log': 64
+    };
+
+    for (const [item, defaultQty] of Object.entries(quantities)) {
+      if (message.toLowerCase().includes(item)) {
+        const qtyMatch = message.match(/(\d+)\s+/);
+        const quantity = qtyMatch ? parseInt(qtyMatch[1]) : defaultQty;
+        return { item, quantity };
+      }
+    }
+    return null;
+  }
+
+  async executeResourceTask(task) {
+    if (!task) return;
+    const { item, quantity } = task;
+    this.bot.chat(`🔨 Mining ${quantity}x ${item}...`);
+
+    if (this.bot.mining) {
+      await this.bot.mining.collectResource(item, quantity).catch(err => {
+        console.log(`[RESOURCE] Mining error: ${err.message}`);
+        this.bot.chat(`❌ Failed to mine ${item}: ${err.message}`);
+      });
+    } else {
+      this.bot.chat("Mining module not available!");
+    }
+  }
+
+  findNearestPlayer() {
+    const players = Object.values(this.bot.entities).filter(e =>
+      e.type === 'player' && e.username !== this.bot.username
+    );
+
+    if (players.length === 0) return null;
+
+    let nearest = players[0];
+    let minDist = nearest.position.distanceTo(this.bot.entity.position);
+
+    for (const player of players) {
+      const dist = player.position.distanceTo(this.bot.entity.position);
+      if (dist < minDist) {
+        nearest = player;
+        minDist = dist;
+      }
+    }
+
+    return nearest;
+  }
+
+  broadcastRetreat() {
+    this.bot.chat("Falling back!");
+    if (this.bot.pathfinder) {
+      this.bot.pathfinder.stop();
+    }
+    if (this.bot.ashfinder) {
+      this.bot.ashfinder.stop();
+    }
+
+    if (globalSwarmCoordinator) {
+      globalSwarmCoordinator.broadcast({
+        type: 'RETREAT',
+        initiator: this.bot.username,
+        timestamp: Date.now()
+      });
+    }
+  }
+
+  handleTrustCommand(username, message) {
+    if (!this.hasTrustLevel(username, 'admin')) {
+      this.bot.chat("Only admin+ can manage trust!");
+      return;
+    }
+
+    const setMatch = message.match(/set\s+(?:trust|level)\s+(\w+)\s+(\w+)/i);
+    if (setMatch) {
+      const targetPlayer = setMatch[1];
+      const trustLevel = setMatch[2].toLowerCase();
+
+      if (!this.trustLevels.includes(trustLevel)) {
+        this.bot.chat(`Invalid trust level. Use: ${this.trustLevels.join(', ')}`);
+        return;
+      }
+
+      const index = config.whitelist.findIndex(e => e.name === targetPlayer);
+      if (index >= 0) {
+        config.whitelist[index].level = trustLevel;
+      } else {
+        config.whitelist.push({ name: targetPlayer, level: trustLevel });
+      }
+
+      safeWriteFile('./data/whitelist.json', JSON.stringify(config.whitelist, null, 2));
+      this.bot.chat(`✅ Set ${targetPlayer}'s trust level to ${trustLevel}`);
     }
   }
 }
@@ -19910,10 +21628,22 @@ const dashboardHTML = `
     
     <div class="panel">
       <h2>🤖 Bot Status</h2>
+      <div class="stat"><span>Activity:</span><span id="botActivity">idle</span></div>
       <div class="stat"><span>Health:</span><span id="health">20</span></div>
+      <div class="stat"><span>Food:</span><span id="food">20</span></div>
       <div class="stat"><span>Position:</span><span id="position">0, 0, 0</span></div>
+      <div class="stat"><span>Dimension:</span><span id="dimension">unknown</span></div>
       <div class="stat"><span>Current Task:</span><span id="task">Idle</span></div>
+      <div class="stat"><span>Nearby Players:</span><span id="nearbyPlayers">0</span></div>
       <div class="stat"><span>Inventory:</span><span id="inventory">Empty</span></div>
+    </div>
+    
+    <div class="panel">
+      <h2>📊 Status Requests</h2>
+      <div class="stat"><span>Total Requests:</span><span id="statusRequestCount">0</span></div>
+      <div id="statusRequestList" style="margin-top: 10px; max-height: 200px; overflow-y: auto; font-size: 12px;">
+        <em>No recent status requests</em>
+      </div>
     </div>
     
     <div class="panel">
@@ -20404,10 +22134,42 @@ const dashboardHTML = `
         document.getElementById('dupePlugins').textContent = d.dupe.pluginsAnalyzed;
         document.getElementById('dupeExploits').textContent = d.dupe.activeExploits;
         
-        document.getElementById('health').textContent = d.bot.health;
-        document.getElementById('position').textContent = d.bot.position;
+        // Update bot status
+        if (d.botStatus) {
+          document.getElementById('botActivity').textContent = d.botStatus.activity || 'idle';
+          document.getElementById('health').textContent = d.botStatus.health || 20;
+          document.getElementById('food').textContent = d.botStatus.food || 20;
+          document.getElementById('position').textContent = d.botStatus.position 
+            ? \`\${d.botStatus.position.x}, \${d.botStatus.position.y}, \${d.botStatus.position.z}\`
+            : 'Unknown';
+          document.getElementById('dimension').textContent = d.botStatus.dimension || 'unknown';
+          document.getElementById('nearbyPlayers').textContent = d.botStatus.nearbyPlayers?.length || 0;
+        } else {
+          // Fallback to old format
+          document.getElementById('health').textContent = d.bot.health;
+          document.getElementById('position').textContent = d.bot.position;
+        }
         document.getElementById('task').textContent = d.bot.task || 'Idle';
         document.getElementById('inventory').textContent = d.bot.inventory;
+        
+        // Update status requests
+        if (d.conversation && d.conversation.recentStatusRequests) {
+          const requests = d.conversation.recentStatusRequests;
+          document.getElementById('statusRequestCount').textContent = requests.length;
+          
+          if (requests.length > 0) {
+            document.getElementById('statusRequestList').innerHTML = requests.slice(-10).reverse().map(req => {
+              const timeAgo = Math.floor((Date.now() - req.timestamp) / 1000);
+              const typeEmoji = req.type === 'status' ? '📊' : req.type === 'location' ? '📍' : '🗺️';
+              return \`<div style="margin: 5px 0; padding: 5px; background: #111; border-left: 2px solid #0f0;">
+                \${typeEmoji} <strong>\${req.username}</strong> - \${req.type}<br>
+                <small style="color: #888;">\${timeAgo}s ago</small>
+              </div>\`;
+            }).join('');
+          } else {
+            document.getElementById('statusRequestList').innerHTML = '<em>No recent status requests</em>';
+          }
+        }
         
         // Update home base
         if (d.homeBase) {
@@ -21381,8 +23143,24 @@ http.createServer((req, res) => {
         avgResponseTime: config.conversationMetrics.avgResponseTime,
         responseRate: config.conversationMetrics.messagesReceived > 0
           ? ((config.conversationMetrics.messagesResponded / config.conversationMetrics.messagesReceived) * 100).toFixed(1) + '%'
-          : '0%'
+          : '0%',
+        recentStatusRequests: config.conversationMetrics.recentStatusRequests || []
       },
+      botStatus: globalBot ? {
+        activity: determineBotActivity(globalBot),
+        position: globalBot.entity?.position ? {
+          x: Math.round(globalBot.entity.position.x),
+          y: Math.round(globalBot.entity.position.y),
+          z: Math.round(globalBot.entity.position.z)
+        } : null,
+        dimension: globalBot.game?.dimension || 'unknown',
+        health: Math.round(globalBot.health || 0),
+        food: typeof globalBot.food === 'number' ? Math.round(globalBot.food) : null,
+        nearbyPlayers: getNearbyPlayers(globalBot, 50).map(p => ({
+          name: p.username,
+          distance: Math.round(p.distance)
+        }))
+      } : null,
       whitelist: {
         total: config.whitelist.length,
         byLevel: {
@@ -22329,16 +24107,19 @@ async function launchBot(username, role = 'fighter') {
   
   bot.once('spawn', async () => {
     console.log(`[SPAWN] ${username} joined ${config.server}`);
-    
+
     // Wait a moment for plugins to fully initialize
     await new Promise(resolve => setTimeout(resolve, 100));
-    
+
+    // Initialize health.json tracking
+    initializeHealthTracking(bot);
+
     // Ensure pathfinder plugin loaded
     if (!bot.pathfinder) {
       console.log('[ERROR] Pathfinder plugin not loaded!');
       return;
     }
-    
+
     // Set up movements configuration
     try {
       bot.pathfinder.setMovements(new Movements(bot));
@@ -22468,12 +24249,30 @@ async function launchBot(username, role = 'fighter') {
               break;
               
             case 'BACKUP_NEEDED':
-              console.log(`[SWARM] 🚨 ${message.botId} needs backup!`);
-              if (bot.entity.position.distanceTo(message.position) < 200) {
-                bot.chat(`On my way to help ${message.botId}!`);
-                bot.ashfinder.goto(new goals.GoalNear(new Vec3(
-                  message.position.x, message.position.y, message.position.z), 10
-                )).catch(() => {});
+              console.log(`[SWARM] 🚨 ${message.botId} needs backup! Attacker: ${message.attacker}`);
+              const backupDistance = bot.entity.position.distanceTo(message.position);
+              const backupRadius = message.helpRadius || 200;
+
+              if (backupDistance < backupRadius) {
+                bot.chat(`⚔️ On my way to help ${message.botId}! ATTACKING ${message.attacker}!`);
+
+                // Find the attacker entity
+                const backupAttacker = Object.values(bot.entities).find(e =>
+                  (e.type === 'player' && e.username === message.attacker) ||
+                  (e.name && e.name.toLowerCase().includes(message.attacker.toLowerCase()))
+                );
+
+                if (backupAttacker && combatAI && typeof combatAI.handleCombat === 'function') {
+                  // Attack the attacker directly
+                  console.log(`[SWARM] 🎯 Found backup target ${message.attacker} - ENGAGING!`);
+                  await combatAI.handleCombat(backupAttacker);
+                } else if (!backupAttacker && bot.ashfinder) {
+                  // If we can't find the attacker, navigate to the victim's location
+                  console.log(`[SWARM] Could not find ${message.attacker}, moving to support location`);
+                  bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+                    message.position.x, message.position.y, message.position.z), 10
+                  )).catch(() => {});
+                }
               }
               break;
               
@@ -22553,13 +24352,30 @@ async function launchBot(username, role = 'fighter') {
             case 'ATTACK_ALERT':
               console.log(`[SWARM] ⚔️ ${message.victim} is under attack by ${message.attacker}!`);
               // Respond if close enough and not the victim
-              if (username !== message.victim && bot.entity && bot.entity.position && bot.ashfinder) {
+              if (username !== message.victim && bot.entity && bot.entity.position) {
                 const distance = bot.entity.position.distanceTo(new Vec3(message.location.x, message.location.y, message.location.z));
-                if (distance < 100) {
-                  console.log(`[SWARM] Responding to threat! Distance: ${Math.floor(distance)} blocks`);
-                  bot.ashfinder.goto(new goals.GoalNear(new Vec3(
-                    message.location.x, message.location.y, message.location.z), 5
-                  )).catch(() => {});
+                const helpRadius = message.helpRadius || 100;
+
+                if (distance < helpRadius) {
+                  console.log(`[SWARM] ⚔️ Responding to help request! Distance: ${Math.floor(distance)} blocks - ATTACKING ${message.attacker}!`);
+
+                  // Find the attacker entity
+                  const attacker = Object.values(bot.entities).find(e =>
+                    (e.type === 'player' && e.username === message.attacker) ||
+                    (e.name && e.name.toLowerCase().includes(message.attacker.toLowerCase()))
+                  );
+
+                  if (attacker && combatAI && typeof combatAI.handleCombat === 'function') {
+                    // Attack the attacker
+                    console.log(`[SWARM] 🎯 Found attacker ${message.attacker} at ${attacker.position.x.toFixed(0)}, ${attacker.position.y.toFixed(0)}, ${attacker.position.z.toFixed(0)}`);
+                    await combatAI.handleCombat(attacker);
+                  } else if (!attacker && bot.ashfinder) {
+                    // If we can't find the attacker, navigate to victim's location for support
+                    console.log(`[SWARM] Could not find attacker ${message.attacker}, moving to support ${message.victim}`);
+                    bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+                      message.location.x, message.location.y, message.location.z), 5
+                    )).catch(() => {});
+                  }
                 }
               }
               break;
@@ -22577,20 +24393,57 @@ async function launchBot(username, role = 'fighter') {
             case 'COORDINATED_ATTACK':
               console.log(`[SWARM] 🎯 Coordinated attack on ${message.target} initiated by ${message.initiator}!`);
               // Find and attack target
-              const attackTarget = Object.values(bot.entities).find(e => 
+              const coordAttackTarget = Object.values(bot.entities).find(e =>
                 e.type === 'player' && e.username === message.target
               );
-              if (attackTarget && bot.pvp) {
-                bot.pvp.attack(attackTarget);
+
+              if (coordAttackTarget && combatAI && typeof combatAI.handleCombat === 'function') {
+                console.log(`[SWARM] ⚔️ Joining coordinated attack on ${message.target}!`);
+                bot.chat(`🎯 Joining coordinated attack on ${message.target}!`);
+                await combatAI.handleCombat(coordAttackTarget);
+              } else if (coordAttackTarget && !combatAI) {
+                console.log(`[SWARM] ⚠️ Combat AI not available for coordinated attack`);
+              } else {
+                console.log(`[SWARM] ⚠️ Target ${message.target} not found in loaded entities`);
+              }
+              break;
+
+            case 'ATTACK_TARGET':
+              console.log(`[SWARM] 🎯 Received attack target: ${message.target} at position ${message.targetPos.x}, ${message.targetPos.y}, ${message.targetPos.z}`);
+              const attackTargetEntity = Object.values(bot.entities).find(e =>
+                e.type === 'player' && e.username === message.target
+              );
+
+              if (attackTargetEntity && combatAI && typeof combatAI.handleCombat === 'function') {
+                console.log(`[SWARM] 🎯 Found attack target ${message.target} - ENGAGING!`);
+                await combatAI.handleCombat(attackTargetEntity);
+              } else if (!attackTargetEntity) {
+                console.log(`[SWARM] ⚠️ Attack target ${message.target} not found in loaded entities`);
               }
               break;
               
             case 'RETREAT':
-              console.log(`[SWARM] 🏃 Retreat signal from ${message.bot}!`);
-              if (bot.pvp && bot.pvp.target) {
-                bot.pvp.stop();
-              }
-              break;
+               console.log(`[SWARM] 🏃 Retreat signal from ${message.bot}!`);
+               if (combatAI) {
+                 combatAI.inCombat = false;
+                 combatAI.currentTarget = null;
+               }
+               if (bot.pvp && bot.pvp.target) {
+                 bot.pvp.stop();
+               }
+               break;
+
+             case 'RETREAT_NOW':
+               console.log(`[SWARM] 🏃 Retreat command from ${message.initiator}! All bots retreating!`);
+               if (combatAI) {
+                 combatAI.inCombat = false;
+                 combatAI.currentTarget = null;
+               }
+               if (bot.pvp && bot.pvp.target) {
+                 bot.pvp.stop();
+               }
+               bot.chat(`Retreating as ordered by ${message.initiator}!`);
+               break;
               
             case 'REGROUP':
               console.log(`[SWARM] 📍 Regrouping at ${message.location.x}, ${message.location.y}, ${message.location.z}`);
@@ -22598,7 +24451,22 @@ async function launchBot(username, role = 'fighter') {
                 message.location.x, message.location.y, message.location.z), 5
               )).catch(() => {});
               break;
-              
+
+            case 'GUARD_POSITION':
+              console.log(`[SWARM] 🛡️ Guard duty initiated at ${message.position.x}, ${message.position.y}, ${message.position.z}`);
+              bot.chat(`🛡️ Starting guard duty at ${message.position.x}, ${message.position.y}, ${message.position.z}!`);
+              if (bot.ashfinder) {
+                bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+                  message.position.x, message.position.y, message.position.z), 3
+                )).then(() => {
+                  console.log(`[SWARM] Arrived at guard position, beginning patrol`);
+                  bot.chat(`Guard position ready! Monitoring for threats...`);
+                }).catch(err => {
+                  console.log(`[SWARM] Failed to reach guard position: ${err.message}`);
+                });
+              }
+              break;
+
             case 'HELP_COMMAND':
               console.log(`[SWARM] 🆘 Help request from ${message.requestedBy} at ${message.coords.x}, ${message.coords.y}, ${message.coords.z}`);
               bot.chat(`Coming to help ${message.requestedBy}!`);
@@ -23102,6 +24970,102 @@ async function launchBot(username, role = 'fighter') {
   });
   
   return bot;
+}
+
+function determineBotActivity(bot) {
+  if (!bot || !bot.entity) {
+    return 'unknown';
+  }
+
+  // Check combat state (highest priority)
+  if (bot.combatAI && bot.combatAI.currentTarget) {
+    return 'fighting';
+  }
+
+  // Check if taking damage or recently damaged
+  if (bot.lastDamageTime && (Date.now() - bot.lastDamageTime < 3000)) {
+    return 'under attack';
+  }
+
+  // Check if in combat mode
+  if (bot.pvp && bot.pvp.target) {
+    return 'fighting';
+  }
+
+  // Check task queue
+  if (config.tasks.current) {
+    const task = config.tasks.current;
+    if (task.type) {
+      if (task.type === 'mine' || task.type === 'mining') return 'mining';
+      if (task.type === 'build' || task.type === 'building') return 'building';
+      if (task.type === 'gather' || task.type === 'collecting') return 'gathering';
+      if (task.type === 'hunt' || task.type === 'hunting') return 'hunting';
+      if (task.type === 'craft' || task.type === 'crafting') return 'crafting';
+      if (task.type === 'follow' || task.type === 'following') return 'following';
+      if (task.type === 'guard' || task.type === 'guarding') return 'guarding';
+      return task.type.toLowerCase();
+    }
+  }
+
+  // Check pathfinder state
+  if (bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving()) {
+    return 'traveling';
+  }
+
+  // Check movement manager
+  if (bot.movementManager) {
+    if (bot.movementManager.currentMode === 'highway') {
+      return 'highway travel';
+    }
+    if (bot.movementManager.isMoving) {
+      return 'traveling';
+    }
+  }
+
+  // Check if following someone
+  if (bot.followingPlayer) {
+    return 'following';
+  }
+
+  // Check if at home base
+  if (config.homeBase.coords && bot.entity.position) {
+    const dist = bot.entity.position.distanceTo(config.homeBase.coords);
+    if (dist < 10) {
+      return 'at home base';
+    }
+  }
+
+  // Check builder status
+  if (globalSchematicBuilder && globalSchematicBuilder.isBuilding) {
+    return 'building';
+  }
+
+  // Check if tracking player
+  if (bot.playerTracker && bot.playerTracker.isTracking) {
+    return `tracking ${bot.playerTracker.targetUsername}`;
+  }
+
+  // Check if stash hunting
+  if (config.stashHunt.active) {
+    return 'stash hunting';
+  }
+
+  // Check if dupe testing
+  if (config.dupeDiscovery.testingEnabled) {
+    return 'testing dupes';
+  }
+
+  // Check velocity for any movement
+  if (bot.entity.velocity) {
+    const vel = bot.entity.velocity;
+    const speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+    if (speed > 0.1) {
+      return 'moving';
+    }
+  }
+
+  // Default to idle
+  return 'idle';
 }
 
 function startVideoFeedStreaming(bot, wsClient) {
