@@ -9640,56 +9640,35 @@ class CombatAI {
     }
     
     try {
-       const targetName = isPlayer ? attacker.username : attacker.name;
-       const targetType = isPlayer ? 'Player' : 'Hostile Mob';
-       console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
-       this.inCombat = true;
-       this.currentTarget = attacker;
+            const targetName = isPlayer ? attacker.username : attacker.name;
+            const targetType = isPlayer ? 'Player' : 'Hostile Mob';
+            console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
+            this.inCombat = true;
+            this.currentTarget = attacker;
+            this.isCurrentlyFighting = true;
 
-       // Equip combat gear first
-       if (this.toolSelector) {
-         console.log('[COMBAT] 🛡️ Equipping combat gear...');
-         await this.toolSelector.equipFullGear('combat');
-       }
+            // Equip combat gear first
+            if (this.toolSelector) {
+              console.log('[COMBAT] 🛡️ Equipping combat gear...');
+              await this.toolSelector.equipFullGear('combat');
+            }
 
-       // Initialize crystal PvP if we have resources
-       const useCrystalPvP = this.hasCrystalResources();
-       let crystalPvP = null;
+            // Initialize crystal PvP if we have resources and target is player
+            const useCrystalPvP = this.hasCrystalResources() && isPlayer;
+            let crystalPvP = null;
 
-       if (useCrystalPvP) {
-         crystalPvP = this.getCrystalPvP();
-         console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
+            if (useCrystalPvP) {
+              crystalPvP = this.getCrystalPvP();
+              console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
 
-         // Evaluate combat situation and execute strategy
-         const strategy = await crystalPvP.evaluateCombatSituation(attacker);
-         console.log(`[COMBAT] Strategy: ${strategy}`);
-
-         // Execute initial strategy
-         await crystalPvP.executeStrategy(strategy, attacker);
-       } else {
-         // Use smart weapon switching for optimal attack
-         console.log('[COMBAT] 🎯 Smart weapon switching enabled!');
-         await this.executeSmartCombat(attacker);
-         await this.executeOptimalAttack(attacker);
-       }
-      const targetName = isPlayer ? attacker.username : attacker.name;
-      const targetType = isPlayer ? 'Player' : 'Hostile Mob';
-      console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
-      this.inCombat = true;
-      this.currentTarget = attacker;
-      this.isCurrentlyFighting = true;
-      
-      // Initialize crystal PvP if we have resources and target is player
-      const useCrystalPvP = this.hasCrystalResources() && isPlayer;
-      let crystalPvP = null;
-      
-      if (useCrystalPvP) {
-        crystalPvP = this.getCrystalPvP();
-        console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
-        
-        // Execute multi-crystal tactic
-        await crystalPvP.executeCrystalCombo(attacker);
-      }
+              // Execute multi-crystal tactic
+              await crystalPvP.executeCrystalCombo(attacker);
+            } else {
+              // Use smart weapon switching for optimal attack
+              console.log('[COMBAT] 🎯 Smart weapon switching enabled!');
+              await this.executeSmartCombat(attacker);
+              await this.executeOptimalAttack(attacker);
+            }
       
       // Enhanced tactical combat loop
       const combatLoop = setInterval(async () => {
@@ -16800,40 +16779,6 @@ class ConversationAI {
       console.log(`[EXEC] Resource task failed: ${error.message}`);
       this.bot.chat(`❌ Failed to get ${task.item}: ${error.message}`);
       return false;
-    const quantities = {
-      'diamond': 64,
-      'iron': 64,
-      'gold': 32,
-      'emerald': 32,
-      'stone': 128,
-      'cobblestone': 128,
-      'oak log': 64,
-      'spruce log': 64,
-      'birch log': 64
-    };
-
-    for (const [item, defaultQty] of Object.entries(quantities)) {
-      if (message.toLowerCase().includes(item)) {
-        const qtyMatch = message.match(/(\d+)\s+/);
-        const quantity = qtyMatch ? parseInt(qtyMatch[1]) : defaultQty;
-        return { item, quantity };
-      }
-    }
-    return null;
-  }
-
-  async executeResourceTask(task) {
-    if (!task) return;
-    const { item, quantity } = task;
-    this.bot.chat(`🔨 Mining ${quantity}x ${item}...`);
-
-    if (this.bot.mining) {
-      await this.bot.mining.collectResource(item, quantity).catch(err => {
-        console.log(`[RESOURCE] Mining error: ${err.message}`);
-        this.bot.chat(`❌ Failed to mine ${item}: ${err.message}`);
-      });
-    } else {
-      this.bot.chat("Mining module not available!");
     }
   }
 
