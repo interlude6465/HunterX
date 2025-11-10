@@ -762,6 +762,113 @@ function safeWriteJson(filePath, data) {
   return safeWriteFile(filePath, JSON.stringify(data, null, 2));
 }
 
+// === HEALTH TRACKING SYSTEM ===
+function initializeHealthTracking(bot) {
+  if (!bot) {
+    console.error('[HEALTH] Bot object not available');
+    return;
+  }
+  
+  const healthFile = './data/health.json';
+  const defaultHealthData = {
+    botName: bot.username || 'UnknownBot',
+    currentHealth: 20,
+    maxHealth: 20,
+    lastUpdated: Date.now(),
+    healthHistory: [],
+    damageEvents: []
+  };
+  
+  // Initialize or load health.json
+  let healthData = safeReadJson(healthFile, defaultHealthData);
+  if (!healthData) {
+    healthData = defaultHealthData;
+    safeWriteJson(healthFile, healthData);
+    console.log('[HEALTH] ✓ Created health.json with default values');
+  }
+  
+  // Update initial health values
+  healthData.botName = bot.username || 'UnknownBot';
+  healthData.currentHealth = bot.health || 20;
+  healthData.maxHealth = 20;
+  healthData.lastUpdated = Date.now();
+  
+  // Initialize health history if missing
+  if (!Array.isArray(healthData.healthHistory)) {
+    healthData.healthHistory = [];
+  }
+  if (!Array.isArray(healthData.damageEvents)) {
+    healthData.damageEvents = [];
+  }
+  
+  // Save initialized health data
+  safeWriteJson(healthFile, healthData);
+  console.log(`[HEALTH] Health tracking initialized for ${bot.username} (Health: ${healthData.currentHealth}/${healthData.maxHealth})`);
+  
+  // Track health changes
+  let lastRecordedHealth = bot.health || 20;
+  let recordInterval = null;
+  
+  const updateHealthRecord = () => {
+    const currentHealth = bot.health || 20;
+    const timestamp = Date.now();
+    
+    // Only record if health changed
+    if (currentHealth !== lastRecordedHealth) {
+      const healthData = safeReadJson(healthFile, defaultHealthData);
+      if (!healthData) healthData = defaultHealthData;
+      
+      // Ensure arrays exist
+      if (!Array.isArray(healthData.healthHistory)) healthData.healthHistory = [];
+      if (!Array.isArray(healthData.damageEvents)) healthData.damageEvents = [];
+      
+      // Record health change
+      healthData.currentHealth = currentHealth;
+      healthData.maxHealth = 20;
+      healthData.lastUpdated = timestamp;
+      
+      // Add to history (keep last 100 entries)
+      healthData.healthHistory.push({
+        timestamp,
+        health: currentHealth,
+        change: currentHealth - lastRecordedHealth
+      });
+      if (healthData.healthHistory.length > 100) {
+        healthData.healthHistory = healthData.healthHistory.slice(-100);
+      }
+      
+      // If damage was taken, record the event
+      if (currentHealth < lastRecordedHealth) {
+        const damage = lastRecordedHealth - currentHealth;
+        healthData.damageEvents.push({
+          timestamp,
+          damage,
+          healthAfter: currentHealth
+        });
+        // Keep last 50 damage events
+        if (healthData.damageEvents.length > 50) {
+          healthData.damageEvents = healthData.damageEvents.slice(-50);
+        }
+      }
+      
+      // Save updated health data
+      safeWriteJson(healthFile, healthData);
+      lastRecordedHealth = currentHealth;
+    }
+  };
+  
+  // Record health every 1 second
+  recordInterval = setInterval(updateHealthRecord, 1000);
+  
+  // Store interval ID for cleanup
+  if (bot.healthTrackingInterval) {
+    clearInterval(bot.healthTrackingInterval);
+  }
+  bot.healthTrackingInterval = recordInterval;
+  
+  console.log('[HEALTH] ✓ Health tracking started');
+}
+
 // === VERSION EXTRACTION AND SERVER DETECTION HELPERS ===
 function extractVersionFromError(errorMessage) {
   // Parse: "This server is version X.Y.Z, you are using version A.B.C"
@@ -1410,6 +1517,7 @@ const config = {
     placement: null, // Will be initialized by NeuralBrainManager
     dupe: null, // Will be initialized by NeuralBrainManager
     conversation: null, // Will be initialized by NeuralBrainManager
+    dialogue: null, // Will be initialized by DialogueRL
     available: false, // Will be updated by NeuralBrainManager
     type: 'fallback', // Will be updated by NeuralBrainManager
     manager: null // Will be set to NeuralBrainManager instance
@@ -2417,6 +2525,11 @@ class EquipmentManager {
     this.lastEquipmentCheck = 0;
     this.equipmentCheckInterval = 5000; // Check every 5 seconds
     
+    // Track last equip attempts to prevent infinite loops
+    this.lastEquipAttempts = new Map(); // item.name -> { timestamp, count }
+    this.equipDebounceTime = 2000; // 2 second debounce between equips of same item
+    this.maxEquipAttemptsPerItem = 2; // Max 2 attempts to equip an item
+    
     // Setup inventory listener for auto-equipping armor
     this.setupArmorEquipping();
     
@@ -2424,10 +2537,15 @@ class EquipmentManager {
   }
   
   setupArmorEquipping() {
-    // Listen for inventory updates to auto-equip armor
+    // Debounce inventory updates to prevent spam
+    let inventoryUpdateTimeout = null;
+    
+    // Listen for inventory updates to auto-equip armor (with debounce)
     this.bot.on('inventoryUpdate', () => {
-      // Check if any new armor was picked up
-      this.checkAndEquipArmor();
+      if (inventoryUpdateTimeout) clearTimeout(inventoryUpdateTimeout);
+      inventoryUpdateTimeout = setTimeout(() => {
+        this.checkAndEquipArmor();
+      }, 300); // Wait 300ms for inventory to settle
     });
     
     // Also listen for slot updates (more granular)
@@ -2435,12 +2553,42 @@ class EquipmentManager {
       this.bot.inventory.on('updateSlot', (oldItem, newItem) => {
         if (newItem && this.isArmorPiece(newItem.name)) {
           console.log(`[EQUIPMENT] Armor picked up: ${newItem.name}`);
-          this.autoEquipArmor(newItem);
+          // Check if we should attempt to equip this item
+          if (this.shouldAttemptEquip(newItem.name)) {
+            this.autoEquipArmor(newItem);
+          }
         }
       });
     }
     
     console.log('[EQUIPMENT] Auto-armor equipping enabled');
+  }
+  
+  shouldAttemptEquip(itemName) {
+    const now = Date.now();
+    const lastAttempt = this.lastEquipAttempts.get(itemName);
+    
+    // If no previous attempts, allow equip
+    if (!lastAttempt) {
+      this.lastEquipAttempts.set(itemName, { timestamp: now, count: 1 });
+      return true;
+    }
+    
+    // If beyond debounce time, reset attempts
+    if (now - lastAttempt.timestamp > this.equipDebounceTime) {
+      this.lastEquipAttempts.set(itemName, { timestamp: now, count: 1 });
+      return true;
+    }
+    
+    // If within debounce time, check attempt count
+    if (lastAttempt.count < this.maxEquipAttemptsPerItem) {
+      lastAttempt.count++;
+      lastAttempt.timestamp = now;
+      return true;
+    }
+    
+    // Max attempts reached within debounce time
+    return false;
   }
   
   async initialize() {
@@ -2469,6 +2617,15 @@ class EquipmentManager {
     }
     
     try {
+      // Check if this item is already equipped in the correct slot
+      const slotId = this.getEquipmentSlotId(slot);
+      const currentlyEquipped = this.bot.entity.equipment[slotId];
+      
+      if (currentlyEquipped && currentlyEquipped.name === item.name) {
+        console.log(`[EQUIPMENT] ℹ️ ${item.name} already equipped in ${slot} slot`);
+        return; // Already equipped, skip
+      }
+      
       console.log(`[EQUIPMENT] Equipping: ${item.name} to ${slot}`);
       
       // Check if bot.equip is available
@@ -2506,11 +2663,25 @@ class EquipmentManager {
       
       if (armorItems.length === 0) return;
       
-      // Equip each piece of armor
+      // Only equip items that are not already equipped
       for (const armor of armorItems) {
-        await this.autoEquipArmor(armor);
-        // Small delay between equips to avoid issues
-        await new Promise(resolve => setTimeout(resolve, 100));
+        const slot = this.getArmorSlot(armor.name);
+        if (slot) {
+          const slotId = this.getEquipmentSlotId(slot);
+          const currentlyEquipped = this.bot.entity.equipment[slotId];
+          
+          // Skip if already equipped
+          if (currentlyEquipped && currentlyEquipped.name === armor.name) {
+            continue;
+          }
+          
+          // Only equip if we should attempt it (respects debounce)
+          if (this.shouldAttemptEquip(armor.name)) {
+            await this.autoEquipArmor(armor);
+            // Small delay between equips to avoid issues
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        }
       }
     } catch (err) {
       console.log(`[EQUIPMENT] Failed to check/equip armor: ${err.message}`);
@@ -3863,19 +4034,24 @@ class SwarmCoordinator {
   
   startServer() {
     if (config.swarm.wsServer) return;
-    
+
     config.swarm.wsServer = new WebSocket.Server({ port: this.port });
-    
+
+    // Add error handler for the WebSocket server
+    config.swarm.wsServer.on('error', (err) => {
+      console.error(`[SWARM] WebSocket server error:`, err.message);
+    });
+
     config.swarm.wsServer.on('connection', (ws, req) => {
       const path = (req.url || '/');
       if (path.startsWith('/video-feed')) {
         this.registerViewer(ws);
         return;
       }
-      
+
       const botId = path.replace('/', '');
       console.log(`[SWARM] Bot connected: ${botId}`);
-      
+
       this.bots.set(botId, {
         ws,
         id: botId,
@@ -3885,12 +4061,12 @@ class SwarmCoordinator {
         task: null,
         lastHeartbeat: Date.now()
       });
-      
+
       if (!this.defaultVideoBot) {
         this.defaultVideoBot = botId;
       }
       this.broadcastVideoState();
-      
+
       ws.on('message', (data) => {
         try {
           const message = JSON.parse(data);
@@ -3899,7 +4075,11 @@ class SwarmCoordinator {
           console.log(`[SWARM] Invalid message from ${botId}:`, err.message);
         }
       });
-      
+
+      ws.on('error', (err) => {
+        console.error(`[SWARM] Bot connection error (${botId}):`, err.message);
+      });
+
       ws.on('close', () => {
         console.log(`[SWARM] Bot disconnected: ${botId}`);
         this.bots.delete(botId);
@@ -3910,12 +4090,12 @@ class SwarmCoordinator {
         }
         this.broadcastVideoState();
       });
-      
+
       ws.send(JSON.stringify({ type: 'CONNECTED', botId }));
     });
-    
+
     console.log(`[SWARM] Coordinator listening on port ${this.port}`);
-    
+
     this.startHeartbeatMonitor();
   }
   
@@ -4131,13 +4311,13 @@ class SwarmCoordinator {
     const viewerId = `viewer_${Date.now()}`;
     console.log('[VIDEO] Viewer connected');
     this.viewers.add(ws);
-    
+
     this.viewerState.set(ws, {
       id: viewerId,
       selectedBot: this.defaultVideoBot,
       connectedAt: Date.now()
     });
-    
+
     if (!this.defaultVideoBot) {
       const bots = this.getBotIdList();
       if (bots.length > 0) {
@@ -4148,16 +4328,20 @@ class SwarmCoordinator {
     if (viewerState && !viewerState.selectedBot) {
       viewerState.selectedBot = this.defaultVideoBot;
     }
-    
-    ws.send(JSON.stringify({
-      type: 'VIEWER_CONNECTED',
-      viewerId,
-      botList: this.getBotIdList(),
-      selectedBot: this.defaultVideoBot
-    }));
-    
+
+    try {
+      ws.send(JSON.stringify({
+        type: 'VIEWER_CONNECTED',
+        viewerId,
+        botList: this.getBotIdList(),
+        selectedBot: this.defaultVideoBot
+      }));
+    } catch (err) {
+      console.error(`[VIDEO] Failed to send VIEWER_CONNECTED to ${viewerId}:`, err.message);
+    }
+
     this.sendLatestFrameToViewer(ws);
-    
+
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data);
@@ -4177,7 +4361,11 @@ class SwarmCoordinator {
         console.log('[VIDEO] Invalid viewer message:', err.message);
       }
     });
-    
+
+    ws.on('error', (err) => {
+      console.error(`[VIDEO] Viewer connection error (${viewerId}):`, err.message);
+    });
+
     ws.on('close', () => {
       console.log('[VIDEO] Viewer disconnected');
       this.viewers.delete(ws);
@@ -9300,6 +9488,130 @@ class SwarmManager {
   }
 }
 
+// === TOOL SELECTOR - AUTO-EQUIP TOOLS AND ARMOR ===
+class ToolSelector {
+  constructor(bot) {
+    this.bot = bot;
+    
+    this.toolMap = {
+      // Mining
+      'mining': ['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe'],
+      'mining_stone': ['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe'],
+      'mining_diamonds': ['netherite_pickaxe', 'diamond_pickaxe'],
+      'mining_ancient_debris': ['netherite_pickaxe', 'diamond_pickaxe'],
+      'mining_obsidian': ['netherite_pickaxe', 'diamond_pickaxe'],
+      
+      // Combat
+      'combat': ['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'wooden_sword'],
+      'pvp': ['netherite_sword', 'diamond_sword'],
+      'mob_fighting': ['netherite_sword', 'diamond_sword', 'iron_sword'],
+      
+      // Other tools
+      'farming': ['netherite_hoe', 'diamond_hoe', 'iron_hoe', 'wooden_hoe'],
+      'logging': ['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe'],
+      'digging': ['netherite_shovel', 'diamond_shovel', 'iron_shovel'],
+      'fishing': ['fishing_rod'],
+      'building': ['hand'],
+      
+      'default': ['netherite_sword', 'diamond_sword']
+    };
+  }
+  
+  isToolGoodCondition(tool) {
+    // If no durability info, tool is fine
+    if (!tool.maxDurability || tool.maxDurability === 0) return true;
+    
+    const durabilityPercent = (tool.durability / tool.maxDurability) * 100;
+    
+    // Don't use if less than 10% durability left
+    if (durabilityPercent < 10) {
+      console.log(`[TOOLS] ${tool.name} too damaged (${durabilityPercent.toFixed(0)}% durability left)`);
+      return false;
+    }
+    
+    return true;
+  }
+  
+  async equipToolForAction(action) {
+    console.log(`[TOOLS] Selecting tool for: ${action}`);
+    
+    // Get preferred tools for action
+    const preferredTools = this.toolMap[action] || this.toolMap['default'];
+    
+    // Find best tool in inventory
+    const items = this.bot.inventory.items();
+    let bestTool = null;
+    
+    for (const preferred of preferredTools) {
+      const tool = items.find(i => i.name === preferred && this.isToolGoodCondition(i));
+      if (tool) {
+        bestTool = tool;
+        break;
+      }
+    }
+    
+    if (!bestTool) {
+      console.log(`[TOOLS] No suitable tool for ${action}`);
+      return false;
+    }
+    
+    // Equip the tool
+    try {
+      console.log(`[TOOLS] Equipping: ${bestTool.name}`);
+      await this.bot.equip(bestTool, 'hand');
+      console.log(`[TOOLS] ✓ Equipped: ${bestTool.name}`);
+      return true;
+    } catch (error) {
+      console.error(`[TOOLS] Failed to equip:`, error.message);
+      return false;
+    }
+  }
+  
+  async equipArmor() {
+    console.log(`[TOOLS] Equipping full armor set`);
+    
+    const items = this.bot.inventory.items();
+    
+    // Armor slots to equip: head, torso, legs, feet
+    const armorNeeded = [
+      { slot: 'head', type: 'helmet' },
+      { slot: 'torso', type: 'chestplate' },
+      { slot: 'legs', type: 'leggings' },
+      { slot: 'feet', type: 'boots' }
+    ];
+    
+    const armorPriority = ['netherite', 'diamond', 'iron', 'gold', 'chainmail', 'leather'];
+    
+    for (const armor of armorNeeded) {
+      // Find best armor piece for this slot
+      for (const material of armorPriority) {
+        const piece = items.find(i =>
+          i.name === `${material}_${armor.type}`
+        );
+        
+        if (piece) {
+          try {
+            await this.bot.equip(piece, armor.slot);
+            console.log(`[TOOLS] ✓ Equipped ${armor.slot}: ${piece.name}`);
+          } catch (error) {
+            console.log(`[TOOLS] Failed to equip ${armor.slot}:`, error.message);
+          }
+          break;
+        }
+      }
+    }
+  }
+  
+  async equipFullGear(action) {
+    console.log(`[TOOLS] Equipping full gear for: ${action}`);
+    
+    // Equip armor
+    await this.equipArmor();
+    
+    // Equip tool
+    await this.equipToolForAction(action);
+  }
+}
 
 // === HOSTILE MOB DETECTOR ===
 class HostileMobDetector {
@@ -9338,6 +9650,7 @@ class CombatAI {
     this.combatLogger = null;
     this.combatCheck = null;
     this.hostileMobDetector = new HostileMobDetector();
+    this.toolSelector = new ToolSelector(bot);
   }
   
   setCombatLogger(logger) {
@@ -9551,26 +9864,41 @@ class CombatAI {
     }
     
     try {
-      const targetName = isPlayer ? attacker.username : attacker.name;
-      const targetType = isPlayer ? 'Player' : 'Hostile Mob';
-      console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
-      this.inCombat = true;
-      this.currentTarget = attacker;
-      this.isCurrentlyFighting = true;
-      
-      // Initialize crystal PvP if we have resources and target is player
-      const useCrystalPvP = this.hasCrystalResources() && isPlayer;
-      let crystalPvP = null;
-      
-      if (useCrystalPvP) {
-        crystalPvP = this.getCrystalPvP();
-        console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
-        
-        // Execute multi-crystal tactic
-        await crystalPvP.executeCrystalCombo(attacker);
-      }
-      
-      // Enhanced tactical combat loop
+       const targetName = isPlayer ? attacker.username : attacker.name;
+       const targetType = isPlayer ? 'Player' : 'Hostile Mob';
+       console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
+       this.inCombat = true;
+       this.currentTarget = attacker;
+
+       // Equip combat gear first
+       if (this.toolSelector) {
+         console.log('[COMBAT] 🛡️ Equipping combat gear...');
+         await this.toolSelector.equipFullGear('combat');
+       }
+
+       // Initialize crystal PvP if we have resources
+       const useCrystalPvP = this.hasCrystalResources();
+       let crystalPvP = null;
+
+       if (useCrystalPvP) {
+         crystalPvP = this.getCrystalPvP();
+         console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
+
+         // Evaluate combat situation and execute strategy
+         const strategy = await crystalPvP.evaluateCombatSituation(attacker);
+         console.log(`[COMBAT] Strategy: ${strategy}`);
+
+         // Execute initial strategy
+         await crystalPvP.executeStrategy(strategy, attacker);
+       } else {
+         // Use smart weapon switching for optimal attack
+         console.log('[COMBAT] 🎯 Smart weapon switching enabled!');
+         await this.executeSmartCombat(attacker);
+         await this.executeOptimalAttack(attacker);
+       }
+       this.isCurrentlyFighting = true;
+
+       // Enhanced tactical combat loop
       const combatLoop = setInterval(async () => {
         if (!this.isCurrentlyFighting || this.bot.health <= 0) {
           clearInterval(combatLoop);
@@ -12596,21 +12924,27 @@ class MobHunter {
     this.abortCombat('new engagement');
     this.inCombat = true;
     this.currentTarget = attacker;
-    
+
+    // Equip combat gear first
+    if (this.bot.toolSelector) {
+      console.log('[COMBAT] 🛡️ Equipping combat gear...');
+      await this.bot.toolSelector.equipFullGear('combat');
+    }
+
     if (this.combatLogger) {
       this.combatLogger.startMonitoring(attacker);
     }
-    
+
     const useCrystalPvP = this.hasCrystalResources();
     let crystalPvP = null;
-    
+
     if (useCrystalPvP) {
       crystalPvP = this.getCrystalPvP();
       console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
-      
+
       const strategy = await crystalPvP.evaluateCombatSituation(attacker);
       console.log(`[COMBAT] Strategy: ${strategy}`);
-      
+
       await crystalPvP.executeStrategy(strategy, attacker);
     } else {
       console.log('[COMBAT] ⚔️ Sword PvP mode (no crystal resources)');
@@ -14239,19 +14573,25 @@ class AutoFisher {
   }
   
   async fishForItem(itemName, quantity) {
-    console.log(`[HUNTER] 🎣 Fishing for ${quantity}x ${itemName}...`);
-    
-    // Find water
-    const water = await this.findNearbyWater();
-    if (!water) {
-      console.log(`[HUNTER] ❌ No water found for fishing`);
-      return false;
-    }
-    
-    await this.travelTo(water);
-    
-    // Equip fishing rod (preferably with Luck of the Sea)
-    await this.equipBestFishingRod();
+     console.log(`[HUNTER] 🎣 Fishing for ${quantity}x ${itemName}...`);
+
+     // Find water
+     const water = await this.findNearbyWater();
+     if (!water) {
+       console.log(`[HUNTER] ❌ No water found for fishing`);
+       return false;
+     }
+
+     await this.travelTo(water);
+
+     // Equip fishing gear
+     if (this.bot.toolSelector) {
+       console.log(`[HUNTER] 🛡️ Equipping fishing gear...`);
+       await this.bot.toolSelector.equipFullGear('fishing');
+     } else {
+       // Fallback - equip fishing rod if toolSelector unavailable
+       await this.equipBestFishingRod();
+     }
     
     let collected = 0;
     let casts = 0;
@@ -14415,6 +14755,7 @@ class ConversationAI {
       useLLM: config.conversationalAI.useLLM
     };
     this.llmBridge = new LLMBridge(llmConfig);
+    this.dialogueRL = new DialogueRL(bot);
   }
   
   // Strip bot name from message with various formats
@@ -14977,6 +15318,23 @@ class ConversationAI {
     return mentioned || isWhitelisted;
   }
   
+  // Classify message type for RL scenario tracking
+  classifyMessageType(message) {
+    const lower = message.toLowerCase();
+    
+    if (lower.includes('find') || lower.includes('mine') || lower.includes('collect') || 
+        lower.includes('hunt') || lower.includes('gather') || lower.includes('get')) {
+      return 'resource_request';
+    }
+    
+    if (lower.includes('attack') || lower.includes('fight') || lower.includes('combat') || 
+        lower.includes('defend') || lower.includes('retreat') || lower.includes('guard')) {
+      return 'combat_command';
+    }
+    
+    return 'smalltalk';
+  }
+
   async handleMessage(username, message) {
       console.log(`[CHAT] ${username}: ${message}`);
 
@@ -15017,28 +15375,41 @@ class ConversationAI {
       this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
       if (this.context.length > this.maxContext) this.context.shift();
 
-      // Use intent-aware conversation system
-      const intent = this.analyzeIntent(normalizedMessage);
-      console.log(`[CONVERSATION] Intent detected: ${intent} for message: "${normalizedMessage}"`);
+// Normalize message (strip bot name, clean whitespace)
+const normalizedMessage = this.normalizeMessage(message, username);
 
-      let response;
+this.context.push({ user: username, message: normalizedMessage, timestamp: Date.now() });
+if (this.context.length > this.maxContext) this.context.shift();
+
+// === MERGED: Intent detection + RL tracking ===
+const intent = this.analyzeIntent(normalizedMessage);
+const messageType = this.classifyMessageType(normalizedMessage);
+console.log(`[CONVERSATION] Intent detected: ${intent} for message: "${normalizedMessage}"`);
+
+const startTime = Date.now();
+let response;
+
+try {
+  switch (intent) {
+    case CONVERSATION_INTENTS.COMMAND:
+      console.log(`[CHAT] Command detected: ${normalizedMessage}`);
+      console.log(`[CHAT] Calling handleCommand...`);
+      await this.handleCommand(username, normalizedMessage);
+      console.log(`[CHAT] Command execution complete`);
       
-      try {
-        switch (intent) {
-          case CONVERSATION_INTENTS.COMMAND:
-            console.log(`[CHAT] Command detected: ${normalizedMessage}`);
-            console.log(`[CHAT] Calling handleCommand...`);
-            await this.handleCommand(username, normalizedMessage);
-            console.log(`[CHAT] Command execution complete`);
-            return;
+      // Record outcome for RL training (from main)
+      const responseTime = Date.now() - startTime;
+      const trustLevel = this.getTrustLevel(username) || 'guest';
+      this.dialogueRL.recordOutcome(username, normalizedMessage, 'execute_parsed_command', {
+        success: true,
+        responseTime: responseTime,
+        trustViolation: false
+      }, messageType);
+      return;
 
-          case CONVERSATION_INTENTS.GREETING:
-            response = await this.handleGreeting(username, normalizedMessage);
-            break;
-
-          case CONVERSATION_INTENTS.FAREWELL:
-            response = await this.handleFarewell(username, normalizedMessage);
-            break;
+    case CONVERSATION_INTENTS.GREETING:
+      response = await this.handleGreeting(username, normalizedMessage);
+      break;
 
           case CONVERSATION_INTENTS.GRATITUDE:
             response = await this.handleGratitude(username, normalizedMessage);
@@ -15185,7 +15556,10 @@ class ConversationAI {
 
       // Status commands
       'come to', 'come here', 'go to', 'craft', '!equip', '!status', '!test', 'gear up', 'get geared',
-      'start dupe', 'test dupe', 'stop dupe', 'dupe report', 'dupe stats', 'ultimate dupe'
+      'start dupe', 'test dupe', 'stop dupe', 'dupe report', 'dupe stats', 'ultimate dupe',
+      
+      // Location & Status reporting
+      'where are you', 'status report', 'what is my location', 'where am i', 'my location'
     ];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
@@ -15200,6 +15574,92 @@ class ConversationAI {
     
     const lower = message.toLowerCase();
     config.dangerEscape = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
+    
+    // Status report command
+    if (lower.includes('status report')) {
+      console.log(`[COMMAND] Status report requested by ${username}`);
+      const snapshot = await this.getBotStatusSnapshot(username);
+      const report = this.formatStatusReport(snapshot, username);
+      
+      // Track in config for dashboard
+      if (!config.conversationMetrics.recentStatusRequests) {
+        config.conversationMetrics.recentStatusRequests = [];
+      }
+      config.conversationMetrics.recentStatusRequests.push({
+        username,
+        type: 'status',
+        timestamp: Date.now()
+      });
+      // Keep only last 20
+      if (config.conversationMetrics.recentStatusRequests.length > 20) {
+        config.conversationMetrics.recentStatusRequests.shift();
+      }
+      
+      // Send report line by line
+      for (const line of report) {
+        this.bot.chat(line);
+      }
+      return;
+    }
+    
+    // Bot location command
+    if (lower.includes('where are you')) {
+      console.log(`[COMMAND] Location request by ${username}`);
+      const snapshot = await this.getBotStatusSnapshot(username);
+      const report = this.formatLocationReport(snapshot, username);
+      
+      // Track in config for dashboard
+      if (!config.conversationMetrics.recentStatusRequests) {
+        config.conversationMetrics.recentStatusRequests = [];
+      }
+      config.conversationMetrics.recentStatusRequests.push({
+        username,
+        type: 'location',
+        timestamp: Date.now()
+      });
+      if (config.conversationMetrics.recentStatusRequests.length > 20) {
+        config.conversationMetrics.recentStatusRequests.shift();
+      }
+      
+      // Send report line by line
+      for (const line of report) {
+        this.bot.chat(line);
+      }
+      return;
+    }
+    
+    // Player location command
+    if (lower.includes('what is my location') || lower.includes('where am i') || lower.includes('my location')) {
+      console.log(`[COMMAND] Player location request by ${username}`);
+      
+      const player = this.bot.players[username];
+      if (!player || !player.entity) {
+        this.bot.chat(`Sorry ${username}, I can't see you right now!`);
+        return;
+      }
+      
+      const snapshot = await this.getBotStatusSnapshot(username);
+      const report = this.formatLocationReport(snapshot, username, player.entity.position);
+      
+      // Track in config for dashboard
+      if (!config.conversationMetrics.recentStatusRequests) {
+        config.conversationMetrics.recentStatusRequests = [];
+      }
+      config.conversationMetrics.recentStatusRequests.push({
+        username,
+        type: 'player_location',
+        timestamp: Date.now()
+      });
+      if (config.conversationMetrics.recentStatusRequests.length > 20) {
+        config.conversationMetrics.recentStatusRequests.shift();
+      }
+      
+      // Send report line by line
+      for (const line of report) {
+        this.bot.chat(line);
+      }
+      return;
+    }
     
     if (lower.startsWith('!status')) {
       this.broadcastEscapeStatus(true);
@@ -16162,6 +16622,129 @@ class ConversationAI {
       return;
     }
     
+    // Dialogue RL commands
+    if (lower.includes('!rl') || lower.includes('rl dialogue')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can control RL settings!");
+        return;
+      }
+      
+      if (lower.includes('stats')) {
+        const stats = this.dialogueRL.getStats();
+        this.bot.chat(`📊 Dialogue RL Stats:`);
+        this.bot.chat(`  Enabled: ${stats.enabled}, Initialized: ${stats.initialized}`);
+        this.bot.chat(`  Total interactions: ${stats.stats.totalInteractions}`);
+        this.bot.chat(`  Success rate: ${stats.successRate}`);
+        this.bot.chat(`  Training data: ${stats.trainingDataSize} examples`);
+        this.bot.chat(`  Scenario stats:`);
+        this.bot.chat(`    Resource: ${stats.stats.scenarioStats.resource_request.count} (${stats.stats.scenarioStats.resource_request.success} success)`);
+        this.bot.chat(`    Combat: ${stats.stats.scenarioStats.combat_command.count} (${stats.stats.scenarioStats.combat_command.success} success)`);
+        this.bot.chat(`    Smalltalk: ${stats.stats.scenarioStats.smalltalk.count} (${stats.stats.scenarioStats.smalltalk.success} success)`);
+        this.bot.chat(`  Actions: ${stats.stats.clarificationsRequested} clarifications, ${stats.stats.rejections} rejections, ${stats.stats.escalations} escalations, ${stats.stats.trustVetoes} trust vetoes`);
+        return;
+      }
+      
+      if (lower.includes('reset')) {
+        this.dialogueRL.resetStats();
+        this.bot.chat("✅ Dialogue RL statistics reset!");
+        return;
+      }
+      
+      if (lower.includes('train')) {
+        await this.dialogueRL.trainModel();
+        this.bot.chat("✅ Dialogue RL model trained!");
+        return;
+      }
+      
+      if (lower.includes('save')) {
+        this.dialogueRL.saveModel();
+        this.bot.chat("✅ Dialogue RL model saved to disk!");
+        return;
+      }
+      
+      if (lower.includes('load')) {
+        await this.dialogueRL.loadModel();
+        this.bot.chat("✅ Dialogue RL model loaded from disk!");
+        return;
+      }
+      
+      this.bot.chat("Usage: !rl dialogue [stats|reset|train|save|load]");
+      return;
+    }
+    
+    // Global RL analytics commands
+    if (lower.startsWith('!rl') && lower.includes('status')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can view RL analytics!");
+        return;
+      }
+      
+      const allMetrics = globalRLAnalytics.getAllMetrics();
+      this.bot.chat("📊 RL Analytics Status:");
+      for (const domainName in allMetrics) {
+        const metrics = allMetrics[domainName];
+        this.bot.chat(`  ${domainName}: Episodes=${metrics.stats.totalInteractions}, AvgReward=${metrics.stats.averageReward.toFixed(2)}, Success=${metrics.successRate}, FallbackActive=${metrics.stats.emergencyFallbackActive}`);
+      }
+      return;
+    }
+    
+    if (lower.startsWith('!rl') && lower.includes('save')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can save RL models!");
+        return;
+      }
+      
+      const domainMatch = message.match(/!rl\s+save\s+(\w+)/i);
+      if (domainMatch) {
+        const domain = domainMatch[1];
+        const snapshot = globalRLAnalytics.exportSnapshot(domain);
+        if (snapshot) {
+          safeWriteJson(`./data/rl_snapshots/${domain}_${Date.now()}.json`, snapshot);
+          this.bot.chat(`✅ Saved ${domain} snapshot to disk!`);
+        } else {
+          this.bot.chat(`❌ Domain ${domain} not found!`);
+        }
+      } else {
+        this.bot.chat("Usage: !rl save <domain>");
+      }
+      return;
+    }
+    
+    if (lower.startsWith('!rl') && lower.includes('reset')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can reset RL stats!");
+        return;
+      }
+      
+      const domainMatch = message.match(/!rl\s+reset\s+(\w+)/i);
+      if (domainMatch) {
+        const domain = domainMatch[1];
+        globalRLAnalytics.resetDomain(domain);
+        this.bot.chat(`✅ Reset statistics for domain: ${domain}`);
+      } else {
+        this.bot.chat("Usage: !rl reset <domain>");
+      }
+      return;
+    }
+    
+    if (lower.startsWith('!rl') && (lower.includes('abtest') || lower.includes('a/b'))) {
+      if (!this.hasTrustLevel(username, 'owner')) {
+        this.bot.chat("Only owner can control A/B testing!");
+        return;
+      }
+      
+      if (lower.includes('on')) {
+        globalRLAnalytics.setABTestingEnabled(true);
+        this.bot.chat(`✅ A/B testing enabled (${(globalRLAnalytics.globalMetrics.abtestPercentage * 100).toFixed(0)}% through fallback)`);
+      } else if (lower.includes('off')) {
+        globalRLAnalytics.setABTestingEnabled(false);
+        this.bot.chat("✅ A/B testing disabled");
+      } else {
+        this.bot.chat(`Usage: !rl abtest on|off (Currently: ${globalRLAnalytics.globalMetrics.abtestingEnabled ? 'ON' : 'OFF'})`);
+      }
+      return;
+    }
+    
     // Projectile & Mace commands
     if (lower.includes('projectile stats') || lower.includes('bow stats')) {
       if (this.bot.combatAI && this.bot.combatAI.projectileAI) {
@@ -16618,6 +17201,209 @@ class ConversationAI {
    return null;
   }
 
+  async getBotStatusSnapshot(username) {
+    const pos = this.bot.entity.position;
+    const hasPreciseAccess = this.hasTrustLevel(username, 'trusted');
+    
+    // Get biome if available
+    let biome = 'unknown';
+    try {
+      const biomeBlock = this.bot.blockAt(pos);
+      if (biomeBlock && biomeBlock.biome) {
+        biome = biomeBlock.biome.name || 'unknown';
+      }
+    } catch (err) {
+      // Biome not available
+    }
+    
+    // Get dimension
+    const dimension = this.bot.game?.dimension || 'unknown';
+    
+    // Get nearby players
+    const nearbyPlayers = getNearbyPlayers(this.bot, 50);
+    
+    // Get nearby mobs
+    let nearbyMobs = [];
+    try {
+      const entities = Object.values(this.bot.entities);
+      nearbyMobs = entities.filter(e => {
+        if (!e.position || e.type !== 'mob') return false;
+        const dist = e.position.distanceTo(pos);
+        return dist < 20;
+      }).map(e => ({
+        name: e.name || e.displayName || 'unknown',
+        distance: Math.round(e.position.distanceTo(pos))
+      }));
+    } catch (err) {
+      // Entities not available
+    }
+    
+    // Get activity
+    const activity = determineBotActivity(this.bot);
+    
+    // Get pathfinder ETA if moving
+    let eta = null;
+    if (this.bot.pathfinder && this.bot.pathfinder.isMoving && this.bot.pathfinder.isMoving()) {
+      try {
+        const goal = this.bot.pathfinder.goal;
+        if (goal && this.bot.pathfinder.getPathTo) {
+          const path = this.bot.pathfinder.getPathTo(goal);
+          if (path && path.cost) {
+            eta = Math.round(path.cost / 4.3); // Convert blocks to seconds (approx walking speed)
+          }
+        }
+      } catch (err) {
+        // Pathfinder info not available
+      }
+    }
+    
+    // Get armor info
+    const armorSlots = this.bot.inventory.slots.slice(5, 9); // Armor slots
+    const armorCount = armorSlots.filter(s => s !== null).length;
+    const armorDurability = armorSlots.filter(s => s !== null).map(s => {
+      if (s.durabilityUsed !== undefined && s.maxDurability !== undefined) {
+        return Math.round(((s.maxDurability - s.durabilityUsed) / s.maxDurability) * 100);
+      }
+      return 100;
+    });
+    const avgArmor = armorDurability.length > 0 
+      ? Math.round(armorDurability.reduce((a, b) => a + b, 0) / armorDurability.length)
+      : 0;
+    
+    // Get active task
+    const activeTask = config.tasks.current ? config.tasks.current.type || 'unknown' : null;
+    
+    return {
+      position: hasPreciseAccess ? {
+        x: Math.round(pos.x),
+        y: Math.round(pos.y),
+        z: Math.round(pos.z)
+      } : null,
+      biome: hasPreciseAccess ? biome : null,
+      dimension: hasPreciseAccess ? dimension : null,
+      activity,
+      nearbyPlayers: nearbyPlayers.map(p => ({
+        name: p.username,
+        distance: Math.round(p.distance)
+      })),
+      nearbyMobs: hasPreciseAccess ? nearbyMobs : null,
+      health: Math.round(this.bot.health),
+      food: typeof this.bot.food === 'number' ? Math.round(this.bot.food) : null,
+      armorEquipped: armorCount,
+      armorDurability: avgArmor,
+      activeTask,
+      eta: hasPreciseAccess ? eta : null,
+      timestamp: Date.now()
+    };
+  }
+
+  formatStatusReport(snapshot, username) {
+    const lines = [];
+    
+    lines.push(`📊 Status Report for ${this.bot.username}`);
+    lines.push(`━━━━━━━━━━━━━━━━━━━━━━`);
+    
+    // Activity
+    lines.push(`🔹 Activity: ${snapshot.activity}`);
+    
+    // Location (only for trusted+)
+    if (snapshot.position) {
+      lines.push(`📍 Location: ${snapshot.position.x}, ${snapshot.position.y}, ${snapshot.position.z}`);
+      if (snapshot.biome) {
+        lines.push(`🌍 Biome: ${snapshot.biome}`);
+      }
+      if (snapshot.dimension) {
+        lines.push(`🌐 Dimension: ${snapshot.dimension}`);
+      }
+    } else {
+      lines.push(`📍 Location: [Restricted - Trusted+ only]`);
+    }
+    
+    // Health and food
+    lines.push(`❤️  Health: ${snapshot.health}/20`);
+    if (snapshot.food !== null) {
+      lines.push(`🍖 Food: ${snapshot.food}/20`);
+    }
+    
+    // Armor
+    lines.push(`🛡️  Armor: ${snapshot.armorEquipped}/4 pieces (${snapshot.armorDurability}% durability)`);
+    
+    // Active task
+    if (snapshot.activeTask) {
+      lines.push(`📋 Task: ${snapshot.activeTask}`);
+    }
+    
+    // ETA (only for trusted+)
+    if (snapshot.eta !== null) {
+      lines.push(`⏱️  ETA: ~${snapshot.eta}s`);
+    }
+    
+    // Nearby players
+    if (snapshot.nearbyPlayers.length > 0) {
+      const playerList = snapshot.nearbyPlayers.map(p => `${p.name} (${p.distance}m)`).join(', ');
+      lines.push(`👥 Nearby players: ${playerList}`);
+    } else {
+      lines.push(`👥 Nearby players: None`);
+    }
+    
+    // Nearby mobs (only for trusted+)
+    if (snapshot.nearbyMobs) {
+      if (snapshot.nearbyMobs.length > 0) {
+        const mobList = snapshot.nearbyMobs.slice(0, 3).map(m => `${m.name} (${m.distance}m)`).join(', ');
+        lines.push(`🐺 Nearby mobs: ${mobList}${snapshot.nearbyMobs.length > 3 ? ` +${snapshot.nearbyMobs.length - 3} more` : ''}`);
+      }
+    }
+    
+    return lines;
+  }
+
+  formatLocationReport(snapshot, username, playerPos = null) {
+    const lines = [];
+    
+    // If requesting own location
+    if (playerPos) {
+      lines.push(`📍 Your Location, ${username}`);
+      lines.push(`━━━━━━━━━━━━━━━━━━━━━━`);
+      lines.push(`Coordinates: ${Math.round(playerPos.x)}, ${Math.round(playerPos.y)}, ${Math.round(playerPos.z)}`);
+      
+      // Add bot's location relative to player (only for trusted+)
+      if (snapshot.position) {
+        const dx = snapshot.position.x - playerPos.x;
+        const dy = snapshot.position.y - playerPos.y;
+        const dz = snapshot.position.z - playerPos.z;
+        const dist = Math.round(Math.sqrt(dx*dx + dy*dy + dz*dz));
+        
+        lines.push(`📏 Distance to me: ${dist} blocks`);
+        
+        // Cardinal direction
+        const angle = Math.atan2(dz, dx);
+        const directions = ['East', 'Southeast', 'South', 'Southwest', 'West', 'Northwest', 'North', 'Northeast'];
+        const dirIndex = Math.round((angle / Math.PI) * 4 + 4) % 8;
+        lines.push(`🧭 Direction: I'm ${directions[dirIndex]} of you`);
+      }
+    } else {
+      // Requesting bot location
+      lines.push(`📍 My Location`);
+      lines.push(`━━━━━━━━━━━━━━━━━━━━━━`);
+      
+      if (snapshot.position) {
+        lines.push(`Coordinates: ${snapshot.position.x}, ${snapshot.position.y}, ${snapshot.position.z}`);
+        if (snapshot.biome) {
+          lines.push(`Biome: ${snapshot.biome}`);
+        }
+        if (snapshot.dimension) {
+          lines.push(`Dimension: ${snapshot.dimension}`);
+        }
+        lines.push(`Activity: ${snapshot.activity}`);
+      } else {
+        lines.push(`[Restricted - Trusted+ only]`);
+        lines.push(`Ask an admin for access to location data.`);
+      }
+    }
+    
+    return lines;
+  }
+
   extractItem(message) {
     // Extract item name from various patterns
     const patterns = [
@@ -16756,42 +17542,29 @@ class ConversationAI {
   }
 
   parseResourceTask(message) {
-    const quantities = {
-      'diamond': 64,
-      'iron': 64,
-      'gold': 32,
-      'emerald': 32,
-      'stone': 128,
-      'cobblestone': 128,
-      'oak log': 64,
-      'spruce log': 64,
-      'birch log': 64
-    };
+    const match = message.match(/(?:get me|gather|mine|fish for)\s+(\d+)?\s*([a-z_]+)/i);
+    if (!match) return null;
 
-    for (const [item, defaultQty] of Object.entries(quantities)) {
-      if (message.toLowerCase().includes(item)) {
-        const qtyMatch = message.match(/(\d+)\s+/);
-        const quantity = qtyMatch ? parseInt(qtyMatch[1]) : defaultQty;
-        return { item, quantity };
-      }
-    }
-    return null;
+    return {
+      amount: parseInt(match[1]) || 1,
+      item: match[2]
+    };
   }
 
   async executeResourceTask(task) {
-    if (!task) return;
-    const { item, quantity } = task;
-    this.bot.chat(`🔨 Mining ${quantity}x ${item}...`);
+     if (!task || !task.item) return false;
 
-    if (this.bot.mining) {
-      await this.bot.mining.collectResource(item, quantity).catch(err => {
-        console.log(`[RESOURCE] Mining error: ${err.message}`);
-        this.bot.chat(`❌ Failed to mine ${item}: ${err.message}`);
-      });
-    } else {
-      this.bot.chat("Mining module not available!");
-    }
-  }
+     try {
+       if (this.itemHunter) {
+         return await this.itemHunter.findItem(task.item, task.amount);
+       }
+       return false;
+     } catch (error) {
+       console.log(`[EXEC] Resource task failed: ${error.message}`);
+       this.bot.chat(`❌ Failed to get ${task.item}: ${error.message}`);
+       return false;
+     }
+   }
 
   findNearestPlayer() {
     const players = Object.values(this.bot.entities).filter(e =>
@@ -16858,6 +17631,836 @@ class ConversationAI {
       safeWriteFile('./data/whitelist.json', JSON.stringify(config.whitelist, null, 2));
       this.bot.chat(`✅ Set ${targetPlayer}'s trust level to ${trustLevel}`);
     }
+  }
+}
+
+// === DIALOGUE REINFORCEMENT LEARNING ===
+class DialogueRL {
+  constructor(bot) {
+    this.bot = bot;
+    this.enabled = config.neural && config.neural.available;
+    this.model = null;
+    this.replayBuffer = [];
+    this.maxBufferSize = 1000;
+    this.trainingData = [];
+    this.stats = {
+      totalInteractions: 0,
+      successfulCommands: 0,
+      failedCommands: 0,
+      clarificationsRequested: 0,
+      rejections: 0,
+      escalations: 0,
+      trustVetoes: 0,
+      scenarioStats: {
+        resource_request: { count: 0, success: 0 },
+        combat_command: { count: 0, success: 0 },
+        smalltalk: { count: 0, success: 0 }
+      }
+    };
+    this.recentSuccesses = [];
+    this.maxRecentSuccesses = 20;
+    this.lastTrainingTime = 0;
+    this.trainingInterval = 60000; // Train every 60 seconds
+    this.confidenceThreshold = 0.7; // Below this, use fallback
+    this.initialized = false;
+    
+    this.initializeModel();
+  }
+  
+  initializeModel() {
+    try {
+      // Initialize dialogue neural network if available
+      if (this.enabled && config.neural && config.neural.manager) {
+        // Network for dialogue action selection: 
+        // Input: [trustLevel, confidence, intentVector (5d), successRate, recentSuccess]
+        // Output: 7 possible actions
+        const inputSize = 13; // 1 trust + 1 confidence + 5 intent + 1 success rate + 5 recent history
+        const outputSize = 7; // 7 possible actions
+        
+        if (!config.neural.dialogue) {
+          config.neural.dialogue = config.neural.manager.createNetwork('dialogue', inputSize, outputSize);
+        }
+        this.model = config.neural.dialogue;
+        this.initialized = true;
+        console.log('[DIALOGUE_RL] Dialogue RL model initialized');
+      } else {
+        console.log('[DIALOGUE_RL] RL disabled or not available, using deterministic fallback');
+      }
+    } catch (error) {
+      console.error('[DIALOGUE_RL] Error initializing model:', error);
+      this.initialized = false;
+    }
+  }
+  
+  // Encode dialogue state into a feature vector
+  encodeState(username, message, trustLevel, messageType) {
+    try {
+      const features = [];
+      
+      // 1. Trust level (normalized: 0-3 / 3)
+      const trustLevels = { guest: 0, trusted: 1, admin: 2, owner: 3 };
+      const trustValue = (trustLevels[trustLevel] || 0) / 3.0;
+      features.push(trustValue);
+      
+      // 2. Message length normalized (as proxy for clarity)
+      const lengthNormalized = Math.min(1.0, message.length / 100.0);
+      features.push(lengthNormalized);
+      
+      // 3-7. Intent vector (5D) - classify message intent
+      const intentVector = this.encodeIntent(message, messageType);
+      features.push(...intentVector);
+      
+      // 8. Success rate from recent history
+      const successRate = this.recentSuccesses.length > 0 
+        ? this.recentSuccesses.filter(s => s.success).length / this.recentSuccesses.length
+        : 0.5;
+      features.push(Math.min(1.0, successRate));
+      
+      // 9-13. Recent success history (last 5 interactions, normalized)
+      const recentCount = Math.min(5, this.recentSuccesses.length);
+      for (let i = 0; i < 5; i++) {
+        if (i < recentCount) {
+          features.push(this.recentSuccesses[this.recentSuccesses.length - 1 - i].success ? 1.0 : 0.0);
+        } else {
+          features.push(0.5); // Neutral for missing history
+        }
+      }
+      
+      return features;
+    } catch (error) {
+      console.error('[DIALOGUE_RL] Error encoding state:', error);
+      return Array(13).fill(0.5); // Default fallback
+    }
+  }
+  
+  // Encode message intent into 5D vector
+  encodeIntent(message, messageType) {
+    const intent = [0, 0, 0, 0, 0]; // [resource, combat, clarification, help, smalltalk]
+    const lower = message.toLowerCase();
+    
+    // Resource request intent
+    if (lower.includes('find') || lower.includes('mine') || lower.includes('collect') || lower.includes('get')) {
+      intent[0] = 1.0;
+    }
+    
+    // Combat command intent
+    if (lower.includes('attack') || lower.includes('defend') || lower.includes('combat') || lower.includes('fight')) {
+      intent[1] = 1.0;
+    }
+    
+    // Clarification/confusion intent
+    if (lower.includes('?') || lower.includes('what') || lower.includes('how') || lower.includes('help')) {
+      intent[2] = 0.8;
+    }
+    
+    // Help request intent
+    if (lower.includes('help') || lower.includes('need') || lower.includes('emergency')) {
+      intent[3] = 1.0;
+    }
+    
+    // Smalltalk intent
+    if (lower.includes('hello') || lower.includes('hi') || lower.includes('thanks') || lower.includes('bye')) {
+      intent[4] = 1.0;
+    }
+    
+    // Normalize (convert to probabilities, not all-or-nothing)
+    const sum = intent.reduce((a, b) => a + b, 0);
+    if (sum > 0) {
+      return intent.map(v => v / (sum + 0.1));
+    }
+    
+    return intent;
+  }
+  
+  // Select action based on RL network
+  async selectAction(username, message, trustLevel, messageType, conversationAI) {
+    if (!this.enabled || !this.initialized) {
+      return { action: 'fall_back_parser', confidence: 0.0 };
+    }
+    
+    try {
+      const state = this.encodeState(username, message, trustLevel, messageType);
+      
+      // Query neural network for action probabilities
+      const actionProbabilities = await safeNeuralPredict('dialogue', state, null);
+      
+      if (!actionProbabilities) {
+        return { action: 'fall_back_parser', confidence: 0.0 };
+      }
+      
+      // Map output to action
+      const actions = [
+        'execute_parsed_command',
+        'request_clarification',
+        'reject_request',
+        'delegate_to_module',
+        'escalate_to_owner',
+        'fall_back_parser',
+        'noop'
+      ];
+      
+      // Ensure actionProbabilities is iterable
+      const probs = Array.isArray(actionProbabilities) ? actionProbabilities : [actionProbabilities];
+      
+      // Find best action
+      let bestAction = 'fall_back_parser';
+      let bestConfidence = 0;
+      
+      for (let i = 0; i < Math.min(probs.length, actions.length); i++) {
+        const prob = Math.max(0, Math.min(1, parseFloat(probs[i]) || 0));
+        if (prob > bestConfidence) {
+          bestConfidence = prob;
+          bestAction = actions[i];
+        }
+      }
+      
+      return {
+        action: bestAction,
+        confidence: bestConfidence,
+        probabilities: probs.slice(0, actions.length)
+      };
+    } catch (error) {
+      console.error('[DIALOGUE_RL] Error selecting action:', error);
+      return { action: 'fall_back_parser', confidence: 0.0 };
+    }
+  }
+  
+  // Record outcome for training
+  recordOutcome(username, message, action, outcome, messageType = 'unknown') {
+    try {
+      const success = outcome.success || false;
+      const reward = this.calculateReward(outcome, action, message);
+      
+      // Update stats
+      this.stats.totalInteractions++;
+      if (success) {
+        this.stats.successfulCommands++;
+      } else {
+        this.stats.failedCommands++;
+      }
+      
+      if (action === 'request_clarification') {
+        this.stats.clarificationsRequested++;
+      } else if (action === 'reject_request') {
+        this.stats.rejections++;
+      } else if (action === 'escalate_to_owner') {
+        this.stats.escalations++;
+      }
+      
+      // Track scenario stats
+      if (this.stats.scenarioStats[messageType]) {
+        this.stats.scenarioStats[messageType].count++;
+        if (success) {
+          this.stats.scenarioStats[messageType].success++;
+        }
+      }
+      
+      // Record in recent successes
+      this.recentSuccesses.push({ success, timestamp: Date.now(), messageType });
+      if (this.recentSuccesses.length > this.maxRecentSuccesses) {
+        this.recentSuccesses.shift();
+      }
+      
+      // Store for training
+      this.trainingData.push({
+        message,
+        action,
+        reward,
+        timestamp: Date.now(),
+        messageType,
+        username
+      });
+      
+      console.log(`[DIALOGUE_RL] Recorded outcome: action=${action}, success=${success}, reward=${reward.toFixed(2)}`);
+    } catch (error) {
+      console.error('[DIALOGUE_RL] Error recording outcome:', error);
+    }
+  }
+  
+  // Calculate reward signal
+  calculateReward(outcome, action, message) {
+    let reward = 0;
+    
+    if (outcome.success) {
+      // Reward successful execution
+      if (action === 'execute_parsed_command') {
+        reward = 1.0;
+      } else if (action === 'request_clarification') {
+        reward = 0.3; // Less reward for clarification
+      } else if (action === 'delegate_to_module') {
+        reward = 0.7; // Moderate reward for delegation
+      }
+    } else {
+      // Penalize failures
+      reward = -0.5;
+    }
+    
+    // Penalize unauthorized attempts
+    if (outcome.trustViolation) {
+      reward -= 1.0;
+    }
+    
+    // Penalize redundant clarifications
+    if (action === 'request_clarification' && outcome.redundantClarification) {
+      reward -= 0.5;
+    }
+    
+    // Bonus for quick, successful interaction
+    if (outcome.success && outcome.responseTime && outcome.responseTime < 500) {
+      reward += 0.2;
+    }
+    
+    return reward;
+  }
+  
+  // Record trust veto (when RL decision would violate trust level)
+  recordTrustVeto(action, trustLevel, requiredLevel) {
+    this.stats.trustVetoes++;
+    console.log(`[DIALOGUE_RL] Trust veto: action=${action} requires=${requiredLevel}, user=${trustLevel}`);
+  }
+  
+  // Train the model periodically
+  async trainModel() {
+    if (!this.enabled || !this.initialized || this.trainingData.length === 0) {
+      return;
+    }
+    
+    // Only train if enough time has passed
+    const now = Date.now();
+    if (now - this.lastTrainingTime < this.trainingInterval) {
+      return;
+    }
+    
+    try {
+      // Prepare training data in batch
+      const batchSize = Math.min(32, this.trainingData.length);
+      const batch = this.trainingData.slice(-batchSize);
+      
+      const trainingExamples = batch.map(data => {
+        // Create target vector with reward
+        const target = Array(7).fill(0);
+        const actionIndex = [
+          'execute_parsed_command',
+          'request_clarification',
+          'reject_request',
+          'delegate_to_module',
+          'escalate_to_owner',
+          'fall_back_parser',
+          'noop'
+        ].indexOf(data.action);
+        
+        if (actionIndex >= 0) {
+          target[actionIndex] = Math.max(0, Math.min(1, (data.reward + 1) / 2)); // Normalize reward to [0,1]
+        }
+        
+        return {
+          input: data.state || Array(13).fill(0.5),
+          output: target
+        };
+      });
+      
+      // Train the network
+      const success = await safeNeuralTrain('dialogue', trainingExamples, {
+        iterations: 100,
+        errorThresh: 0.01
+      });
+      
+      if (success) {
+        console.log('[DIALOGUE_RL] Model trained successfully on', batchSize, 'examples');
+        this.lastTrainingTime = now;
+        
+        // Periodically save model
+        if (now % 300000 < this.trainingInterval) { // Save every ~5 minutes
+          safeNeuralSave('dialogue', './models/dialogue_model.json');
+        }
+      }
+    } catch (error) {
+      console.error('[DIALOGUE_RL] Error training model:', error);
+    }
+  }
+  
+  // Get RL stats
+  getStats() {
+    return {
+      enabled: this.enabled,
+      initialized: this.initialized,
+      stats: this.stats,
+      trainingDataSize: this.trainingData.length,
+      successRate: this.stats.totalInteractions > 0 
+        ? (this.stats.successfulCommands / this.stats.totalInteractions * 100).toFixed(2) + '%'
+        : 'N/A'
+    };
+  }
+  
+  // Reset RL system
+  resetStats() {
+    this.stats = {
+      totalInteractions: 0,
+      successfulCommands: 0,
+      failedCommands: 0,
+      clarificationsRequested: 0,
+      rejections: 0,
+      escalations: 0,
+      trustVetoes: 0,
+      scenarioStats: {
+        resource_request: { count: 0, success: 0 },
+        combat_command: { count: 0, success: 0 },
+        smalltalk: { count: 0, success: 0 }
+      }
+    };
+    this.recentSuccesses = [];
+    this.trainingData = [];
+    console.log('[DIALOGUE_RL] Statistics reset');
+  }
+  
+  // Load persisted model
+  async loadModel() {
+    try {
+      await safeNeuralLoad('dialogue', './models/dialogue_model.json');
+      console.log('[DIALOGUE_RL] Dialogue model loaded from disk');
+    } catch (error) {
+      console.log('[DIALOGUE_RL] No persisted dialogue model found, starting fresh');
+    }
+  }
+  
+  // Save model to disk
+  saveModel() {
+    if (this.initialized) {
+      safeNeuralSave('dialogue', './models/dialogue_model.json');
+      console.log('[DIALOGUE_RL] Dialogue model saved to disk');
+    }
+  }
+}
+
+// === RL ANALYTICS MANAGER ===
+// Manages per-domain RL metrics, analytics aggregation, A/B testing, and emergency fallback
+class RLAnalyticsManager {
+  constructor() {
+    this.domains = {}; // domain -> { metrics, stats, logs, rewardHistory, confidenceHistory }
+    this.globalMetrics = {
+      abtestingEnabled: false,
+      abtestPercentage: 0.1, // 10% of episodes through fallback
+      emergencyFallbackThreshold: -0.3, // Average reward below this triggers fallback
+      enableEmergencyFallback: true,
+      rewardWindowSize: 50 // Rolling average window
+    };
+    this.performanceHistory = {}; // Track improvement over time
+    this.learningLog = []; // Recent learning events
+    this.maxLearningLogSize = 1000;
+    this.wsServer = null; // Set by dashboard
+    this.initialized = false;
+    
+    this.initializePerformanceTracking();
+  }
+  
+  initializePerformanceTracking() {
+    // Load performance history from disk
+    try {
+      const perfData = safeReadJson('./data/rl_performance.json', {});
+      this.performanceHistory = perfData;
+      console.log('[RL_ANALYTICS] Performance history loaded');
+    } catch (err) {
+      console.log('[RL_ANALYTICS] Starting with fresh performance history');
+    }
+    this.initialized = true;
+  }
+  
+  // Register a new RL domain for analytics tracking
+  registerDomain(domainName, initialModel = null) {
+    if (this.domains[domainName]) {
+      return; // Already registered
+    }
+    
+    this.domains[domainName] = {
+      name: domainName,
+      metrics: {
+        currentEpsilon: 0.5,
+        modelHash: this.calculateModelHash(initialModel),
+        bufferFillLevel: 0,
+        experienceCount: 0,
+        maxBufferSize: 1000
+      },
+      stats: {
+        totalEpisodes: 0,
+        successCount: 0,
+        failureCount: 0,
+        averageReward: 0,
+        rewardTrend: [], // Last N rewards
+        confidenceScores: [],
+        winStreak: 0,
+        lossStreak: 0,
+        maxWinStreak: 0,
+        maxLossStreak: 0,
+        emergencyFallbackActive: false
+      },
+      logs: {
+        recentDecisions: [], // Last 100 decisions
+        maxLogSize: 100,
+        highRewardEvents: [],
+        largeLossEvents: [],
+        fallbackEvents: []
+      },
+      timestamps: {
+        created: Date.now(),
+        lastUpdate: Date.now(),
+        lastTrain: null,
+        lastSave: null
+      }
+    };
+    
+    // Initialize performance history for this domain
+    if (!this.performanceHistory[domainName]) {
+      this.performanceHistory[domainName] = {
+        snapshots: [],
+        improvement: 0,
+        lastImprovement: 0
+      };
+    }
+    
+    console.log(`[RL_ANALYTICS] Registered domain: ${domainName}`);
+  }
+  
+  // Calculate hash of model for version tracking
+  calculateModelHash(model) {
+    if (!model) return 'uninitialized';
+    try {
+      const json = typeof model === 'string' ? model : JSON.stringify(model).substring(0, 1000);
+      let hash = 0;
+      for (let i = 0; i < json.length; i++) {
+        const char = json.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      return Math.abs(hash).toString(16);
+    } catch (err) {
+      return 'error';
+    }
+  }
+  
+  // Record a decision/episode outcome for analytics
+  recordEpisode(domainName, outcome = {}) {
+    if (!this.domains[domainName]) {
+      this.registerDomain(domainName);
+    }
+    
+    const domain = this.domains[domainName];
+    const { success = false, reward = 0, confidence = 0.5, action = 'unknown' } = outcome;
+    
+    // Update stats
+    domain.stats.totalEpisodes++;
+    if (success) {
+      domain.stats.successCount++;
+      domain.stats.winStreak++;
+      domain.stats.lossStreak = 0;
+    } else {
+      domain.stats.failureCount++;
+      domain.stats.lossStreak++;
+      domain.stats.winStreak = 0;
+    }
+    
+    // Track streaks
+    if (domain.stats.winStreak > domain.stats.maxWinStreak) {
+      domain.stats.maxWinStreak = domain.stats.winStreak;
+    }
+    if (domain.stats.lossStreak > domain.stats.maxLossStreak) {
+      domain.stats.maxLossStreak = domain.stats.lossStreak;
+    }
+    
+    // Update reward trend
+    domain.stats.rewardTrend.push(reward);
+    if (domain.stats.rewardTrend.length > this.globalMetrics.rewardWindowSize) {
+      domain.stats.rewardTrend.shift();
+    }
+    
+    // Calculate rolling average reward
+    const avgReward = domain.stats.rewardTrend.reduce((a, b) => a + b, 0) / domain.stats.rewardTrend.length;
+    domain.stats.averageReward = parseFloat(avgReward.toFixed(3));
+    
+    // Track confidence scores
+    domain.stats.confidenceScores.push(confidence);
+    if (domain.stats.confidenceScores.length > 50) {
+      domain.stats.confidenceScores.shift();
+    }
+    
+    // Log decision
+    domain.logs.recentDecisions.push({
+      timestamp: Date.now(),
+      success,
+      reward,
+      confidence,
+      action,
+      lossStreak: domain.stats.lossStreak,
+      winStreak: domain.stats.winStreak
+    });
+    if (domain.logs.recentDecisions.length > domain.logs.maxLogSize) {
+      domain.logs.recentDecisions.shift();
+    }
+    
+    // Check for significant events
+    this.checkSignificantEvents(domainName, outcome);
+    
+    // Check for emergency fallback trigger
+    if (this.globalMetrics.enableEmergencyFallback) {
+      this.checkEmergencyFallback(domainName);
+    }
+    
+    domain.timestamps.lastUpdate = Date.now();
+  }
+  
+  // Check for high reward or large loss events
+  checkSignificantEvents(domainName, outcome) {
+    const domain = this.domains[domainName];
+    const { reward = 0 } = outcome;
+    
+    // High reward event (above 90th percentile)
+    if (domain.stats.rewardTrend.length > 10) {
+      const sorted = [...domain.stats.rewardTrend].sort((a, b) => a - b);
+      const p90 = sorted[Math.floor(sorted.length * 0.9)];
+      
+      if (reward > p90) {
+        const event = {
+          timestamp: Date.now(),
+          type: 'high_reward',
+          reward,
+          p90
+        };
+        domain.logs.highRewardEvents.push(event);
+        if (domain.logs.highRewardEvents.length > 50) {
+          domain.logs.highRewardEvents.shift();
+        }
+        this.logLearningEvent(`HIGH_REWARD@${domainName}: ${reward.toFixed(2)}`);
+        this.broadcastEvent('high_reward', { domain: domainName, reward, p90 });
+      }
+    }
+    
+    // Large loss event (below 10th percentile and negative)
+    if (domain.stats.rewardTrend.length > 10) {
+      const sorted = [...domain.stats.rewardTrend].sort((a, b) => a - b);
+      const p10 = sorted[Math.floor(sorted.length * 0.1)];
+      
+      if (reward < p10 && reward < -0.3) {
+        const event = {
+          timestamp: Date.now(),
+          type: 'large_loss',
+          reward,
+          p10
+        };
+        domain.logs.largeLossEvents.push(event);
+        if (domain.logs.largeLossEvents.length > 50) {
+          domain.logs.largeLossEvents.shift();
+        }
+        this.logLearningEvent(`LARGE_LOSS@${domainName}: ${reward.toFixed(2)}`);
+        this.broadcastEvent('large_loss', { domain: domainName, reward, p10 });
+      }
+    }
+  }
+  
+  // Check if emergency fallback should be triggered
+  checkEmergencyFallback(domainName) {
+    const domain = this.domains[domainName];
+    
+    // Need at least 20 episodes to evaluate
+    if (domain.stats.totalEpisodes < 20) return;
+    
+    // Check if average reward is below threshold
+    if (domain.stats.averageReward < this.globalMetrics.emergencyFallbackThreshold) {
+      if (!domain.stats.emergencyFallbackActive) {
+        domain.stats.emergencyFallbackActive = true;
+        const event = {
+          timestamp: Date.now(),
+          type: 'emergency_fallback_activated',
+          avgReward: domain.stats.averageReward,
+          threshold: this.globalMetrics.emergencyFallbackThreshold
+        };
+        domain.logs.fallbackEvents.push(event);
+        this.logLearningEvent(`EMERGENCY_FALLBACK@${domainName}: avg_reward=${domain.stats.averageReward.toFixed(2)}`);
+        this.broadcastEvent('emergency_fallback', { 
+          domain: domainName, 
+          avgReward: domain.stats.averageReward,
+          action: 'disabled'
+        });
+      }
+    } else if (domain.stats.averageReward > (this.globalMetrics.emergencyFallbackThreshold + 0.2)) {
+      if (domain.stats.emergencyFallbackActive) {
+        domain.stats.emergencyFallbackActive = false;
+        const event = {
+          timestamp: Date.now(),
+          type: 'emergency_fallback_recovered',
+          avgReward: domain.stats.averageReward
+        };
+        domain.logs.fallbackEvents.push(event);
+        this.logLearningEvent(`FALLBACK_RECOVERED@${domainName}: avg_reward=${domain.stats.averageReward.toFixed(2)}`);
+        this.broadcastEvent('fallback_recovered', { domain: domainName, avgReward: domain.stats.averageReward });
+      }
+    }
+  }
+  
+  // Get metrics for a specific domain
+  getDomainMetrics(domainName) {
+    const domain = this.domains[domainName];
+    if (!domain) return null;
+    
+    return {
+      name: domainName,
+      metrics: domain.metrics,
+      stats: domain.stats,
+      performanceHistory: this.performanceHistory[domainName],
+      isInEmergencyFallback: domain.stats.emergencyFallbackActive,
+      averageReward: domain.stats.averageReward,
+      successRate: domain.stats.totalEpisodes > 0 
+        ? (domain.stats.successCount / domain.stats.totalEpisodes * 100).toFixed(2) + '%'
+        : 'N/A'
+    };
+  }
+  
+  // Get all domain metrics
+  getAllMetrics() {
+    const result = {};
+    for (const domainName in this.domains) {
+      result[domainName] = this.getDomainMetrics(domainName);
+    }
+    return result;
+  }
+  
+  // Get recent decisions for a domain
+  getRecentLogs(domainName, limit = 50) {
+    const domain = this.domains[domainName];
+    if (!domain) return [];
+    return domain.logs.recentDecisions.slice(-limit);
+  }
+  
+  // Get all recent learning events
+  getLearningEvents(limit = 50) {
+    return this.learningLog.slice(-limit);
+  }
+  
+  // Log a learning event
+  logLearningEvent(message) {
+    const event = {
+      timestamp: Date.now(),
+      message
+    };
+    this.learningLog.push(event);
+    if (this.learningLog.length > this.maxLearningLogSize) {
+      this.learningLog.shift();
+    }
+    
+    // Also append to learning.log file
+    try {
+      const logLine = `[${new Date().toISOString()}] ${message}\n`;
+      require('fs').appendFileSync('./logs/learning.log', logLine);
+    } catch (err) {
+      // Ignore file errors
+    }
+  }
+  
+  // Broadcast event via WebSocket
+  broadcastEvent(eventType, data) {
+    if (!this.wsServer) return;
+    
+    try {
+      const message = JSON.stringify({
+        type: 'rl_event',
+        eventType,
+        data,
+        timestamp: Date.now()
+      });
+      
+      // Send to all connected clients
+      if (this.wsServer.clients) {
+        this.wsServer.clients.forEach(client => {
+          if (client.readyState === 1) { // OPEN
+            try {
+              client.send(message);
+            } catch (err) {
+              // Ignore send errors
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.error('[RL_ANALYTICS] Broadcast error:', err.message);
+    }
+  }
+  
+  // Save performance metrics to disk
+  savePerformanceMetrics() {
+    try {
+      // Update performance snapshots with current metrics
+      for (const domainName in this.domains) {
+        const domain = this.domains[domainName];
+        if (!this.performanceHistory[domainName]) {
+          this.performanceHistory[domainName] = { snapshots: [], improvement: 0 };
+        }
+        
+        this.performanceHistory[domainName].snapshots.push({
+          timestamp: Date.now(),
+          stats: domain.stats
+        });
+        
+        // Keep only last 100 snapshots
+        if (this.performanceHistory[domainName].snapshots.length > 100) {
+          this.performanceHistory[domainName].snapshots.shift();
+        }
+      }
+      
+      safeWriteJson('./data/rl_performance.json', this.performanceHistory);
+      console.log('[RL_ANALYTICS] Performance metrics saved');
+    } catch (err) {
+      console.error('[RL_ANALYTICS] Error saving performance metrics:', err);
+    }
+  }
+  
+  // Toggle A/B testing
+  setABTestingEnabled(enabled) {
+    this.globalMetrics.abtestingEnabled = enabled;
+    console.log(`[RL_ANALYTICS] A/B testing ${enabled ? 'enabled' : 'disabled'}`);
+    this.logLearningEvent(`ABTEST_${enabled ? 'ON' : 'OFF'}`);
+  }
+  
+  // Should this episode use fallback? (for A/B testing)
+  shouldUseFallback() {
+    if (!this.globalMetrics.abtestingEnabled) return false;
+    return Math.random() < this.globalMetrics.abtestPercentage;
+  }
+  
+  // Reset domain statistics
+  resetDomain(domainName) {
+    if (this.domains[domainName]) {
+      const domain = this.domains[domainName];
+      domain.stats = {
+        totalEpisodes: 0,
+        successCount: 0,
+        failureCount: 0,
+        averageReward: 0,
+        rewardTrend: [],
+        confidenceScores: [],
+        winStreak: 0,
+        lossStreak: 0,
+        maxWinStreak: 0,
+        maxLossStreak: 0,
+        emergencyFallbackActive: false
+      };
+      domain.logs.recentDecisions = [];
+      console.log(`[RL_ANALYTICS] Domain reset: ${domainName}`);
+      this.logLearningEvent(`DOMAIN_RESET@${domainName}`);
+    }
+  }
+  
+  // Export analytics snapshot
+  exportSnapshot(domainName) {
+    const domain = this.domains[domainName];
+    if (!domain) return null;
+    
+    return {
+      domain: domainName,
+      timestamp: Date.now(),
+      metrics: domain.metrics,
+      stats: domain.stats,
+      recentLogs: domain.logs.recentDecisions.slice(-20),
+      highRewardEvents: domain.logs.highRewardEvents.slice(-10),
+      largeLossEvents: domain.logs.largeLossEvents.slice(-10)
+    };
   }
 }
 
@@ -21674,10 +23277,22 @@ const dashboardHTML = `
     
     <div class="panel">
       <h2>🤖 Bot Status</h2>
+      <div class="stat"><span>Activity:</span><span id="botActivity">idle</span></div>
       <div class="stat"><span>Health:</span><span id="health">20</span></div>
+      <div class="stat"><span>Food:</span><span id="food">20</span></div>
       <div class="stat"><span>Position:</span><span id="position">0, 0, 0</span></div>
+      <div class="stat"><span>Dimension:</span><span id="dimension">unknown</span></div>
       <div class="stat"><span>Current Task:</span><span id="task">Idle</span></div>
+      <div class="stat"><span>Nearby Players:</span><span id="nearbyPlayers">0</span></div>
       <div class="stat"><span>Inventory:</span><span id="inventory">Empty</span></div>
+    </div>
+    
+    <div class="panel">
+      <h2>📊 Status Requests</h2>
+      <div class="stat"><span>Total Requests:</span><span id="statusRequestCount">0</span></div>
+      <div id="statusRequestList" style="margin-top: 10px; max-height: 200px; overflow-y: auto; font-size: 12px;">
+        <em>No recent status requests</em>
+      </div>
     </div>
     
     <div class="panel">
@@ -22168,10 +23783,42 @@ const dashboardHTML = `
         document.getElementById('dupePlugins').textContent = d.dupe.pluginsAnalyzed;
         document.getElementById('dupeExploits').textContent = d.dupe.activeExploits;
         
-        document.getElementById('health').textContent = d.bot.health;
-        document.getElementById('position').textContent = d.bot.position;
+        // Update bot status
+        if (d.botStatus) {
+          document.getElementById('botActivity').textContent = d.botStatus.activity || 'idle';
+          document.getElementById('health').textContent = d.botStatus.health || 20;
+          document.getElementById('food').textContent = d.botStatus.food || 20;
+          document.getElementById('position').textContent = d.botStatus.position 
+            ? \`\${d.botStatus.position.x}, \${d.botStatus.position.y}, \${d.botStatus.position.z}\`
+            : 'Unknown';
+          document.getElementById('dimension').textContent = d.botStatus.dimension || 'unknown';
+          document.getElementById('nearbyPlayers').textContent = d.botStatus.nearbyPlayers?.length || 0;
+        } else {
+          // Fallback to old format
+          document.getElementById('health').textContent = d.bot.health;
+          document.getElementById('position').textContent = d.bot.position;
+        }
         document.getElementById('task').textContent = d.bot.task || 'Idle';
         document.getElementById('inventory').textContent = d.bot.inventory;
+        
+        // Update status requests
+        if (d.conversation && d.conversation.recentStatusRequests) {
+          const requests = d.conversation.recentStatusRequests;
+          document.getElementById('statusRequestCount').textContent = requests.length;
+          
+          if (requests.length > 0) {
+            document.getElementById('statusRequestList').innerHTML = requests.slice(-10).reverse().map(req => {
+              const timeAgo = Math.floor((Date.now() - req.timestamp) / 1000);
+              const typeEmoji = req.type === 'status' ? '📊' : req.type === 'location' ? '📍' : '🗺️';
+              return \`<div style="margin: 5px 0; padding: 5px; background: #111; border-left: 2px solid #0f0;">
+                \${typeEmoji} <strong>\${req.username}</strong> - \${req.type}<br>
+                <small style="color: #888;">\${timeAgo}s ago</small>
+              </div>\`;
+            }).join('');
+          } else {
+            document.getElementById('statusRequestList').innerHTML = '<em>No recent status requests</em>';
+          }
+        }
         
         // Update home base
         if (d.homeBase) {
@@ -22937,6 +24584,7 @@ let globalSwarmCoordinator = null;
 let globalSupplyChainManager = null;
 let globalIntelligenceDB = null;
 let globalBaseMonitor = null;
+let globalRLAnalytics = new RLAnalyticsManager();
 let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
 let globalSchematicLoader = new SchematicLoader();
@@ -23145,8 +24793,24 @@ http.createServer((req, res) => {
         avgResponseTime: config.conversationMetrics.avgResponseTime,
         responseRate: config.conversationMetrics.messagesReceived > 0
           ? ((config.conversationMetrics.messagesResponded / config.conversationMetrics.messagesReceived) * 100).toFixed(1) + '%'
-          : '0%'
+          : '0%',
+        recentStatusRequests: config.conversationMetrics.recentStatusRequests || []
       },
+      botStatus: globalBot ? {
+        activity: determineBotActivity(globalBot),
+        position: globalBot.entity?.position ? {
+          x: Math.round(globalBot.entity.position.x),
+          y: Math.round(globalBot.entity.position.y),
+          z: Math.round(globalBot.entity.position.z)
+        } : null,
+        dimension: globalBot.game?.dimension || 'unknown',
+        health: Math.round(globalBot.health || 0),
+        food: typeof globalBot.food === 'number' ? Math.round(globalBot.food) : null,
+        nearbyPlayers: getNearbyPlayers(globalBot, 50).map(p => ({
+          name: p.username,
+          distance: Math.round(p.distance)
+        }))
+      } : null,
       whitelist: {
         total: config.whitelist.length,
         byLevel: {
@@ -23529,8 +25193,67 @@ http.createServer((req, res) => {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: 'Schematic not found' }));
       }
-    })();
-  } else if (req.url === '/command' && req.method === 'POST') {
+      })();
+      } else if (req.url === '/api/rl/metrics' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      metrics: globalRLAnalytics.getAllMetrics(),
+      globalSettings: globalRLAnalytics.globalMetrics,
+      timestamp: Date.now()
+      }));
+      } else if (req.url.startsWith('/api/rl/metrics/') && req.method === 'GET') {
+      const domainName = req.url.split('/').pop();
+      const metrics = globalRLAnalytics.getDomainMetrics(domainName);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: !!metrics,
+      metrics,
+      timestamp: Date.now()
+      }));
+      } else if (req.url.startsWith('/api/rl/logs/') && req.method === 'GET') {
+      const domainName = req.url.split('/').pop();
+      const limit = parseInt(req.url.split('?limit=')[1] || '50', 10);
+      const logs = globalRLAnalytics.getRecentLogs(domainName, limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      logs,
+      domain: domainName,
+      timestamp: Date.now()
+      }));
+      } else if (req.url === '/api/rl/events' && req.method === 'GET') {
+      const limit = parseInt(req.url.split('?limit=')[1] || '50', 10);
+      const events = globalRLAnalytics.getLearningEvents(limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      events,
+      timestamp: Date.now()
+      }));
+      } else if (req.url === '/api/rl/performance' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      performance: globalRLAnalytics.performanceHistory,
+      timestamp: Date.now()
+      }));
+      } else if (req.url.startsWith('/api/rl/export/') && req.method === 'GET') {
+      const domainName = req.url.split('/').pop();
+      const snapshot = globalRLAnalytics.exportSnapshot(domainName);
+      if (snapshot) {
+      safeWriteJson(`./data/rl_snapshots/${domainName}_${Date.now()}.json`, snapshot);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        snapshot,
+        exportedTo: `./data/rl_snapshots/${domainName}_${Date.now()}.json`
+      }));
+      } else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Domain not found' }));
+      }
+      } else if (req.url === '/command' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
@@ -24032,6 +25755,10 @@ async function launchBot(username, role = 'fighter') {
   combatAI.hostileMobDetector = new HostileMobDetector();
   const combatLogger = new CombatLogger(bot, combatAI);
   const conversationAI = new ConversationAI(bot);
+  
+  // Load persisted dialogue RL model if available
+  await conversationAI.dialogueRL.loadModel();
+  
   const schematicLoader = new SchematicLoader(bot);
   const intelligenceDB = new IntelligenceDatabase(bot);
   let stashScanner = null;
@@ -24060,6 +25787,7 @@ async function launchBot(username, role = 'fighter') {
   bot.combatAI = combatAI;
   bot.combatLogger = combatLogger;
   bot.schematicLoader = schematicLoader;
+  bot.toolSelector = combatAI.toolSelector;
   
   // Safe method calls with existence checks
   if (combatAI && typeof combatAI.setCombatLogger === 'function') {
@@ -24092,16 +25820,19 @@ async function launchBot(username, role = 'fighter') {
   
   bot.once('spawn', async () => {
     console.log(`[SPAWN] ${username} joined ${config.server}`);
-    
+
     // Wait a moment for plugins to fully initialize
     await new Promise(resolve => setTimeout(resolve, 100));
-    
+
+    // Initialize health.json tracking
+    initializeHealthTracking(bot);
+
     // Ensure pathfinder plugin loaded
     if (!bot.pathfinder) {
       console.log('[ERROR] Pathfinder plugin not loaded!');
       return;
     }
-    
+
     // Set up movements configuration
     try {
       bot.pathfinder.setMovements(new Movements(bot));
@@ -24161,6 +25892,12 @@ async function launchBot(username, role = 'fighter') {
       globalSwarmCoordinator = new SwarmCoordinator(9090);
       console.log('[SWARM] Coordinator initialized');
       
+      // Set WebSocket server for RL analytics broadcasting
+      if (config.swarm.wsServer) {
+        globalRLAnalytics.wsServer = config.swarm.wsServer;
+        console.log('[RL_ANALYTICS] WebSocket server connected for event broadcasting');
+      }
+      
       globalSchematicBuilder = new SchematicBuilder(globalSwarmCoordinator);
       console.log('[BUILD] Schematic builder initialized');
     }
@@ -24179,6 +25916,11 @@ async function launchBot(username, role = 'fighter') {
     }
     
     bot.swarmCoordinator = globalSwarmCoordinator;
+    
+    // Initialize RL Analytics performance tracking
+    safeSetInterval(() => {
+      globalRLAnalytics.savePerformanceMetrics();
+    }, 300000, 'rl-analytics-saver'); // Every 5 minutes
     
     // Start periodic memory cleanup
     setInterval(cleanupOldData, 300000); // Every 5 minutes
@@ -24638,6 +26380,22 @@ async function launchBot(username, role = 'fighter') {
       }
     }, 60000); // Save every minute
     
+    // Dialogue RL periodic training and model saving
+    setInterval(() => {
+      if (conversationAI && conversationAI.dialogueRL) {
+        conversationAI.dialogueRL.trainModel().catch(err => {
+          console.error('[DIALOGUE_RL] Training error:', err.message);
+        });
+      }
+    }, 60000); // Train every 60 seconds
+    
+    // Dialogue RL model persistence
+    setInterval(() => {
+      if (conversationAI && conversationAI.dialogueRL) {
+        conversationAI.dialogueRL.saveModel();
+      }
+    }, 300000); // Save every 5 minutes
+    
     // Equipment manager update loop
     if (bot.equipmentManager) {
       setInterval(() => {
@@ -24952,6 +26710,102 @@ async function launchBot(username, role = 'fighter') {
   });
   
   return bot;
+}
+
+function determineBotActivity(bot) {
+  if (!bot || !bot.entity) {
+    return 'unknown';
+  }
+
+  // Check combat state (highest priority)
+  if (bot.combatAI && bot.combatAI.currentTarget) {
+    return 'fighting';
+  }
+
+  // Check if taking damage or recently damaged
+  if (bot.lastDamageTime && (Date.now() - bot.lastDamageTime < 3000)) {
+    return 'under attack';
+  }
+
+  // Check if in combat mode
+  if (bot.pvp && bot.pvp.target) {
+    return 'fighting';
+  }
+
+  // Check task queue
+  if (config.tasks.current) {
+    const task = config.tasks.current;
+    if (task.type) {
+      if (task.type === 'mine' || task.type === 'mining') return 'mining';
+      if (task.type === 'build' || task.type === 'building') return 'building';
+      if (task.type === 'gather' || task.type === 'collecting') return 'gathering';
+      if (task.type === 'hunt' || task.type === 'hunting') return 'hunting';
+      if (task.type === 'craft' || task.type === 'crafting') return 'crafting';
+      if (task.type === 'follow' || task.type === 'following') return 'following';
+      if (task.type === 'guard' || task.type === 'guarding') return 'guarding';
+      return task.type.toLowerCase();
+    }
+  }
+
+  // Check pathfinder state
+  if (bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving()) {
+    return 'traveling';
+  }
+
+  // Check movement manager
+  if (bot.movementManager) {
+    if (bot.movementManager.currentMode === 'highway') {
+      return 'highway travel';
+    }
+    if (bot.movementManager.isMoving) {
+      return 'traveling';
+    }
+  }
+
+  // Check if following someone
+  if (bot.followingPlayer) {
+    return 'following';
+  }
+
+  // Check if at home base
+  if (config.homeBase.coords && bot.entity.position) {
+    const dist = bot.entity.position.distanceTo(config.homeBase.coords);
+    if (dist < 10) {
+      return 'at home base';
+    }
+  }
+
+  // Check builder status
+  if (globalSchematicBuilder && globalSchematicBuilder.isBuilding) {
+    return 'building';
+  }
+
+  // Check if tracking player
+  if (bot.playerTracker && bot.playerTracker.isTracking) {
+    return `tracking ${bot.playerTracker.targetUsername}`;
+  }
+
+  // Check if stash hunting
+  if (config.stashHunt.active) {
+    return 'stash hunting';
+  }
+
+  // Check if dupe testing
+  if (config.dupeDiscovery.testingEnabled) {
+    return 'testing dupes';
+  }
+
+  // Check velocity for any movement
+  if (bot.entity.velocity) {
+    const vel = bot.entity.velocity;
+    const speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+    if (speed > 0.1) {
+      return 'moving';
+    }
+  }
+
+  // Default to idle
+  return 'idle';
 }
 
 function startVideoFeedStreaming(bot, wsClient) {
