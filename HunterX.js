@@ -19004,6 +19004,477 @@ class RLAnalyticsManager {
   }
 }
 
+// === CORE RL SYSTEM - UNIFIED REINFORCEMENT LEARNING FRAMEWORK ===
+// Central system for managing experiences, training, and model persistence
+class RLSystem {
+  constructor() {
+    this.domains = {};
+    this.replayBuffers = {};
+    this.networks = {};
+    this.trainers = {};
+    this.epsilons = {}; // Epsilon-greedy exploration rates
+    this.neuralBrain = null;
+    this.enabled = false;
+    
+    this.config = {
+      batchSize: 32,
+      learningRate: 0.01,
+      maxBufferSize: 5000,
+      trainFrequency: 100, // Train every N experiences
+      discountFactor: 0.99,
+      epsilonDecay: 0.9995,
+      minEpsilon: 0.01,
+      maxEpsilon: 1.0
+    };
+  }
+
+  initialize(domains, neuralBrain) {
+    this.neuralBrain = neuralBrain;
+    this.enabled = neuralBrain && neuralBrain.initialized;
+    
+    for (const domainName of domains) {
+      this.domains[domainName] = true;
+      this.replayBuffers[domainName] = [];
+      this.epsilons[domainName] = this.config.maxEpsilon;
+    }
+    
+    console.log(`[RL_SYSTEM] ✓ Initialized for domains: ${domains.join(', ')}`);
+  }
+
+  recordExperience(domain, state, action, reward, nextState, done = false) {
+    if (!this.enabled || !this.domains[domain]) return;
+    
+    const buffer = this.replayBuffers[domain];
+    if (!buffer) return;
+    
+    buffer.push({
+      state,
+      action,
+      reward,
+      nextState,
+      done,
+      timestamp: Date.now()
+    });
+    
+    // Keep buffer size limited
+    if (buffer.length > this.config.maxBufferSize) {
+      buffer.shift();
+    }
+  }
+
+  shouldExplore(domain) {
+    if (!this.enabled || !this.domains[domain]) return false;
+    return Math.random() < (this.epsilons[domain] || this.config.maxEpsilon);
+  }
+
+  decayEpsilon(domain) {
+    if (!this.epsilons[domain]) return;
+    this.epsilons[domain] = Math.max(
+      this.config.minEpsilon,
+      this.epsilons[domain] * this.config.epsilonDecay
+    );
+  }
+
+  getBufferStatus(domain) {
+    const buffer = this.replayBuffers[domain] || [];
+    return {
+      size: buffer.length,
+      maxSize: this.config.maxBufferSize,
+      fillPercentage: Math.round((buffer.length / this.config.maxBufferSize) * 100),
+      epsilon: this.epsilons[domain] || 0
+    };
+  }
+
+  async train(domain) {
+    if (!this.enabled || !this.neuralBrain || !this.domains[domain]) return false;
+    
+    const buffer = this.replayBuffers[domain];
+    if (!buffer || buffer.length < this.config.batchSize) return false;
+    
+    // Sample random batch from buffer
+    const batch = [];
+    for (let i = 0; i < this.config.batchSize; i++) {
+      const idx = Math.floor(Math.random() * buffer.length);
+      batch.push(buffer[idx]);
+    }
+    
+    // Convert to training format
+    const trainingData = batch.map(exp => ({
+      input: exp.state,
+      output: [exp.action, exp.reward, exp.done ? 1 : 0]
+    }));
+    
+    try {
+      await this.neuralBrain.train(domain, trainingData, { iterations: 10 });
+      console.log(`[RL_SYSTEM] ✓ Trained ${domain} with ${batch.length} samples`);
+      return true;
+    } catch (err) {
+      console.warn(`[RL_SYSTEM] Training failed for ${domain}: ${err.message}`);
+      return false;
+    }
+  }
+
+  async saveModels(path = './models') {
+    if (!this.enabled || !this.neuralBrain) return;
+    
+    try {
+      safeWriteFile(path, {}, true); // Ensure directory exists
+      for (const domain of Object.keys(this.domains)) {
+        const modelPath = `${path}/${domain}_model.json`;
+        await this.neuralBrain.save(domain, modelPath);
+      }
+      console.log(`[RL_SYSTEM] ✓ Models saved to ${path}`);
+    } catch (err) {
+      console.warn(`[RL_SYSTEM] Failed to save models: ${err.message}`);
+    }
+  }
+}
+
+// === COMBAT RL - LEARNS OPTIMAL COMBAT PATTERNS ===
+class CombatRL {
+  constructor(bot) {
+    this.bot = bot;
+    this.enabled = false;
+    this.rlSystem = null;
+    this.stats = {
+      killsWithRL: 0,
+      killsWithFallback: 0,
+      damageDealt: 0,
+      damageTaken: 0,
+      successRate: 0
+    };
+  }
+
+  initialize(rlSystem) {
+    this.rlSystem = rlSystem;
+    this.enabled = rlSystem && rlSystem.enabled;
+    console.log(`[COMBAT_RL] ${this.enabled ? '✓' : '⚠'} Initialized`);
+  }
+
+  captureState(enemy) {
+    if (!enemy) return null;
+    
+    const myHealth = this.bot.health || 20;
+    const myFood = this.bot.food || 20;
+    const distance = this.bot.entity.position.distanceTo(enemy.position);
+    const enemyHealth = enemy.health || 20;
+    
+    return [
+      myHealth / 20,
+      myFood / 20,
+      Math.min(distance / 20, 1),
+      enemyHealth / 20,
+      this.bot.heldItem ? 1 : 0,
+      this.bot.inventory.slots[16] ? 1 : 0, // Shield
+      0, 0, 0, 0 // Reserved for future features
+    ];
+  }
+
+  recordAction(enemy, action, reward) {
+    if (!this.enabled) return;
+    
+    const state = this.captureState(enemy);
+    if (!state) return;
+    
+    // Record experience for learning
+    const nextState = this.captureState(enemy);
+    this.rlSystem.recordExperience('combat', state, action, reward, nextState);
+    
+    // Update stats
+    if (reward > 0.5) this.stats.damageDealt += reward;
+    if (reward < -0.1) this.stats.damageTaken -= reward;
+  }
+
+  recordKill() {
+    if (!this.enabled) return;
+    this.stats.killsWithRL++;
+    this.stats.killsWithFallback = Math.max(0, this.stats.killsWithFallback - 1);
+  }
+
+  recordKillFallback() {
+    this.stats.killsWithFallback++;
+  }
+
+  getStats() {
+    const total = this.stats.killsWithRL + this.stats.killsWithFallback;
+    return {
+      ...this.stats,
+      rlUsageRate: total > 0 ? ((this.stats.killsWithRL / total) * 100).toFixed(1) : 0
+    };
+  }
+}
+
+// === MINING RL - LEARNS EFFICIENT MINING PATTERNS ===
+class MiningRL {
+  constructor(bot) {
+    this.bot = bot;
+    this.enabled = false;
+    this.rlSystem = null;
+    this.stats = {
+      blocksMinedWithRL: 0,
+      blocksMinedWithFallback: 0,
+      toolBreaks: 0,
+      averageSpeed: 0
+    };
+    this.miningStartTime = 0;
+  }
+
+  initialize(rlSystem) {
+    this.rlSystem = rlSystem;
+    this.enabled = rlSystem && rlSystem.enabled;
+    console.log(`[MINING_RL] ${this.enabled ? '✓' : '⚠'} Initialized`);
+  }
+
+  captureState() {
+    const tool = this.bot.heldItem;
+    const toolDamage = tool ? (tool.maxDurability - tool.durability) / tool.maxDurability : 0;
+    const foodLevel = (this.bot.food || 20) / 20;
+    const health = (this.bot.health || 20) / 20;
+    
+    return [
+      toolDamage,
+      foodLevel,
+      health,
+      this.bot.inventory.slots.length / 36,
+      0, 0, 0, 0 // Reserved for future
+    ];
+  }
+
+  recordMining(blockType, speedMs, reward) {
+    if (!this.enabled) return;
+    
+    const state = this.captureState();
+    const nextState = this.captureState();
+    
+    this.rlSystem.recordExperience('mining', state, 0, reward, nextState);
+    this.stats.blocksMinedWithRL++;
+  }
+
+  recordMiningFallback() {
+    this.stats.blocksMinedWithFallback++;
+  }
+
+  recordToolBreak() {
+    this.stats.toolBreaks++;
+  }
+
+  getStats() {
+    const total = this.stats.blocksMinedWithRL + this.stats.blocksMinedWithFallback;
+    return {
+      ...this.stats,
+      rlUsageRate: total > 0 ? ((this.stats.blocksMinedWithRL / total) * 100).toFixed(1) : 0
+    };
+  }
+}
+
+// === BUILDING RL - LEARNS ACCURATE BLOCK PLACEMENT ===
+class BuildingRL {
+  constructor(bot) {
+    this.bot = bot;
+    this.enabled = false;
+    this.rlSystem = null;
+    this.stats = {
+      blocksPlacedWithRL: 0,
+      blocksPlacedWithFallback: 0,
+      placementErrors: 0,
+      successRate: 0
+    };
+  }
+
+  initialize(rlSystem) {
+    this.rlSystem = rlSystem;
+    this.enabled = rlSystem && rlSystem.enabled;
+    console.log(`[BUILDING_RL] ${this.enabled ? '✓' : '⚠'} Initialized`);
+  }
+
+  captureState(targetPosition) {
+    if (!targetPosition) return null;
+    
+    const distance = this.bot.entity.position.distanceTo(targetPosition);
+    const blockInventory = this.bot.inventory.slots.filter(s => s && s.name && s.name.includes('block')).length;
+    
+    return [
+      Math.min(distance / 20, 1),
+      blockInventory / 64,
+      this.bot.entity.yaw / Math.PI,
+      this.bot.entity.pitch / Math.PI,
+      0, 0, 0, 0 // Reserved for future
+    ];
+  }
+
+  recordPlacement(targetPosition, success, reward) {
+    if (!this.enabled || !targetPosition) return;
+    
+    const state = this.captureState(targetPosition);
+    const nextState = this.captureState(targetPosition);
+    
+    this.rlSystem.recordExperience('building', state, success ? 1 : 0, reward, nextState);
+    
+    if (success) {
+      this.stats.blocksPlacedWithRL++;
+    } else {
+      this.stats.placementErrors++;
+    }
+  }
+
+  recordPlacementFallback(success) {
+    if (success) {
+      this.stats.blocksPlacedWithFallback++;
+    } else {
+      this.stats.placementErrors++;
+    }
+  }
+
+  getStats() {
+    const total = this.stats.blocksPlacedWithRL + this.stats.blocksPlacedWithFallback;
+    return {
+      ...this.stats,
+      rlUsageRate: total > 0 ? ((this.stats.blocksPlacedWithRL / total) * 100).toFixed(1) : 0
+    };
+  }
+}
+
+// === MOVEMENT RL - LEARNS SAFE AND EFFICIENT ROUTES ===
+class MovementRLExtended {
+  constructor(bot) {
+    this.bot = bot;
+    this.enabled = false;
+    this.rlSystem = null;
+    this.stats = {
+      successfulMovesWithRL: 0,
+      successfulMovesWithFallback: 0,
+      collisions: 0,
+      fallDamage: 0
+    };
+  }
+
+  initialize(rlSystem) {
+    this.rlSystem = rlSystem;
+    this.enabled = rlSystem && rlSystem.enabled;
+    console.log(`[MOVEMENT_RL] ${this.enabled ? '✓' : '⚠'} Initialized`);
+  }
+
+  captureState(targetPosition) {
+    if (!targetPosition) return null;
+    
+    const distance = this.bot.entity.position.distanceTo(targetPosition);
+    const elevationDiff = Math.abs(targetPosition.y - this.bot.entity.position.y);
+    
+    return [
+      Math.min(distance / 100, 1),
+      elevationDiff / 64,
+      this.bot.entity.velocity.length() / 10,
+      this.bot.onGround ? 1 : 0,
+      0, 0, 0 // Reserved for future
+    ];
+  }
+
+  recordMove(targetPosition, success, reward) {
+    if (!this.enabled || !targetPosition) return;
+    
+    const state = this.captureState(targetPosition);
+    const nextState = this.captureState(targetPosition);
+    
+    this.rlSystem.recordExperience('movement', state, success ? 1 : 0, reward, nextState);
+    
+    if (success) {
+      this.stats.successfulMovesWithRL++;
+    } else {
+      this.stats.collisions++;
+    }
+  }
+
+  recordMoveFallback(success) {
+    if (success) {
+      this.stats.successfulMovesWithFallback++;
+    } else {
+      this.stats.collisions++;
+    }
+  }
+
+  recordFallDamage(damage) {
+    this.stats.fallDamage += damage;
+  }
+
+  getStats() {
+    const total = this.stats.successfulMovesWithRL + this.stats.successfulMovesWithFallback;
+    return {
+      ...this.stats,
+      rlUsageRate: total > 0 ? ((this.stats.successfulMovesWithRL / total) * 100).toFixed(1) : 0
+    };
+  }
+}
+
+// === CONVERSATION RL - LEARNS COMMAND PATTERNS ===
+class ConversationRLExtended {
+  constructor() {
+    this.enabled = false;
+    this.rlSystem = null;
+    this.stats = {
+      commandsWithRL: 0,
+      commandsWithFallback: 0,
+      successfulCommands: 0,
+      failedCommands: 0
+    };
+  }
+
+  initialize(rlSystem) {
+    this.rlSystem = rlSystem;
+    this.enabled = rlSystem && rlSystem.enabled;
+    console.log(`[CONVERSATION_RL] ${this.enabled ? '✓' : '⚠'} Initialized`);
+  }
+
+  captureState(commandText) {
+    if (!commandText) return null;
+    
+    const wordCount = commandText.split(' ').length;
+    const hasNumbers = /\d/.test(commandText) ? 1 : 0;
+    const isQuestion = commandText.includes('?') ? 1 : 0;
+    
+    return [
+      Math.min(wordCount / 20, 1),
+      hasNumbers,
+      isQuestion,
+      0, 0, 0, 0, 0 // Reserved for future
+    ];
+  }
+
+  recordCommand(commandText, success, reward) {
+    if (!this.enabled) return;
+    
+    const state = this.captureState(commandText);
+    if (!state) return;
+    
+    const nextState = [0.5, 0, 0, 0, 0, 0, 0, 0];
+    this.rlSystem.recordExperience('conversation', state, success ? 1 : 0, reward, nextState);
+    
+    if (success) {
+      this.stats.successfulCommands++;
+      this.stats.commandsWithRL++;
+    } else {
+      this.stats.failedCommands++;
+    }
+  }
+
+  recordCommandFallback(success) {
+    this.stats.commandsWithFallback++;
+    if (success) {
+      this.stats.successfulCommands++;
+    } else {
+      this.stats.failedCommands++;
+    }
+  }
+
+  getStats() {
+    const total = this.stats.commandsWithRL + this.stats.commandsWithFallback;
+    return {
+      ...this.stats,
+      rlUsageRate: total > 0 ? ((this.stats.commandsWithRL / total) * 100).toFixed(1) : 0,
+      successRate: total > 0 ? ((this.stats.successfulCommands / total) * 100).toFixed(1) : 0
+    };
+  }
+}
+
 // === COORDINATE SCRAPER ===
 class CoordinateScraper {
   constructor() {
@@ -28695,6 +29166,10 @@ async function initializeHunterX() {
   global.trainingDataCollector = new TrainingDataCollector();
   console.log('[TRAINING] ✓ Training data collector initialized\n');
   
+  // Initialize RL system (will be properly configured after config loads)
+  global.rlSystem = new RLSystem();
+  console.log('[RL] ✓ RL System framework initialized\n');
+  
   // Load or create configuration
   const configLoaded = loadConfiguration();
   if (!configLoaded) {
@@ -28726,6 +29201,26 @@ function initializeGlobalConfigDependencies() {
       username: '',
       password: ''
     };
+  }
+  
+  // Initialize RL system with neural brain
+  if (global.rlSystem && neuralBrainManager && neuralBrainManager.initialized) {
+    const rlDomains = ['combat', 'mining', 'building', 'movement', 'conversation'];
+    global.rlSystem.initialize(rlDomains, neuralBrainManager);
+    
+    // Initialize RL analytics if not present
+    if (!config.rl) {
+      config.rl = {
+        enabled: true,
+        domains: {},
+        models: {},
+        performance: {}
+      };
+    }
+    
+    console.log('[RL] ✓ RL System properly configured with neural brain\n');
+  } else {
+    console.log('[RL] ⚠ RL System limited: neural brain not available\n');
   }
 }
 
