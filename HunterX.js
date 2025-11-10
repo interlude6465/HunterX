@@ -2034,87 +2034,6 @@ async function safeNeuralLoad(networkName, filePath = null) {
   }
 }
 
-// Initialize neural brain with enhanced multi-library support
-async function initializeNeuralBrain() {
-  try {
-    console.log('[NEURAL] Initializing enhanced neural brain system...');
-    
-    // Initialize the neural brain manager
-    const status = initializeNeuralSystem();
-    
-    // Update config for backward compatibility
-    config.neural.available = status.available;
-    config.neural.type = status.type;
-    config.neural.manager = neuralBrainManager;
-    
-    // Map models to config for legacy compatibility
-    for (const modelName of status.models) {
-      const model = neuralBrainManager.models[modelName];
-      if (model && model.network) {
-        config.neural[modelName] = model.network;
-      }
-    }
-    
-    // Load pre-trained models if they exist
-    const networkNames = ['combat', 'placement', 'dupe', 'conversation'];
-    for (const name of networkNames) {
-      const modelPath = `./models/${name}_model.json`;
-      if (fs.existsSync(modelPath)) {
-        if (await safeNeuralLoad(name, modelPath)) {
-          console.log(`[NEURAL] ✓ Loaded pre-trained ${name} model`);
-        }
-      }
-    }
-    
-    console.log(`[NEURAL] ✓ Neural brain initialized with ${status.type}`);
-    return true;
-  } catch (err) {
-    console.warn(`[NEURAL] Error during initialization: ${err.message}`);
-    neuralNetworksAvailable = false;
-    return false;
-  }
-}
-
-// Log enhanced system status regarding neural availability
-function logNeuralSystemStatus() {
-  console.log('\n=== ENHANCED NEURAL SYSTEM STATUS ===');
-  
-  if (neuralBrainManager && neuralBrainManager.initialized) {
-    console.log(`Neural Brain: ✓ ENABLED (${neuralBrainManager.type})`);
-    console.log(`Available Libraries: ${Object.keys(neuralBrainManager.libraries).filter(k => neuralBrainManager.libraries[k]).join(', ') || 'none'}`);
-    console.log('Neural Networks Loaded:');
-    
-    for (const modelName of Object.keys(neuralBrainManager.models)) {
-      const model = neuralBrainManager.models[modelName];
-      const status = model.type || 'unknown';
-      console.log(`  - ${modelName}: ✓ Ready (${status})`);
-    }
-    
-    const modelsDir = './models';
-    if (fs.existsSync(modelsDir)) {
-      const models = fs.readdirSync(modelsDir).filter(f => f.endsWith('_model.json'));
-      console.log(`  Models on disk: ${models.length} saved models`);
-    }
-    
-    console.log(`Features:`);
-    console.log(`  - Prediction: ✓ Neural learning`);
-    console.log(`  - Training: ✓ Model improvement`);
-    console.log(`  - Saving/Loading: ✓ Persistent models`);
-    console.log(`  - Fallback: ✓ Graceful degradation`);
-    
-  } else {
-    console.log(`Neural Brain: ⚠️ DISABLED (fallback active)`);
-    console.log('Fallback behavior:');
-    console.log('  - Combat: Heuristic-based tactics');
-    console.log('  - Prediction: Rule-based logic');
-    console.log('  - Training: Data collection only');
-    console.log('  - Learning: No model improvement');
-    console.log('  - All systems: Fully functional with hardcoded AI');
-  }
-  
-  console.log('=====================================\n');
-}
-
 // Load whitelist with auto-migration from legacy format
 if (fs.existsSync('./data/whitelist.json')) {
   const whitelistData = safeReadJson('./data/whitelist.json', []);
@@ -28671,6 +28590,89 @@ async function reconfigureProxy() {
       }
     });
   });
+}
+
+// Initialize neural brain with enhanced multi-library support
+async function initializeNeuralBrain() {
+  try {
+    console.log('[NEURAL] Initializing enhanced neural brain system...');
+    
+    // Initialize the neural brain manager
+    const status = initializeNeuralSystem();
+    
+    // Update config for backward compatibility (only if config is already loaded)
+    if (config && config.neural) {
+      config.neural.available = status.available;
+      config.neural.type = status.type;
+      config.neural.manager = neuralBrainManager;
+      
+      // Map models to config for legacy compatibility
+      for (const modelName of status.models) {
+        const model = neuralBrainManager.models[modelName];
+        if (model && model.network) {
+          config.neural[modelName] = model.network;
+        }
+      }
+      
+      // Load pre-trained models if they exist
+      const networkNames = ['combat', 'placement', 'dupe', 'conversation'];
+      for (const name of networkNames) {
+        const modelPath = `./models/${name}_model.json`;
+        if (fs.existsSync(modelPath)) {
+          if (await safeNeuralLoad(name, modelPath)) {
+            console.log(`[NEURAL] ✓ Loaded pre-trained ${name} model`);
+          }
+        }
+      }
+    }
+    
+    console.log(`[NEURAL] ✓ Neural brain initialized with ${status.type}`);
+    return true;
+  } catch (err) {
+    console.warn(`[NEURAL] Error during initialization: ${err.message}`);
+    neuralNetworksAvailable = false;
+    return false;
+  }
+}
+
+// Log enhanced system status regarding neural availability
+function logNeuralSystemStatus() {
+  console.log('\n=== ENHANCED NEURAL SYSTEM STATUS ===');
+  
+  if (neuralBrainManager && neuralBrainManager.initialized) {
+    console.log(`Neural Brain: ✓ ENABLED (${neuralBrainManager.type})`);
+    console.log(`Available Libraries: ${Object.keys(neuralBrainManager.libraries).filter(k => neuralBrainManager.libraries[k]).join(', ') || 'none'}`);
+    console.log('Neural Networks Loaded:');
+    
+    for (const modelName of Object.keys(neuralBrainManager.models)) {
+      const model = neuralBrainManager.models[modelName];
+      const status = model.type || 'unknown';
+      console.log(`  - ${modelName}: ✓ Ready (${status})`);
+    }
+    
+    const modelsDir = './models';
+    if (fs.existsSync(modelsDir)) {
+      const models = fs.readdirSync(modelsDir).filter(f => f.endsWith('_model.json'));
+      console.log(`  Models on disk: ${models.length} saved models`);
+    }
+    
+    console.log(`Features:`);
+    console.log(`  - Prediction: ✓ Neural learning`);
+    console.log(`  - Training: ✓ Model improvement`);
+    console.log(`  - Saving/Loading: ✓ Persistent models`);
+    console.log(`  - Fallback: ✓ Graceful degradation`);
+    
+  } else {
+    console.log(`Neural Brain: ⚠️ DISABLED (fallback active)`);
+    console.log('Fallback behavior:');
+    console.log('  - Combat: Heuristic-based tactics');
+    console.log('  - Prediction: Rule-based logic');
+    console.log('  - Training: Data collection only');
+    console.log('  - Learning: No model improvement');
+    console.log('  - All systems: Fully functional with hardcoded AI');
+  }
+  
+  console.log('=====================================\n');
 }
 
 // Main startup function
