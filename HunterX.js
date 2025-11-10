@@ -6678,6 +6678,9 @@ class BackupManager {
   }
 }
 
+// Instantiate BackupManager after class definition
+let globalBackupManager = new BackupManager();
+
 class StashBackup {
   constructor(bot) {
     this.bot = bot;
@@ -25307,7 +25310,7 @@ let globalRLAnalytics = new RLAnalyticsManager();
 let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
 let globalSchematicLoader = new SchematicLoader();
-let globalBackupManager = new BackupManager();
+let globalBackupManager = null; // Will be instantiated after BackupManager class definition
 
 // Anti-cheat bypass system global instances
 let serverProfileManager = null;
