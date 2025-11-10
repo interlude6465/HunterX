@@ -27968,7 +27968,7 @@ function launch() {
 }
 
 // === START ===
-const knowledgeBaseCount = config.dupeDiscovery.knowledgeBase?.historicalDupes?.length || 0;
+const knowledgeBaseCount = (config && config.dupeDiscovery && config.dupeDiscovery.knowledgeBase && config.dupeDiscovery.knowledgeBase.historicalDupes) ? config.dupeDiscovery.knowledgeBase.historicalDupes.length : 0;
 console.log(`
 ╔═══════════════════════════════════════════════════════╗
 ║       HUNTERX v22.1 - INITIALIZING                    ║
