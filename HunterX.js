@@ -1888,23 +1888,26 @@ const config = {
 };
 
 // === LOAD MODELS ===
-if (neuralNetworksAvailable) {
-  ['combat', 'placement', 'dupe', 'conversation'].forEach(domain => {
-    const modelPath = `./models/${domain}_model.json`;
-    try {
-      if (fs.existsSync(modelPath)) {
-        const modelData = safeReadJson(modelPath);
-        if (modelData && config.neural[domain]) {
-          config.neural[domain].fromJSON(modelData);
-          console.log(`[NEURAL] Loaded ${domain} model`);
+// Deferred initialization function to avoid global config access
+function loadNeuralModels() {
+  if (neuralNetworksAvailable && config && config.neural) {
+    ['combat', 'placement', 'dupe', 'conversation'].forEach(domain => {
+      const modelPath = `./models/${domain}_model.json`;
+      try {
+        if (fs.existsSync(modelPath)) {
+          const modelData = safeReadJson(modelPath);
+          if (modelData && config.neural[domain]) {
+            config.neural[domain].fromJSON(modelData);
+            console.log(`[NEURAL] Loaded ${domain} model`);
+          }
         }
+      } catch (err) {
+        console.error(`[NEURAL] Failed to load ${domain} model: ${err.message}`);
       }
-    } catch (err) {
-      console.error(`[NEURAL] Failed to load ${domain} model: ${err.message}`);
-    }
-  });
-} else {
-  console.log('[NEURAL] Skipping model loading - neural networks not available');
+    });
+  } else {
+    console.log('[NEURAL] Skipping model loading - neural networks not available');
+  }
 }
 
 // === NEURAL NETWORK FALLBACK HELPERS ===
@@ -28699,6 +28702,9 @@ async function initializeHunterX() {
   
   // Initialize global config-dependent resources now that config is loaded
   initializeGlobalConfigDependencies();
+  
+  // Load neural models after config is available
+  loadNeuralModels();
   
   // Print startup banner after config is loaded successfully
   printStartupBanner();
