@@ -27299,88 +27299,46 @@ class ProductionTracker {
   }
 }
 
-// === MESSAGE INTERCEPTOR FOR CONVERSATION LOGGING ===
-class MessageInterceptor {
-  constructor() {
-    this.messages = [];
-    this.maxMessages = 1000;
-    this.conversations = [];
-    this.maxConversations = 100;
-  }
-  
-  logMessage(username, message, type = 'chat') {
-    const entry = {
-      timestamp: Date.now(),
-      username,
-      message: message.substring(0, 200), // Limit length
-      type
-    };
-    
-    this.messages.unshift(entry);
-    
-    // Keep only recent messages
-    if (this.messages.length > this.maxMessages) {
-      this.messages = this.messages.slice(0, this.maxMessages);
+// Extend existing MessageInterceptor with conversation logging methods
+if (typeof MessageInterceptor !== 'undefined') {
+  // Add conversation logging methods to existing MessageInterceptor class
+  MessageInterceptor.prototype.logConversation = function(qaEntry) {
+    if (!this.conversations) {
+      this.conversations = [];
+      this.maxConversations = 100;
     }
-  }
-  
-  logConversation(qaEntry) {
+    
     this.conversations.unshift(qaEntry);
     
     // Keep only recent conversations
     if (this.conversations.length > this.maxConversations) {
       this.conversations = this.conversations.slice(0, this.maxConversations);
     }
-  }
+  };
   
-  getRecentMessages(limit = 50) {
-    return this.messages.slice(0, limit);
-  }
-  
-  getRecentConversations(limit = 20) {
+  MessageInterceptor.prototype.getRecentConversations = function(limit = 20) {
+    if (!this.conversations) return [];
     return this.conversations.slice(0, limit);
-  }
+  };
   
-  getMetrics() {
+  MessageInterceptor.prototype.getConversationMetrics = function() {
+    if (!this.conversations) return { totalConversations: 0 };
+    
     const now = Date.now();
     const last24h = now - (24 * 60 * 60 * 1000);
-    const last1h = now - (60 * 60 * 1000);
-    
-    const recentMessages = this.messages.filter(m => m.timestamp > last24h);
     const recentConversations = this.conversations.filter(c => c.timestamp > last24h);
-    const hourlyMessages = this.messages.filter(m => m.timestamp > last1h);
     
     return {
-      totalMessages: this.messages.length,
       totalConversations: this.conversations.length,
-      last24hMessages: recentMessages.length,
-      last24hConversations: recentConversations.length,
-      hourlyMessages: hourlyMessages.length,
-      uniqueUsers: new Set(this.messages.map(m => m.username)).size
+      last24hConversations: recentConversations.length
     };
-  }
-  
-  exportData() {
-    return {
-      messages: this.getRecentMessages(100),
-      conversations: this.getRecentConversations(50),
-      metrics: this.getMetrics(),
-      exportTime: new Date().toISOString()
-    };
-  }
+  };
 }
-
-// Global message interceptor instance
-let globalMessageInterceptor = null;
 
 // Initialize global systems
 function initializeHunterX() {
   try {
     console.log('[INIT] Initializing HunterX systems...');
-    
-    // Initialize message interceptor
-    globalMessageInterceptor = new MessageInterceptor();
-    console.log('[INIT] ✓ Message interceptor initialized');
     
     // Initialize neural system
     const neuralStatus = initializeNeuralSystem();
