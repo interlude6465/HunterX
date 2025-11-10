@@ -9672,26 +9672,9 @@ class CombatAI {
          await this.executeSmartCombat(attacker);
          await this.executeOptimalAttack(attacker);
        }
-      const targetName = isPlayer ? attacker.username : attacker.name;
-      const targetType = isPlayer ? 'Player' : 'Hostile Mob';
-      console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
-      this.inCombat = true;
-      this.currentTarget = attacker;
-      this.isCurrentlyFighting = true;
-      
-      // Initialize crystal PvP if we have resources and target is player
-      const useCrystalPvP = this.hasCrystalResources() && isPlayer;
-      let crystalPvP = null;
-      
-      if (useCrystalPvP) {
-        crystalPvP = this.getCrystalPvP();
-        console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
-        
-        // Execute multi-crystal tactic
-        await crystalPvP.executeCrystalCombo(attacker);
-      }
-      
-      // Enhanced tactical combat loop
+       this.isCurrentlyFighting = true;
+
+       // Enhanced tactical combat loop
       const combatLoop = setInterval(async () => {
         if (!this.isCurrentlyFighting || this.bot.health <= 0) {
           clearInterval(combatLoop);
@@ -15982,6 +15965,79 @@ class ConversationAI {
       return;
     }
     
+    // Global RL analytics commands
+    if (lower.startsWith('!rl') && lower.includes('status')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can view RL analytics!");
+        return;
+      }
+      
+      const allMetrics = globalRLAnalytics.getAllMetrics();
+      this.bot.chat("📊 RL Analytics Status:");
+      for (const domainName in allMetrics) {
+        const metrics = allMetrics[domainName];
+        this.bot.chat(`  ${domainName}: Episodes=${metrics.stats.totalInteractions}, AvgReward=${metrics.stats.averageReward.toFixed(2)}, Success=${metrics.successRate}, FallbackActive=${metrics.stats.emergencyFallbackActive}`);
+      }
+      return;
+    }
+    
+    if (lower.startsWith('!rl') && lower.includes('save')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can save RL models!");
+        return;
+      }
+      
+      const domainMatch = message.match(/!rl\s+save\s+(\w+)/i);
+      if (domainMatch) {
+        const domain = domainMatch[1];
+        const snapshot = globalRLAnalytics.exportSnapshot(domain);
+        if (snapshot) {
+          safeWriteJson(`./data/rl_snapshots/${domain}_${Date.now()}.json`, snapshot);
+          this.bot.chat(`✅ Saved ${domain} snapshot to disk!`);
+        } else {
+          this.bot.chat(`❌ Domain ${domain} not found!`);
+        }
+      } else {
+        this.bot.chat("Usage: !rl save <domain>");
+      }
+      return;
+    }
+    
+    if (lower.startsWith('!rl') && lower.includes('reset')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can reset RL stats!");
+        return;
+      }
+      
+      const domainMatch = message.match(/!rl\s+reset\s+(\w+)/i);
+      if (domainMatch) {
+        const domain = domainMatch[1];
+        globalRLAnalytics.resetDomain(domain);
+        this.bot.chat(`✅ Reset statistics for domain: ${domain}`);
+      } else {
+        this.bot.chat("Usage: !rl reset <domain>");
+      }
+      return;
+    }
+    
+    if (lower.startsWith('!rl') && (lower.includes('abtest') || lower.includes('a/b'))) {
+      if (!this.hasTrustLevel(username, 'owner')) {
+        this.bot.chat("Only owner can control A/B testing!");
+        return;
+      }
+      
+      if (lower.includes('on')) {
+        globalRLAnalytics.setABTestingEnabled(true);
+        this.bot.chat(`✅ A/B testing enabled (${(globalRLAnalytics.globalMetrics.abtestPercentage * 100).toFixed(0)}% through fallback)`);
+      } else if (lower.includes('off')) {
+        globalRLAnalytics.setABTestingEnabled(false);
+        this.bot.chat("✅ A/B testing disabled");
+      } else {
+        this.bot.chat(`Usage: !rl abtest on|off (Currently: ${globalRLAnalytics.globalMetrics.abtestingEnabled ? 'ON' : 'OFF'})`);
+      }
+      return;
+    }
+    
     // Projectile & Mace commands
     if (lower.includes('projectile stats') || lower.includes('bow stats')) {
       if (this.bot.combatAI && this.bot.combatAI.projectileAI) {
@@ -16789,53 +16845,19 @@ class ConversationAI {
   }
 
   async executeResourceTask(task) {
-    if (!task || !task.item) return false;
+     if (!task || !task.item) return false;
 
-    try {
-      if (this.itemHunter) {
-        return await this.itemHunter.findItem(task.item, task.amount);
-      }
-      return false;
-    } catch (error) {
-      console.log(`[EXEC] Resource task failed: ${error.message}`);
-      this.bot.chat(`❌ Failed to get ${task.item}: ${error.message}`);
-      return false;
-    const quantities = {
-      'diamond': 64,
-      'iron': 64,
-      'gold': 32,
-      'emerald': 32,
-      'stone': 128,
-      'cobblestone': 128,
-      'oak log': 64,
-      'spruce log': 64,
-      'birch log': 64
-    };
-
-    for (const [item, defaultQty] of Object.entries(quantities)) {
-      if (message.toLowerCase().includes(item)) {
-        const qtyMatch = message.match(/(\d+)\s+/);
-        const quantity = qtyMatch ? parseInt(qtyMatch[1]) : defaultQty;
-        return { item, quantity };
-      }
-    }
-    return null;
-  }
-
-  async executeResourceTask(task) {
-    if (!task) return;
-    const { item, quantity } = task;
-    this.bot.chat(`🔨 Mining ${quantity}x ${item}...`);
-
-    if (this.bot.mining) {
-      await this.bot.mining.collectResource(item, quantity).catch(err => {
-        console.log(`[RESOURCE] Mining error: ${err.message}`);
-        this.bot.chat(`❌ Failed to mine ${item}: ${err.message}`);
-      });
-    } else {
-      this.bot.chat("Mining module not available!");
-    }
-  }
+     try {
+       if (this.itemHunter) {
+         return await this.itemHunter.findItem(task.item, task.amount);
+       }
+       return false;
+     } catch (error) {
+       console.log(`[EXEC] Resource task failed: ${error.message}`);
+       this.bot.chat(`❌ Failed to get ${task.item}: ${error.message}`);
+       return false;
+     }
+   }
 
   findNearestPlayer() {
     const players = Object.values(this.bot.entities).filter(e =>
@@ -17300,6 +17322,438 @@ class DialogueRL {
       safeNeuralSave('dialogue', './models/dialogue_model.json');
       console.log('[DIALOGUE_RL] Dialogue model saved to disk');
     }
+  }
+}
+
+// === RL ANALYTICS MANAGER ===
+// Manages per-domain RL metrics, analytics aggregation, A/B testing, and emergency fallback
+class RLAnalyticsManager {
+  constructor() {
+    this.domains = {}; // domain -> { metrics, stats, logs, rewardHistory, confidenceHistory }
+    this.globalMetrics = {
+      abtestingEnabled: false,
+      abtestPercentage: 0.1, // 10% of episodes through fallback
+      emergencyFallbackThreshold: -0.3, // Average reward below this triggers fallback
+      enableEmergencyFallback: true,
+      rewardWindowSize: 50 // Rolling average window
+    };
+    this.performanceHistory = {}; // Track improvement over time
+    this.learningLog = []; // Recent learning events
+    this.maxLearningLogSize = 1000;
+    this.wsServer = null; // Set by dashboard
+    this.initialized = false;
+    
+    this.initializePerformanceTracking();
+  }
+  
+  initializePerformanceTracking() {
+    // Load performance history from disk
+    try {
+      const perfData = safeReadJson('./data/rl_performance.json', {});
+      this.performanceHistory = perfData;
+      console.log('[RL_ANALYTICS] Performance history loaded');
+    } catch (err) {
+      console.log('[RL_ANALYTICS] Starting with fresh performance history');
+    }
+    this.initialized = true;
+  }
+  
+  // Register a new RL domain for analytics tracking
+  registerDomain(domainName, initialModel = null) {
+    if (this.domains[domainName]) {
+      return; // Already registered
+    }
+    
+    this.domains[domainName] = {
+      name: domainName,
+      metrics: {
+        currentEpsilon: 0.5,
+        modelHash: this.calculateModelHash(initialModel),
+        bufferFillLevel: 0,
+        experienceCount: 0,
+        maxBufferSize: 1000
+      },
+      stats: {
+        totalEpisodes: 0,
+        successCount: 0,
+        failureCount: 0,
+        averageReward: 0,
+        rewardTrend: [], // Last N rewards
+        confidenceScores: [],
+        winStreak: 0,
+        lossStreak: 0,
+        maxWinStreak: 0,
+        maxLossStreak: 0,
+        emergencyFallbackActive: false
+      },
+      logs: {
+        recentDecisions: [], // Last 100 decisions
+        maxLogSize: 100,
+        highRewardEvents: [],
+        largeLossEvents: [],
+        fallbackEvents: []
+      },
+      timestamps: {
+        created: Date.now(),
+        lastUpdate: Date.now(),
+        lastTrain: null,
+        lastSave: null
+      }
+    };
+    
+    // Initialize performance history for this domain
+    if (!this.performanceHistory[domainName]) {
+      this.performanceHistory[domainName] = {
+        snapshots: [],
+        improvement: 0,
+        lastImprovement: 0
+      };
+    }
+    
+    console.log(`[RL_ANALYTICS] Registered domain: ${domainName}`);
+  }
+  
+  // Calculate hash of model for version tracking
+  calculateModelHash(model) {
+    if (!model) return 'uninitialized';
+    try {
+      const json = typeof model === 'string' ? model : JSON.stringify(model).substring(0, 1000);
+      let hash = 0;
+      for (let i = 0; i < json.length; i++) {
+        const char = json.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      return Math.abs(hash).toString(16);
+    } catch (err) {
+      return 'error';
+    }
+  }
+  
+  // Record a decision/episode outcome for analytics
+  recordEpisode(domainName, outcome = {}) {
+    if (!this.domains[domainName]) {
+      this.registerDomain(domainName);
+    }
+    
+    const domain = this.domains[domainName];
+    const { success = false, reward = 0, confidence = 0.5, action = 'unknown' } = outcome;
+    
+    // Update stats
+    domain.stats.totalEpisodes++;
+    if (success) {
+      domain.stats.successCount++;
+      domain.stats.winStreak++;
+      domain.stats.lossStreak = 0;
+    } else {
+      domain.stats.failureCount++;
+      domain.stats.lossStreak++;
+      domain.stats.winStreak = 0;
+    }
+    
+    // Track streaks
+    if (domain.stats.winStreak > domain.stats.maxWinStreak) {
+      domain.stats.maxWinStreak = domain.stats.winStreak;
+    }
+    if (domain.stats.lossStreak > domain.stats.maxLossStreak) {
+      domain.stats.maxLossStreak = domain.stats.lossStreak;
+    }
+    
+    // Update reward trend
+    domain.stats.rewardTrend.push(reward);
+    if (domain.stats.rewardTrend.length > this.globalMetrics.rewardWindowSize) {
+      domain.stats.rewardTrend.shift();
+    }
+    
+    // Calculate rolling average reward
+    const avgReward = domain.stats.rewardTrend.reduce((a, b) => a + b, 0) / domain.stats.rewardTrend.length;
+    domain.stats.averageReward = parseFloat(avgReward.toFixed(3));
+    
+    // Track confidence scores
+    domain.stats.confidenceScores.push(confidence);
+    if (domain.stats.confidenceScores.length > 50) {
+      domain.stats.confidenceScores.shift();
+    }
+    
+    // Log decision
+    domain.logs.recentDecisions.push({
+      timestamp: Date.now(),
+      success,
+      reward,
+      confidence,
+      action,
+      lossStreak: domain.stats.lossStreak,
+      winStreak: domain.stats.winStreak
+    });
+    if (domain.logs.recentDecisions.length > domain.logs.maxLogSize) {
+      domain.logs.recentDecisions.shift();
+    }
+    
+    // Check for significant events
+    this.checkSignificantEvents(domainName, outcome);
+    
+    // Check for emergency fallback trigger
+    if (this.globalMetrics.enableEmergencyFallback) {
+      this.checkEmergencyFallback(domainName);
+    }
+    
+    domain.timestamps.lastUpdate = Date.now();
+  }
+  
+  // Check for high reward or large loss events
+  checkSignificantEvents(domainName, outcome) {
+    const domain = this.domains[domainName];
+    const { reward = 0 } = outcome;
+    
+    // High reward event (above 90th percentile)
+    if (domain.stats.rewardTrend.length > 10) {
+      const sorted = [...domain.stats.rewardTrend].sort((a, b) => a - b);
+      const p90 = sorted[Math.floor(sorted.length * 0.9)];
+      
+      if (reward > p90) {
+        const event = {
+          timestamp: Date.now(),
+          type: 'high_reward',
+          reward,
+          p90
+        };
+        domain.logs.highRewardEvents.push(event);
+        if (domain.logs.highRewardEvents.length > 50) {
+          domain.logs.highRewardEvents.shift();
+        }
+        this.logLearningEvent(`HIGH_REWARD@${domainName}: ${reward.toFixed(2)}`);
+        this.broadcastEvent('high_reward', { domain: domainName, reward, p90 });
+      }
+    }
+    
+    // Large loss event (below 10th percentile and negative)
+    if (domain.stats.rewardTrend.length > 10) {
+      const sorted = [...domain.stats.rewardTrend].sort((a, b) => a - b);
+      const p10 = sorted[Math.floor(sorted.length * 0.1)];
+      
+      if (reward < p10 && reward < -0.3) {
+        const event = {
+          timestamp: Date.now(),
+          type: 'large_loss',
+          reward,
+          p10
+        };
+        domain.logs.largeLossEvents.push(event);
+        if (domain.logs.largeLossEvents.length > 50) {
+          domain.logs.largeLossEvents.shift();
+        }
+        this.logLearningEvent(`LARGE_LOSS@${domainName}: ${reward.toFixed(2)}`);
+        this.broadcastEvent('large_loss', { domain: domainName, reward, p10 });
+      }
+    }
+  }
+  
+  // Check if emergency fallback should be triggered
+  checkEmergencyFallback(domainName) {
+    const domain = this.domains[domainName];
+    
+    // Need at least 20 episodes to evaluate
+    if (domain.stats.totalEpisodes < 20) return;
+    
+    // Check if average reward is below threshold
+    if (domain.stats.averageReward < this.globalMetrics.emergencyFallbackThreshold) {
+      if (!domain.stats.emergencyFallbackActive) {
+        domain.stats.emergencyFallbackActive = true;
+        const event = {
+          timestamp: Date.now(),
+          type: 'emergency_fallback_activated',
+          avgReward: domain.stats.averageReward,
+          threshold: this.globalMetrics.emergencyFallbackThreshold
+        };
+        domain.logs.fallbackEvents.push(event);
+        this.logLearningEvent(`EMERGENCY_FALLBACK@${domainName}: avg_reward=${domain.stats.averageReward.toFixed(2)}`);
+        this.broadcastEvent('emergency_fallback', { 
+          domain: domainName, 
+          avgReward: domain.stats.averageReward,
+          action: 'disabled'
+        });
+      }
+    } else if (domain.stats.averageReward > (this.globalMetrics.emergencyFallbackThreshold + 0.2)) {
+      if (domain.stats.emergencyFallbackActive) {
+        domain.stats.emergencyFallbackActive = false;
+        const event = {
+          timestamp: Date.now(),
+          type: 'emergency_fallback_recovered',
+          avgReward: domain.stats.averageReward
+        };
+        domain.logs.fallbackEvents.push(event);
+        this.logLearningEvent(`FALLBACK_RECOVERED@${domainName}: avg_reward=${domain.stats.averageReward.toFixed(2)}`);
+        this.broadcastEvent('fallback_recovered', { domain: domainName, avgReward: domain.stats.averageReward });
+      }
+    }
+  }
+  
+  // Get metrics for a specific domain
+  getDomainMetrics(domainName) {
+    const domain = this.domains[domainName];
+    if (!domain) return null;
+    
+    return {
+      name: domainName,
+      metrics: domain.metrics,
+      stats: domain.stats,
+      performanceHistory: this.performanceHistory[domainName],
+      isInEmergencyFallback: domain.stats.emergencyFallbackActive,
+      averageReward: domain.stats.averageReward,
+      successRate: domain.stats.totalEpisodes > 0 
+        ? (domain.stats.successCount / domain.stats.totalEpisodes * 100).toFixed(2) + '%'
+        : 'N/A'
+    };
+  }
+  
+  // Get all domain metrics
+  getAllMetrics() {
+    const result = {};
+    for (const domainName in this.domains) {
+      result[domainName] = this.getDomainMetrics(domainName);
+    }
+    return result;
+  }
+  
+  // Get recent decisions for a domain
+  getRecentLogs(domainName, limit = 50) {
+    const domain = this.domains[domainName];
+    if (!domain) return [];
+    return domain.logs.recentDecisions.slice(-limit);
+  }
+  
+  // Get all recent learning events
+  getLearningEvents(limit = 50) {
+    return this.learningLog.slice(-limit);
+  }
+  
+  // Log a learning event
+  logLearningEvent(message) {
+    const event = {
+      timestamp: Date.now(),
+      message
+    };
+    this.learningLog.push(event);
+    if (this.learningLog.length > this.maxLearningLogSize) {
+      this.learningLog.shift();
+    }
+    
+    // Also append to learning.log file
+    try {
+      const logLine = `[${new Date().toISOString()}] ${message}\n`;
+      require('fs').appendFileSync('./logs/learning.log', logLine);
+    } catch (err) {
+      // Ignore file errors
+    }
+  }
+  
+  // Broadcast event via WebSocket
+  broadcastEvent(eventType, data) {
+    if (!this.wsServer) return;
+    
+    try {
+      const message = JSON.stringify({
+        type: 'rl_event',
+        eventType,
+        data,
+        timestamp: Date.now()
+      });
+      
+      // Send to all connected clients
+      if (this.wsServer.clients) {
+        this.wsServer.clients.forEach(client => {
+          if (client.readyState === 1) { // OPEN
+            try {
+              client.send(message);
+            } catch (err) {
+              // Ignore send errors
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.error('[RL_ANALYTICS] Broadcast error:', err.message);
+    }
+  }
+  
+  // Save performance metrics to disk
+  savePerformanceMetrics() {
+    try {
+      // Update performance snapshots with current metrics
+      for (const domainName in this.domains) {
+        const domain = this.domains[domainName];
+        if (!this.performanceHistory[domainName]) {
+          this.performanceHistory[domainName] = { snapshots: [], improvement: 0 };
+        }
+        
+        this.performanceHistory[domainName].snapshots.push({
+          timestamp: Date.now(),
+          stats: domain.stats
+        });
+        
+        // Keep only last 100 snapshots
+        if (this.performanceHistory[domainName].snapshots.length > 100) {
+          this.performanceHistory[domainName].snapshots.shift();
+        }
+      }
+      
+      safeWriteJson('./data/rl_performance.json', this.performanceHistory);
+      console.log('[RL_ANALYTICS] Performance metrics saved');
+    } catch (err) {
+      console.error('[RL_ANALYTICS] Error saving performance metrics:', err);
+    }
+  }
+  
+  // Toggle A/B testing
+  setABTestingEnabled(enabled) {
+    this.globalMetrics.abtestingEnabled = enabled;
+    console.log(`[RL_ANALYTICS] A/B testing ${enabled ? 'enabled' : 'disabled'}`);
+    this.logLearningEvent(`ABTEST_${enabled ? 'ON' : 'OFF'}`);
+  }
+  
+  // Should this episode use fallback? (for A/B testing)
+  shouldUseFallback() {
+    if (!this.globalMetrics.abtestingEnabled) return false;
+    return Math.random() < this.globalMetrics.abtestPercentage;
+  }
+  
+  // Reset domain statistics
+  resetDomain(domainName) {
+    if (this.domains[domainName]) {
+      const domain = this.domains[domainName];
+      domain.stats = {
+        totalEpisodes: 0,
+        successCount: 0,
+        failureCount: 0,
+        averageReward: 0,
+        rewardTrend: [],
+        confidenceScores: [],
+        winStreak: 0,
+        lossStreak: 0,
+        maxWinStreak: 0,
+        maxLossStreak: 0,
+        emergencyFallbackActive: false
+      };
+      domain.logs.recentDecisions = [];
+      console.log(`[RL_ANALYTICS] Domain reset: ${domainName}`);
+      this.logLearningEvent(`DOMAIN_RESET@${domainName}`);
+    }
+  }
+  
+  // Export analytics snapshot
+  exportSnapshot(domainName) {
+    const domain = this.domains[domainName];
+    if (!domain) return null;
+    
+    return {
+      domain: domainName,
+      timestamp: Date.now(),
+      metrics: domain.metrics,
+      stats: domain.stats,
+      recentLogs: domain.logs.recentDecisions.slice(-20),
+      highRewardEvents: domain.logs.highRewardEvents.slice(-10),
+      largeLossEvents: domain.logs.largeLossEvents.slice(-10)
+    };
   }
 }
 
@@ -23423,6 +23877,7 @@ let globalSwarmCoordinator = null;
 let globalSupplyChainManager = null;
 let globalIntelligenceDB = null;
 let globalBaseMonitor = null;
+let globalRLAnalytics = new RLAnalyticsManager();
 let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
 let globalSchematicLoader = new SchematicLoader();
@@ -24031,8 +24486,67 @@ http.createServer((req, res) => {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: 'Schematic not found' }));
       }
-    })();
-  } else if (req.url === '/command' && req.method === 'POST') {
+      })();
+      } else if (req.url === '/api/rl/metrics' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      metrics: globalRLAnalytics.getAllMetrics(),
+      globalSettings: globalRLAnalytics.globalMetrics,
+      timestamp: Date.now()
+      }));
+      } else if (req.url.startsWith('/api/rl/metrics/') && req.method === 'GET') {
+      const domainName = req.url.split('/').pop();
+      const metrics = globalRLAnalytics.getDomainMetrics(domainName);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: !!metrics,
+      metrics,
+      timestamp: Date.now()
+      }));
+      } else if (req.url.startsWith('/api/rl/logs/') && req.method === 'GET') {
+      const domainName = req.url.split('/').pop();
+      const limit = parseInt(req.url.split('?limit=')[1] || '50', 10);
+      const logs = globalRLAnalytics.getRecentLogs(domainName, limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      logs,
+      domain: domainName,
+      timestamp: Date.now()
+      }));
+      } else if (req.url === '/api/rl/events' && req.method === 'GET') {
+      const limit = parseInt(req.url.split('?limit=')[1] || '50', 10);
+      const events = globalRLAnalytics.getLearningEvents(limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      events,
+      timestamp: Date.now()
+      }));
+      } else if (req.url === '/api/rl/performance' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+      success: true,
+      performance: globalRLAnalytics.performanceHistory,
+      timestamp: Date.now()
+      }));
+      } else if (req.url.startsWith('/api/rl/export/') && req.method === 'GET') {
+      const domainName = req.url.split('/').pop();
+      const snapshot = globalRLAnalytics.exportSnapshot(domainName);
+      if (snapshot) {
+      safeWriteJson(`./data/rl_snapshots/${domainName}_${Date.now()}.json`, snapshot);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        snapshot,
+        exportedTo: `./data/rl_snapshots/${domainName}_${Date.now()}.json`
+      }));
+      } else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Domain not found' }));
+      }
+      } else if (req.url === '/command' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
@@ -24671,6 +25185,12 @@ async function launchBot(username, role = 'fighter') {
       globalSwarmCoordinator = new SwarmCoordinator(9090);
       console.log('[SWARM] Coordinator initialized');
       
+      // Set WebSocket server for RL analytics broadcasting
+      if (config.swarm.wsServer) {
+        globalRLAnalytics.wsServer = config.swarm.wsServer;
+        console.log('[RL_ANALYTICS] WebSocket server connected for event broadcasting');
+      }
+      
       globalSchematicBuilder = new SchematicBuilder(globalSwarmCoordinator);
       console.log('[BUILD] Schematic builder initialized');
     }
@@ -24689,6 +25209,11 @@ async function launchBot(username, role = 'fighter') {
     }
     
     bot.swarmCoordinator = globalSwarmCoordinator;
+    
+    // Initialize RL Analytics performance tracking
+    safeSetInterval(() => {
+      globalRLAnalytics.savePerformanceMetrics();
+    }, 300000, 'rl-analytics-saver'); // Every 5 minutes
     
     // Start periodic memory cleanup
     setInterval(cleanupOldData, 300000); // Every 5 minutes
