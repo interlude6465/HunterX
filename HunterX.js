@@ -28123,14 +28123,23 @@ function mapBlockToGlyph(name) {
 
 function askStashConfig() {
   rl.question('Starting coordinates (x,y,z): ', (coords) => {
+    const cfg = global.config || config;
     const [x, y, z] = coords.split(',').map(c => parseInt(c.trim()));
-    config.stashHunt.startCoords = new Vec3(x, y, z);
+    if (cfg && cfg.stashHunt) {
+      cfg.stashHunt.startCoords = new Vec3(x, y, z);
+    }
     
     rl.question('Search radius (blocks, default 10000): ', (radius) => {
-      config.stashHunt.searchRadius = parseInt(radius) || 10000;
+      const cfg = global.config || config;
+      if (cfg && cfg.stashHunt) {
+        cfg.stashHunt.searchRadius = parseInt(radius) || 10000;
+      }
       
       rl.question('Enable fly hacks (2b2t)? (y/n): ', (fly) => {
-        config.stashHunt.flyHackEnabled = fly.toLowerCase() === 'y';
+        const cfg = global.config || config;
+        if (cfg && cfg.stashHunt) {
+          cfg.stashHunt.flyHackEnabled = fly.toLowerCase() === 'y';
+        }
         askServer();
       });
     });
@@ -28196,9 +28205,10 @@ function configureWhitelist() {
 
 async function askServer() {
   rl.question('Server IP:PORT: ', async (server) => {
-    config.server = server.trim();
+    const cfg = global.config || config;
+    cfg.server = server.trim();
     
-    if (config.swarm.autoDetectServerType) {
+    if (cfg.swarm && cfg.swarm.autoDetectServerType) {
       console.log('\nDetecting server type...');
       
       if (!globalBotSpawner) {
@@ -28206,10 +28216,12 @@ async function askServer() {
       }
       
       try {
-        const serverType = await globalBotSpawner.detectServerType(config.server);
-        config.swarm.serverType = serverType;
+        const serverType = await globalBotSpawner.detectServerType(cfg.server);
+        if (cfg.swarm) {
+          cfg.swarm.serverType = serverType;
+        }
         
-        if (!serverType.cracked && (!config.localAccount.username || !config.localAccount.password)) {
+        if (!serverType.cracked && (!cfg.localAccount || !cfg.localAccount.username || !cfg.localAccount.password)) {
           console.log('\n⚠️  Server requires authentication but no local account configured!');
           console.log('Please configure local account credentials in the config section.');
           showMenu();
@@ -28229,7 +28241,8 @@ async function launchSwarm() {
   console.log('\n🐝 SWARM MODE - Multi-Bot Coordination\n');
   
   rl.question('Server IP:PORT: ', async (server) => {
-    config.server = server.trim();
+    const cfg = global.config || config;
+    cfg.server = server.trim();
     
     console.log('\nDetecting server type...');
     
@@ -28238,29 +28251,36 @@ async function launchSwarm() {
     }
     
     try {
-      const serverType = await globalBotSpawner.detectServerType(config.server);
-      config.swarm.serverType = serverType;
+      const serverType = await globalBotSpawner.detectServerType(cfg.server);
+      if (cfg.swarm) {
+        cfg.swarm.serverType = serverType;
+      }
     } catch (err) {
       console.log(`⚠️  Detection failed: ${err.message}`);
       console.log('Defaulting to cracked server mode...');
     }
     
-    rl.question(`\nHow many bots to spawn initially? [default: ${config.swarm.initialBotCount}]: `, (countInput) => {
-      const botCount = parseInt(countInput) || config.swarm.initialBotCount;
+    const defaultBotCount = cfg.swarm ? cfg.swarm.initialBotCount : 1;
+    rl.question(`\nHow many bots to spawn initially? [default: ${defaultBotCount}]: `, (countInput) => {
+      const botCount = parseInt(countInput) || defaultBotCount;
+      const maxBots = cfg.swarm ? cfg.swarm.maxBots : 10;
       
-      if (botCount > config.swarm.maxBots) {
-        console.log(`⚠️  Cannot spawn ${botCount} bots. Max limit is ${config.swarm.maxBots}.`);
+      if (botCount > maxBots) {
+        console.log(`⚠️  Cannot spawn ${botCount} bots. Max limit is ${maxBots}.`);
         showMenu();
         return;
       }
       
       rl.question('Bot mode (pvp/stash/friendly): ', (mode) => {
-        config.mode = mode.trim() || 'friendly';
+        const cfg = global.config || config;
+        cfg.mode = mode.trim() || 'friendly';
         
-        console.log(`\n🚀 Launching ${botCount} bots in ${config.mode} mode...`);
-        console.log(`Server type: ${config.swarm.serverType ? (config.swarm.serverType.cracked ? 'CRACKED' : 'PREMIUM') : 'Unknown'}\n`);
+        const modeDisplay = cfg.mode;
+        const serverTypeStr = cfg.swarm && cfg.swarm.serverType ? (cfg.swarm.serverType.cracked ? 'CRACKED' : 'PREMIUM') : 'Unknown';
+        console.log(`\n🚀 Launching ${botCount} bots in ${modeDisplay} mode...`);
+        console.log(`Server type: ${serverTypeStr}\n`);
         
-        globalBotSpawner.spawnMultiple(config.server, botCount, config.mode).then(() => {
+        globalBotSpawner.spawnMultiple(cfg.server, botCount, cfg.mode).then(() => {
           console.log(`\n✅ Successfully spawned ${botCount} bots!`);
           console.log(`Total active bots: ${globalBotSpawner.getActiveBotCount()}`);
           console.log(`\nCommands:`);
@@ -28828,6 +28848,27 @@ function validateBasicProxy(host, port) {
 
 // Interactive setup wizard
 function runSetupWizard() {
+  // Ensure config and its nested properties are properly initialized
+  if (!global.config) {
+    global.config = config;
+  }
+  if (!config.localAccount) {
+    config.localAccount = {
+      username: '',
+      password: '',
+      authType: 'microsoft'
+    };
+  }
+  if (!config.proxy) {
+    config.proxy = {
+      enabled: false,
+      host: '',
+      port: '',
+      username: '',
+      password: ''
+    };
+  }
+  
   console.log('\n🔧 HUNTERX SETUP WIZARD');
   console.log('═'.repeat(50));
   console.log('Let\'s configure your Minecraft account and proxy settings.\n');
@@ -28837,20 +28878,30 @@ function runSetupWizard() {
   console.log('─'.repeat(40));
   
   rl.question('Username/Email: ', (username) => {
-    config.localAccount.username = username.trim();
+    // Ensure config is accessible - use global reference
+    const cfg = global.config || config;
+    if (cfg.localAccount) {
+      cfg.localAccount.username = username.trim();
+    }
     
     rl.question('Password: ', (password) => {
-      config.localAccount.password = password.trim();
+      const cfg = global.config || config;
+      if (cfg.localAccount) {
+        cfg.localAccount.password = password.trim();
+      }
       
       rl.question('Account Type (microsoft/mojang) [default: microsoft]: ', (authType) => {
-        config.localAccount.authType = authType.trim() || 'microsoft';
-        
-        // Basic validation
-        if (config.localAccount.username.length < 3) {
-          console.log('⚠️ Username should be at least 3 characters');
-        }
-        if (config.localAccount.password.length < 6) {
-          console.log('⚠️ Password should be at least 6 characters');
+        const cfg = global.config || config;
+        if (cfg.localAccount) {
+          cfg.localAccount.authType = authType.trim() || 'microsoft';
+          
+          // Basic validation
+          if (cfg.localAccount.username.length < 3) {
+            console.log('⚠️ Username should be at least 3 characters');
+          }
+          if (cfg.localAccount.password.length < 6) {
+            console.log('⚠️ Password should be at least 6 characters');
+          }
         }
         
         console.log('🔍 Note: Full credential validation will occur during server connection');
@@ -28868,16 +28919,17 @@ function runSetupWizard() {
               rl.question('Proxy Port: ', (port) => {
                 rl.question('Proxy Username (optional, press Enter to skip): ', (proxyUser) => {
                   rl.question('Proxy Password (optional, press Enter to skip): ', (proxyPass) => {
+                    const cfg = global.config || config;
                     
                     // Basic validation
                     if (!host.trim()) {
                       console.log('⚠️ Proxy host is required');
-                      config.proxy = { enabled: false };
+                      cfg.proxy = { enabled: false, host: '', port: '', username: '', password: '' };
                     } else if (!port.trim() || isNaN(port.trim())) {
                       console.log('⚠️ Valid proxy port is required');
-                      config.proxy = { enabled: false };
+                      cfg.proxy = { enabled: false, host: '', port: '', username: '', password: '' };
                     } else {
-                      config.proxy = { 
+                      cfg.proxy = { 
                         enabled: true,
                         host: host.trim(),
                         port: port.trim(),
@@ -28895,7 +28947,8 @@ function runSetupWizard() {
               });
             });
           } else {
-            config.proxy = { enabled: false };
+            const cfg = global.config || config;
+            cfg.proxy = { enabled: false, host: '', port: '', username: '', password: '' };
             saveAndContinue();
           }
         });
@@ -28904,7 +28957,8 @@ function runSetupWizard() {
   });
   
   function saveAndContinue() {
-    // Save configuration
+    // Save configuration - use explicit global reference
+    const cfg = global.config || config;
     if (saveConfiguration()) {
       console.log('\n✅ Configuration saved successfully!');
       console.log('You can always reconfigure later from the main menu.\n');
@@ -28920,15 +28974,16 @@ function runSetupWizard() {
 
 // Reconfigure settings
 async function reconfigureSettings() {
+  const cfg = global.config || config;
   console.clear();
   console.log('\n🔧 RECONFIGURE SETTINGS');
   console.log('═'.repeat(50));
   console.log('Current Configuration:');
-  console.log(`Username: ${config.localAccount.username || 'Not set'}`);
-  console.log(`Account Type: ${config.localAccount.authType || 'Not set'}`);
-  console.log(`Proxy: ${config.proxy && config.proxy.enabled ? 'Enabled' : 'Disabled'}`);
-  if (config.proxy && config.proxy.enabled) {
-    console.log(`  Host: ${config.proxy.host}:${config.proxy.port}`);
+  console.log(`Username: ${cfg && cfg.localAccount ? cfg.localAccount.username || 'Not set' : 'Not set'}`);
+  console.log(`Account Type: ${cfg && cfg.localAccount ? cfg.localAccount.authType || 'Not set' : 'Not set'}`);
+  console.log(`Proxy: ${cfg && cfg.proxy && cfg.proxy.enabled ? 'Enabled' : 'Disabled'}`);
+  if (cfg && cfg.proxy && cfg.proxy.enabled) {
+    console.log(`  Host: ${cfg.proxy.host}:${cfg.proxy.port}`);
   }
   console.log('\nWhat would you like to change?');
   console.log('1. Minecraft Account');
@@ -28959,13 +29014,15 @@ async function reconfigureSettings() {
 
 // Reconfigure Minecraft account
 async function reconfigureAccount() {
+  const cfg = global.config || config;
   console.log('\n📝 Update Minecraft Account:');
   console.log('─'.repeat(40));
   
   await new Promise(resolve => {
-    rl.question(`Username [current: ${config.localAccount.username || 'Not set'}]: `, (username) => {
-      if (username.trim()) {
-        config.localAccount.username = username.trim();
+    const currentUsername = cfg && cfg.localAccount ? cfg.localAccount.username || 'Not set' : 'Not set';
+    rl.question(`Username [current: ${currentUsername}]: `, (username) => {
+      if (username.trim() && cfg && cfg.localAccount) {
+        cfg.localAccount.username = username.trim();
       }
       resolve();
     });
@@ -28973,17 +29030,18 @@ async function reconfigureAccount() {
   
   await new Promise(resolve => {
     rl.question('Password (leave empty to keep current): ', (password) => {
-      if (password.trim()) {
-        config.localAccount.password = password.trim();
+      if (password.trim() && cfg && cfg.localAccount) {
+        cfg.localAccount.password = password.trim();
       }
       resolve();
     });
   });
   
   await new Promise(resolve => {
-    rl.question(`Account Type [current: ${config.localAccount.authType || 'microsoft'}]: `, (authType) => {
-      if (authType.trim()) {
-        config.localAccount.authType = authType.trim();
+    const currentAuthType = cfg && cfg.localAccount ? cfg.localAccount.authType || 'microsoft' : 'microsoft';
+    rl.question(`Account Type [current: ${currentAuthType}]: `, (authType) => {
+      if (authType.trim() && cfg && cfg.localAccount) {
+        cfg.localAccount.authType = authType.trim();
       }
       resolve();
     });
@@ -29001,36 +29059,39 @@ async function reconfigureAccount() {
 
 // Reconfigure proxy settings
 async function reconfigureProxy() {
+  const cfg = global.config || config;
   console.log('\n🌐 Update Proxy Settings:');
   console.log('─'.repeat(40));
   
-  const currentStatus = config.proxy && config.proxy.enabled ? 'Enabled' : 'Disabled';
+  const currentStatus = cfg && cfg.proxy && cfg.proxy.enabled ? 'Enabled' : 'Disabled';
   await new Promise(resolve => {
     rl.question(`Enable proxy? [current: ${currentStatus}] (y/n): `, (useProxy) => {
       const answer = useProxy.trim().toLowerCase();
       
       if (answer === 'y' || answer === 'yes') {
-        config.proxy = config.proxy || {};
-        config.proxy.enabled = true;
+        if (!cfg.proxy) {
+          cfg.proxy = {};
+        }
+        cfg.proxy.enabled = true;
         
-        rl.question(`Proxy Host [current: ${config.proxy.host || 'Not set'}]: `, (host) => {
+        rl.question(`Proxy Host [current: ${cfg.proxy.host || 'Not set'}]: `, (host) => {
           if (host.trim()) {
-            config.proxy.host = host.trim();
+            cfg.proxy.host = host.trim();
           }
           
-          rl.question(`Proxy Port [current: ${config.proxy.port || 'Not set'}]: `, (port) => {
+          rl.question(`Proxy Port [current: ${cfg.proxy.port || 'Not set'}]: `, (port) => {
             if (port.trim()) {
-              config.proxy.port = port.trim();
+              cfg.proxy.port = port.trim();
             }
             
-            rl.question(`Proxy Username [current: ${config.proxy.username || 'Not set'}]: `, (proxyUser) => {
+            rl.question(`Proxy Username [current: ${cfg.proxy.username || 'Not set'}]: `, (proxyUser) => {
               if (proxyUser.trim()) {
-                config.proxy.username = proxyUser.trim();
+                cfg.proxy.username = proxyUser.trim();
               }
               
               rl.question('Proxy Password (leave empty to keep current): ', (proxyPass) => {
                 if (proxyPass.trim()) {
-                  config.proxy.password = proxyPass.trim();
+                  cfg.proxy.password = proxyPass.trim();
                 }
                 
                 if (saveConfiguration()) {
@@ -29046,7 +29107,7 @@ async function reconfigureProxy() {
           });
         });
       } else if (answer === 'n' || answer === 'no') {
-        config.proxy = { enabled: false };
+        cfg.proxy = { enabled: false, host: '', port: '', username: '', password: '' };
         if (saveConfiguration()) {
           console.log('✅ Proxy disabled!');
         } else {
@@ -29149,6 +29210,9 @@ function logNeuralSystemStatus() {
 // Main startup function
 async function initializeHunterX() {
   console.log('\n🔍 Checking system requirements...\n');
+  
+  // Ensure global config is available
+  global.config = config;
   
   // Check dependencies
   const depsOk = await checkDependencies();
