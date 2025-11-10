@@ -29234,9 +29234,13 @@ async function initializeHunterX() {
   global.rlSystem = new RLSystem();
   console.log('[RL] ✓ RL System framework initialized\n');
   
-  // Load or create configuration
-  const configLoaded = loadConfiguration();
-  if (!configLoaded) {
+  // Note: Configuration is already loaded by startBot() before calling this function
+  // If this is the first run and no config exists, runSetupWizard() will be called
+  
+  // Check if this is a fresh install (first run)
+  const configPath = './data/config.json';
+  if (!fs.existsSync(configPath)) {
+    console.log('[INIT] First run detected - starting setup wizard...\n');
     runSetupWizard();
     return; // Don't show menu yet, let setup wizard handle it
   }
@@ -30679,7 +30683,37 @@ if (typeof MessageInterceptor !== 'undefined') {
   };
 }
 
-// === STARTUP CALL ===
+// === STARTUP SEQUENCE ===
 // Initialize HunterX with automatic setup and credential management
-initializeHunterX();
+// Restructured: Load config FIRST, then initialize
+async function startBot() {
+  try {
+    console.log('[INIT] Starting bot initialization sequence...\n');
+    
+    // First: Load configuration (must complete before anything else)
+    console.log('[INIT] Loading configuration...');
+    const configLoaded = loadConfiguration();
+    
+    if (!configLoaded) {
+      console.log('[INIT] No existing config found, setup wizard will guide you\n');
+    } else {
+      console.log('[INIT] ✓ Config loaded successfully\n');
+    }
+    
+    // Second: Initialize HunterX after config is ready
+    console.log('[INIT] Initializing HunterX systems...\n');
+    await initializeHunterX();
+    
+    console.log('[INIT] ✓ Bot initialization complete\n');
+  } catch (err) {
+    console.error('[INIT] Startup error:', err.message);
+    process.exit(1);
+  }
+}
+
+// Start the bot
+startBot().catch(err => {
+  console.error('[INIT] Fatal startup error:', err.message);
+  process.exit(1);
+});
 
