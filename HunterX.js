@@ -1326,6 +1326,7 @@ const config = {
     dupe: null, // Will be initialized by NeuralBrainManager
     conversation: null, // Will be initialized by NeuralBrainManager
     dialogue: null, // Will be initialized by DialogueRL
+    movement: null, // Will be initialized by MovementRL
     available: false, // Will be updated by NeuralBrainManager
     type: 'fallback', // Will be updated by NeuralBrainManager
     manager: null // Will be set to NeuralBrainManager instance
@@ -15980,9 +15981,58 @@ class ConversationAI {
       
       this.bot.chat("Usage: !rl dialogue [stats|reset|train|save|load]");
       return;
-    }
-    
-    // Projectile & Mace commands
+      }
+
+      if (lower.includes('movement')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        this.bot.chat("Only admin+ can control Movement RL!");
+        return;
+      }
+
+      if (lower.includes('stats')) {
+        const stats = this.bot.movementModeManager.getMovementRLStats();
+        this.bot.chat(`📊 Movement RL Stats:`);
+        this.bot.chat(`  Enabled: ${stats.enabled}, Initialized: ${stats.initialized}`);
+        this.bot.chat(`  Total movements: ${stats.stats.totalMovements}`);
+        this.bot.chat(`  Success rate: ${stats.successRate}`);
+        this.bot.chat(`  Training data: ${stats.trainingDataSize} examples`);
+        this.bot.chat(`  Scenario stats:`);
+        this.bot.chat(`    Overworld Hills: ${stats.stats.scenarioStats.overworld_hills.count} (${stats.stats.scenarioStats.overworld_hills.success} success)`);
+        this.bot.chat(`    Nether Highway: ${stats.stats.scenarioStats.nether_highway.count} (${stats.stats.scenarioStats.nether_highway.success} success)`);
+        this.bot.chat(`    Cave Navigation: ${stats.stats.scenarioStats.cave_navigation.count} (${stats.stats.scenarioStats.cave_navigation.success} success)`);
+        this.bot.chat(`  Actions: ${stats.stats.timeoutMovements} timeouts, ${stats.stats.safetyVetoes} safety vetoes`);
+        return;
+      }
+
+      if (lower.includes('reset')) {
+        this.bot.movementModeManager.resetMovementRLStats();
+        this.bot.chat("✅ Movement RL statistics reset!");
+        return;
+      }
+
+      if (lower.includes('train')) {
+        await this.bot.movementModeManager.trainMovementRL();
+        this.bot.chat("✅ Movement RL model trained!");
+        return;
+      }
+
+      if (lower.includes('save')) {
+        this.bot.movementModeManager.saveMovementRL();
+        this.bot.chat("✅ Movement RL model saved to disk!");
+        return;
+      }
+
+      if (lower.includes('load')) {
+        await this.bot.movementModeManager.loadMovementRL();
+        this.bot.chat("✅ Movement RL model loaded from disk!");
+        return;
+      }
+
+      this.bot.chat("Usage: !rl movement [stats|reset|train|save|load]");
+      return;
+      }
+
+      // Projectile & Mace commands
     if (lower.includes('projectile stats') || lower.includes('bow stats')) {
       if (this.bot.combatAI && this.bot.combatAI.projectileAI) {
         const metrics = this.bot.combatAI.projectileAI.getAccuracyMetrics();
@@ -17299,11 +17349,504 @@ class DialogueRL {
     if (this.initialized) {
       safeNeuralSave('dialogue', './models/dialogue_model.json');
       console.log('[DIALOGUE_RL] Dialogue model saved to disk');
-    }
-  }
-}
+      }
+      }
+      }
 
-// === COORDINATE SCRAPER ===
+      // === MOVEMENT RL ===
+      class MovementRL {
+      constructor(bot) {
+      this.bot = bot;
+      this.enabled = config.neural && config.neural.available;
+      this.model = null;
+      this.replayBuffer = [];
+      this.maxBufferSize = 1000;
+      this.trainingData = [];
+      this.stats = {
+       totalMovements: 0,
+       successfulMovements: 0,
+       failedMovements: 0,
+       timeoutMovements: 0,
+       safetyVetoes: 0,
+       scenarioStats: {
+         overworld_hills: { count: 0, success: 0 },
+         nether_highway: { count: 0, success: 0 },
+         cave_navigation: { count: 0, success: 0 }
+       }
+      };
+      this.recentMovements = [];
+      this.maxRecentMovements = 20;
+      this.lastTrainingTime = 0;
+      this.trainingInterval = 60000; // Train every 60 seconds
+      this.confidenceThreshold = 0.7; // Below this, use fallback
+      this.initialized = false;
+      this.movementStartTime = 0;
+      this.lastRecalculations = 0;
+      this.lastStuckDetections = 0;
+
+      this.initializeModel();
+      }
+
+      initializeModel() {
+      try {
+       if (this.enabled && config.neural && config.neural.manager) {
+         // Network for movement action selection
+         // Input: [terrain (1), dimension (1), distance (1), elevation (1), hazard (1), equipment (1), dim_scalar (1)]
+         // Output: 7 possible movement actions
+         const inputSize = 7;
+         const outputSize = 7;
+
+         if (!config.neural.movement) {
+           config.neural.movement = config.neural.manager.createNetwork('movement', inputSize, outputSize);
+         }
+         this.model = config.neural.movement;
+         this.initialized = true;
+         console.log('[MOVEMENT_RL] Movement RL model initialized');
+       } else {
+         console.log('[MOVEMENT_RL] RL disabled or not available, using deterministic fallback');
+       }
+      } catch (error) {
+       console.error('[MOVEMENT_RL] Error initializing model:', error);
+       this.initialized = false;
+      }
+      }
+
+      // Classify terrain type from environment
+      classifyTerrain(pos) {
+      try {
+       if (!pos || !this.bot.world) return 'unknown';
+
+       const block = this.bot.blockAt(pos);
+       if (!block) return 'unknown';
+
+       const blockName = block.name || '';
+
+       if (blockName.includes('water')) return 'water';
+       if (blockName.includes('lava')) return 'lava';
+       if (blockName.includes('stone') || blockName.includes('ore')) return 'cave';
+       if (blockName.includes('grass') || blockName.includes('dirt')) return 'hill';
+       if (blockName.includes('nether')) return 'nether';
+       if (blockName.includes('sand')) return 'desert';
+
+       return 'terrain';
+      } catch (error) {
+       return 'unknown';
+      }
+      }
+
+      // Detect dimension
+      detectDimension() {
+      const dimension = this.bot.game?.dimension;
+      if (dimension === 'minecraft:the_nether' || dimension === 'nether') return 'nether';
+      if (dimension === 'minecraft:the_end' || dimension === 'end') return 'end';
+      return 'overworld';
+      }
+
+      // Get equipment availability
+      checkEquipment() {
+      try {
+       const inventory = this.bot.inventory.items();
+       const hasElytra = !!inventory.find(item => item.name === 'elytra');
+       const hasRockets = !!inventory.find(item => item.name === 'firework_rocket');
+       const hasWaterBucket = !!inventory.find(item => item.name === 'water_bucket');
+       const hasBlocks = !!inventory.find(item => item.name && item.name.includes('block'));
+
+       return { hasElytra, hasRockets, hasWaterBucket, hasBlocks };
+      } catch (error) {
+       return { hasElytra: false, hasRockets: false, hasWaterBucket: false, hasBlocks: false };
+      }
+      }
+
+      // Check for hazards near bot
+      checkHazards(pos) {
+      try {
+       if (!pos) pos = this.bot.entity.position;
+
+       let hazardScore = 0;
+       const checkRadius = 5;
+
+       for (let x = pos.x - checkRadius; x <= pos.x + checkRadius; x++) {
+         for (let y = pos.y - 2; y <= pos.y + 2; y++) {
+           for (let z = pos.z - checkRadius; z <= pos.z + checkRadius; z++) {
+             const block = this.bot.blockAt(new Vec3(x, y, z));
+             if (!block) continue;
+
+             if (block.name.includes('lava')) hazardScore += 0.5;
+             if (block.name.includes('fire')) hazardScore += 0.3;
+             if (block.name === 'air' && y < pos.y - 1) hazardScore += 0.2; // Falling risk
+           }
+         }
+       }
+
+       return Math.min(1.0, hazardScore);
+      } catch (error) {
+       return 0;
+      }
+      }
+
+      // Encode movement state into feature vector
+      encodeState(targetPos, scenario = 'unknown') {
+      try {
+       const features = [];
+
+       // 1. Terrain classification (normalized)
+       const terrainTypes = ['unknown', 'water', 'lava', 'cave', 'hill', 'nether', 'desert', 'terrain'];
+       const terrain = this.classifyTerrain(this.bot.entity.position);
+       const terrainIndex = terrainTypes.indexOf(terrain);
+       features.push((terrainIndex >= 0 ? terrainIndex : 0) / terrainTypes.length);
+
+       // 2. Dimension (normalized)
+       const dimensions = ['overworld', 'nether', 'end'];
+       const dimension = this.detectDimension();
+       const dimensionIndex = dimensions.indexOf(dimension);
+       features.push((dimensionIndex >= 0 ? dimensionIndex : 0) / dimensions.length);
+
+       // 3. Target distance (normalized)
+       const currentPos = this.bot.entity.position;
+       const distance = targetPos ? currentPos.distanceTo(targetPos) : 0;
+       features.push(Math.min(1.0, distance / 1000)); // Normalize to 0-1 for distances up to 1000 blocks
+
+       // 4. Elevation change (normalized)
+       const elevationChange = targetPos ? Math.abs(targetPos.y - currentPos.y) : 0;
+       features.push(Math.min(1.0, elevationChange / 256)); // Normalize to max world height
+
+       // 5. Hazard proximity (0-1 score)
+       const hazard = this.checkHazards(currentPos);
+       features.push(hazard);
+
+       // 6. Equipment availability score
+       const equipment = this.checkEquipment();
+       const equipScore = (equipment.hasElytra ? 0.5 : 0) +
+                         (equipment.hasRockets ? 0.2 : 0) +
+                         (equipment.hasWaterBucket ? 0.2 : 0) +
+                         (equipment.hasBlocks ? 0.1 : 0);
+       features.push(Math.min(1.0, equipScore));
+
+       // 7. Scenario context (normalized)
+       const scenarios = ['unknown', 'overworld_hills', 'nether_highway', 'cave_navigation'];
+       const scenarioIndex = scenarios.indexOf(scenario);
+       features.push((scenarioIndex >= 0 ? scenarioIndex : 0) / scenarios.length);
+
+       return features;
+      } catch (error) {
+       console.error('[MOVEMENT_RL] Error encoding state:', error);
+       return Array(7).fill(0.5);
+      }
+      }
+
+      // Detect scenario based on context
+      detectScenario(targetPos) {
+      try {
+       const dimension = this.detectDimension();
+       const terrain = this.classifyTerrain(this.bot.entity.position);
+
+       if (dimension === 'nether') {
+         return 'nether_highway';
+       } else if (terrain === 'cave' || terrain === 'water') {
+         return 'cave_navigation';
+       } else {
+         return 'overworld_hills';
+       }
+      } catch (error) {
+       return 'unknown';
+      }
+      }
+
+      // Select movement action based on RL
+      async selectAction(targetPos, scenario = null) {
+      if (!this.enabled || !this.initialized) {
+       return { action: 'standard_pathfinder', confidence: 0.0 };
+      }
+
+      try {
+       if (!scenario) {
+         scenario = this.detectScenario(targetPos);
+       }
+
+       const state = this.encodeState(targetPos, scenario);
+
+       const actionProbabilities = await safeNeuralPredict('movement', state, null);
+
+       if (!actionProbabilities) {
+         return { action: 'standard_pathfinder', confidence: 0.0 };
+       }
+
+       const actions = [
+         'highway_mode',
+         'standard_pathfinder',
+         'pillar_bridge',
+         'water_bucket_drop',
+         'elytra_travel',
+         'slow_walk',
+         'pause_scan'
+       ];
+
+       const probs = Array.isArray(actionProbabilities) ? actionProbabilities : [actionProbabilities];
+
+       let bestAction = 'standard_pathfinder';
+       let bestConfidence = 0;
+
+       for (let i = 0; i < Math.min(probs.length, actions.length); i++) {
+         const prob = Math.max(0, Math.min(1, parseFloat(probs[i]) || 0));
+         if (prob > bestConfidence) {
+           bestConfidence = prob;
+           bestAction = actions[i];
+         }
+       }
+
+       return {
+         action: bestAction,
+         confidence: bestConfidence,
+         probabilities: probs.slice(0, actions.length),
+         scenario
+       };
+      } catch (error) {
+       console.error('[MOVEMENT_RL] Error selecting action:', error);
+       return { action: 'standard_pathfinder', confidence: 0.0 };
+      }
+      }
+
+      // Safety gate: check if action is safe to execute
+      isSafeAction(action, scenario) {
+      try {
+       const equipment = this.checkEquipment();
+
+       // Elytra travel requires rockets
+       if (action === 'elytra_travel' && (!equipment.hasElytra || !equipment.hasRockets)) {
+         return false;
+       }
+
+       // Water bucket drop requires water bucket
+       if (action === 'water_bucket_drop' && !equipment.hasWaterBucket) {
+         return false;
+       }
+
+       // Pillar bridge requires blocks
+       if (action === 'pillar_bridge' && !equipment.hasBlocks) {
+         return false;
+       }
+
+       // Certain actions not safe over lava
+       const hazard = this.checkHazards();
+       if (hazard > 0.7 && (action === 'pillar_bridge' || action === 'water_bucket_drop')) {
+         return false;
+       }
+
+       return true;
+      } catch (error) {
+       return false;
+      }
+      }
+
+      // Record safety veto
+      recordSafetyVeto(action, reason) {
+      this.stats.safetyVetoes++;
+      console.log(`[MOVEMENT_RL] Safety veto: action=${action}, reason=${reason}`);
+      }
+
+      // Record movement outcome for training
+      recordOutcome(targetPos, action, outcome, scenario = 'unknown') {
+      try {
+       const success = outcome.success || false;
+       const reward = this.calculateReward(outcome, action);
+
+       // Update stats
+       this.stats.totalMovements++;
+       if (success) {
+         this.stats.successfulMovements++;
+       } else if (outcome.timeout) {
+         this.stats.timeoutMovements++;
+       } else {
+         this.stats.failedMovements++;
+       }
+
+       // Track scenario stats
+       if (this.stats.scenarioStats[scenario]) {
+         this.stats.scenarioStats[scenario].count++;
+         if (success) {
+           this.stats.scenarioStats[scenario].success++;
+         }
+       }
+
+       // Record in recent movements
+       this.recentMovements.push({ success, timestamp: Date.now(), scenario, action });
+       if (this.recentMovements.length > this.maxRecentMovements) {
+         this.recentMovements.shift();
+       }
+
+       // Store for training
+       this.trainingData.push({
+         action,
+         reward,
+         timestamp: Date.now(),
+         scenario,
+         travelTime: outcome.travelTime || 0,
+         distance: outcome.distance || 0,
+         recalculations: outcome.recalculations || 0,
+         stuckDetections: outcome.stuckDetections || 0
+       });
+
+       console.log(`[MOVEMENT_RL] Recorded movement: action=${action}, scenario=${scenario}, success=${success}, reward=${reward.toFixed(2)}`);
+      } catch (error) {
+       console.error('[MOVEMENT_RL] Error recording outcome:', error);
+      }
+      }
+
+      // Calculate reward signal for movement
+      calculateReward(outcome, action) {
+      let reward = 0;
+
+      if (outcome.success) {
+       // Reward successful movement
+       reward = 1.0;
+
+       // Bonus for efficiency (time-to-target)
+       if (outcome.travelTime && outcome.distance) {
+         const efficiency = outcome.distance / Math.max(1, outcome.travelTime / 1000); // blocks per second
+         if (efficiency > 5) {
+           reward += 0.3; // Fast travel bonus
+         }
+       }
+
+       // Bonus for smooth path (minimal recalculations)
+       if (outcome.recalculations !== undefined && outcome.recalculations < 3) {
+         reward += 0.2;
+       }
+
+       // Bonus for avoiding stuck situations
+       if (outcome.stuckDetections !== undefined && outcome.stuckDetections === 0) {
+         reward += 0.2;
+       }
+      } else {
+       // Penalize failures and timeouts
+       reward = outcome.timeout ? -0.3 : -0.5;
+      }
+
+      // Penalize fall damage
+      if (outcome.fallDamage && outcome.fallDamage > 0) {
+       reward -= Math.min(0.5, outcome.fallDamage / 20); // Normalized to max half heart
+      }
+
+      // Penalize lava contact
+      if (outcome.lavaContact) {
+       reward -= 1.0;
+      }
+
+      // Penalize loops/inefficiency
+      if (outcome.isLoop) {
+       reward -= 0.8;
+      }
+
+      return reward;
+      }
+
+      // Train the model periodically
+      async trainModel() {
+      if (!this.enabled || !this.initialized || this.trainingData.length === 0) {
+       return;
+      }
+
+      const now = Date.now();
+      if (now - this.lastTrainingTime < this.trainingInterval) {
+       return;
+      }
+
+      try {
+       const batchSize = Math.min(32, this.trainingData.length);
+       const batch = this.trainingData.slice(-batchSize);
+
+       const trainingExamples = batch.map(data => {
+         const target = Array(7).fill(0);
+         const actionIndex = [
+           'highway_mode',
+           'standard_pathfinder',
+           'pillar_bridge',
+           'water_bucket_drop',
+           'elytra_travel',
+           'slow_walk',
+           'pause_scan'
+         ].indexOf(data.action);
+
+         if (actionIndex >= 0) {
+           target[actionIndex] = Math.max(0, Math.min(1, (data.reward + 1) / 2));
+         }
+
+         return {
+           input: Array(7).fill(0.5),
+           output: target
+         };
+       });
+
+       const success = await safeNeuralTrain('movement', trainingExamples, {
+         iterations: 100,
+         errorThresh: 0.01
+       });
+
+       if (success) {
+         console.log('[MOVEMENT_RL] Model trained successfully on', batchSize, 'examples');
+         this.lastTrainingTime = now;
+
+         if (now % 300000 < this.trainingInterval) {
+           safeNeuralSave('movement', './models/movement_model.json');
+         }
+       }
+      } catch (error) {
+       console.error('[MOVEMENT_RL] Error training model:', error);
+      }
+      }
+
+      // Get RL stats
+      getStats() {
+      return {
+       enabled: this.enabled,
+       initialized: this.initialized,
+       stats: this.stats,
+       trainingDataSize: this.trainingData.length,
+       successRate: this.stats.totalMovements > 0
+         ? (this.stats.successfulMovements / this.stats.totalMovements * 100).toFixed(2) + '%'
+         : 'N/A'
+      };
+      }
+
+      // Reset stats
+      resetStats() {
+      this.stats = {
+       totalMovements: 0,
+       successfulMovements: 0,
+       failedMovements: 0,
+       timeoutMovements: 0,
+       safetyVetoes: 0,
+       scenarioStats: {
+         overworld_hills: { count: 0, success: 0 },
+         nether_highway: { count: 0, success: 0 },
+         cave_navigation: { count: 0, success: 0 }
+       }
+      };
+      this.recentMovements = [];
+      this.trainingData = [];
+      console.log('[MOVEMENT_RL] Statistics reset');
+      }
+
+      // Load persisted model
+      async loadModel() {
+      try {
+       await safeNeuralLoad('movement', './models/movement_model.json');
+       console.log('[MOVEMENT_RL] Movement model loaded from disk');
+      } catch (error) {
+       console.log('[MOVEMENT_RL] No persisted movement model found, starting fresh');
+      }
+      }
+
+      // Save model to disk
+      saveModel() {
+      if (this.initialized) {
+       safeNeuralSave('movement', './models/movement_model.json');
+       console.log('[MOVEMENT_RL] Movement model saved to disk');
+      }
+      }
+      }
+
+      // === COORDINATE SCRAPER ===
 class CoordinateScraper {
   constructor() {
     this.coordPatterns = [
@@ -18325,6 +18868,7 @@ class HighwayNavigator {
   constructor(bot, movementManager) {
     this.bot = bot;
     this.movementManager = movementManager;
+    this.movementRL = movementManager ? movementManager.movementRL : new MovementRL(bot);
     this.active = false;
     this.destination = null;
     this.currentAxis = null; // 'x' or 'z'
@@ -18680,6 +19224,7 @@ class MovementModeManager {
     this.bot = bot;
     this.currentMode = 'default';
     this.highwayNavigator = new HighwayNavigator(bot, this);
+    this.movementRL = new MovementRL(bot);
     this.modes = {
       default: {
         name: 'Default',
@@ -18690,6 +19235,9 @@ class MovementModeManager {
         description: 'Nether highway travel mode'
       }
     };
+    this.travelStartTime = 0;
+    this.travelRecalculations = 0;
+    this.travelStuckDetections = 0;
   }
   
   async setMode(mode) {
@@ -18710,28 +19258,86 @@ class MovementModeManager {
   
   async travelToCoords(x, y, z, fromOverworld = false) {
     const destination = new Vec3(x, y, z);
-    
-    // Check if we should use highway travel
-    if (this.highwayNavigator.isInNether()) {
-      const distance = this.bot.entity.position.distanceTo(destination);
-      
-      // Use highway for long distances (> 500 blocks)
-      if (distance > 500 || fromOverworld) {
-        console.log('[MOVEMENT] 🛣️ Using highway travel for long distance');
-        await this.setMode('highway');
-        return await this.highwayNavigator.startHighwayTravel(destination, fromOverworld);
+    this.travelStartTime = Date.now();
+    this.travelRecalculations = 0;
+    this.travelStuckDetections = 0;
+
+    // Query RL for movement action selection
+    const rlDecision = await this.movementRL.selectAction(destination);
+    let action = rlDecision.action;
+
+    // Check if RL suggestion passes safety filters
+    if (rlDecision.confidence >= this.movementRL.confidenceThreshold) {
+      if (!this.movementRL.isSafeAction(action, rlDecision.scenario)) {
+        this.movementRL.recordSafetyVeto(action, 'missing_prerequisites');
+        action = 'standard_pathfinder';
       }
-    } else if (fromOverworld) {
-      // Need to enter nether first
-      console.log('[MOVEMENT] ⚠️ Need to enter Nether first for highway travel');
-      this.bot.chat('I need to enter a Nether portal first for highway travel!');
+    } else {
+      // Low confidence, use fallback
+      action = 'standard_pathfinder';
+    }
+
+    console.log(`[MOVEMENT] RL Decision: ${action} (confidence: ${rlDecision.confidence.toFixed(2)}, scenario: ${rlDecision.scenario})`);
+
+    try {
+      // Check if we should use highway travel
+      if (this.highwayNavigator.isInNether()) {
+        const distance = this.bot.entity.position.distanceTo(destination);
+
+        // Use highway for long distances or RL suggests it
+        if (action === 'highway_mode' || distance > 500 || fromOverworld) {
+          console.log('[MOVEMENT] 🛣️ Using highway travel for long distance');
+          await this.setMode('highway');
+          return await this.highwayNavigator.startHighwayTravel(destination, fromOverworld);
+        }
+      } else if (fromOverworld) {
+        console.log('[MOVEMENT] ⚠️ Need to enter Nether first for highway travel');
+        this.bot.chat('I need to enter a Nether portal first for highway travel!');
+        return false;
+      }
+
+      // Execute selected action or fall back to standard pathfinder
+      await this.setMode('default');
+
+      if (action === 'pillar_bridge') {
+        console.log('[MOVEMENT] 🧱 Attempting pillar bridge navigation');
+      } else if (action === 'water_bucket_drop') {
+        console.log('[MOVEMENT] 💧 Using water bucket for safe descent');
+      } else if (action === 'elytra_travel') {
+        console.log('[MOVEMENT] 🦅 Attempting elytra travel');
+      } else if (action === 'slow_walk') {
+        console.log('[MOVEMENT] 🚶 Using slow careful walk');
+      } else if (action === 'pause_scan') {
+        console.log('[MOVEMENT] 🔍 Pausing for environment scan');
+      }
+
+      // Default: use standard pathfinder
+      this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2)).catch(() => {});
+
+      // Record outcome after movement attempt
+      const travelTime = Date.now() - this.travelStartTime;
+      const distance = this.bot.entity.position.distanceTo(destination);
+      this.movementRL.recordOutcome(destination, action, {
+        success: distance < 10,
+        travelTime,
+        distance,
+        recalculations: this.travelRecalculations,
+        stuckDetections: this.travelStuckDetections
+      }, rlDecision.scenario);
+
+      return true;
+    } catch (error) {
+      console.error('[MOVEMENT] Error in travelToCoords:', error);
+      const travelTime = Date.now() - this.travelStartTime;
+      this.movementRL.recordOutcome(destination, action, {
+        success: false,
+        travelTime,
+        distance: 0,
+        recalculations: this.travelRecalculations,
+        stuckDetections: this.travelStuckDetections
+      }, rlDecision.scenario);
       return false;
     }
-    
-    // Use default pathfinder for short distances or overworld
-    await this.setMode('default');
-    this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2)).catch(() => {});
-    return true;
   }
   
   getMode() {
@@ -18741,7 +19347,27 @@ class MovementModeManager {
   getHighwayStatus() {
     return this.highwayNavigator.getStatus();
   }
-  
+
+  getMovementRLStats() {
+    return this.movementRL.getStats();
+  }
+
+  async trainMovementRL() {
+    await this.movementRL.trainModel();
+  }
+
+  saveMovementRL() {
+    this.movementRL.saveModel();
+  }
+
+  async loadMovementRL() {
+    await this.movementRL.loadModel();
+  }
+
+  resetMovementRLStats() {
+    this.movementRL.resetStats();
+  }
+
   broadcastDefenseAlert(incident) {
     // Broadcast urgent chat warnings to trusted players
     const alertMessage = `🚨 HOME UNDER ATTACK! ${incident.type.toUpperCase()} by ${incident.attacker} at home base!`;
@@ -21765,17 +22391,18 @@ class BotSpawner {
 let globalBotSpawner = null;
 
 // === MOVEMENT FRAMEWORK ===
-class MovementFramework {
-  constructor(bot) {
-    this.bot = bot;
-    this.currentMode = 'standard';
-    this.exploits = {
-      elytraFly: false,
-      boatPhase: false,
-      pearlExploit: false,
-      horseSpeed: false
-    };
-  }
+ class MovementFramework {
+   constructor(bot) {
+     this.bot = bot;
+     this.currentMode = 'standard';
+     this.movementRL = new MovementRL(bot);
+     this.exploits = {
+       elytraFly: false,
+       boatPhase: false,
+       pearlExploit: false,
+       horseSpeed: false
+     };
+   }
   
   setMode(mode) {
     config.movement.currentMode = mode;
@@ -21802,7 +22429,27 @@ class MovementFramework {
       modeHistory: config.movement.modeHistory.slice(-5)
     };
   }
-}
+
+  getMovementRLStats() {
+    return this.movementRL.getStats();
+  }
+
+  async trainMovementRL() {
+    await this.movementRL.trainModel();
+  }
+
+  saveMovementRL() {
+    this.movementRL.saveModel();
+  }
+
+  async loadMovementRL() {
+    await this.movementRL.loadModel();
+  }
+
+  resetMovementRLStats() {
+    this.movementRL.resetStats();
+  }
+  }
 
 // === HOME DEFENSE SYSTEM ===
 class HomeDefenseSystem {
@@ -24537,7 +25184,10 @@ async function launchBot(username, role = 'fighter') {
   
   // Load persisted dialogue RL model if available
   await conversationAI.dialogueRL.loadModel();
-  
+
+  // Load persisted movement RL model if available
+  await bot.movementModeManager.loadMovementRL();
+
   const schematicLoader = new SchematicLoader(bot);
   const intelligenceDB = new IntelligenceDatabase(bot);
   let stashScanner = null;
@@ -25163,7 +25813,23 @@ async function launchBot(username, role = 'fighter') {
         conversationAI.dialogueRL.saveModel();
       }
     }, 300000); // Save every 5 minutes
-    
+
+    // Movement RL training loop
+    setInterval(() => {
+      if (bot.movementModeManager && bot.movementModeManager.movementRL) {
+        bot.movementModeManager.trainMovementRL().catch(err => {
+          console.error('[MOVEMENT_RL] Training error:', err.message);
+        });
+      }
+    }, 60000); // Train every 60 seconds
+
+    // Movement RL model persistence
+    setInterval(() => {
+      if (bot.movementModeManager && bot.movementModeManager.movementRL) {
+        bot.movementModeManager.saveMovementRL();
+      }
+    }, 300000); // Save every 5 minutes
+
     // Equipment manager update loop
     if (bot.equipmentManager) {
       setInterval(() => {
