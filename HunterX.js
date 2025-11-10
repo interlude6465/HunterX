@@ -9865,32 +9865,29 @@ class CombatAI {
     }
     
     try {
-       const targetName = isPlayer ? attacker.username : attacker.name;
-       const targetType = isPlayer ? 'Player' : 'Hostile Mob';
-       console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
-       this.inCombat = true;
-       this.currentTarget = attacker;
+            const targetName = isPlayer ? attacker.username : attacker.name;
+            const targetType = isPlayer ? 'Player' : 'Hostile Mob';
+            console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
+            this.inCombat = true;
+            this.currentTarget = attacker;
+            this.isCurrentlyFighting = true;
 
-       // Equip combat gear first
-       if (this.toolSelector) {
-         console.log('[COMBAT] 🛡️ Equipping combat gear...');
-         await this.toolSelector.equipFullGear('combat');
-       }
+            // Equip combat gear first
+            if (this.toolSelector) {
+              console.log('[COMBAT] 🛡️ Equipping combat gear...');
+              await this.toolSelector.equipFullGear('combat');
+            }
 
-       // Initialize crystal PvP if we have resources
-       const useCrystalPvP = this.hasCrystalResources();
-       let crystalPvP = null;
+            // Initialize crystal PvP if we have resources and target is player
+            const useCrystalPvP = this.hasCrystalResources() && isPlayer;
+            let crystalPvP = null;
 
-       if (useCrystalPvP) {
-         crystalPvP = this.getCrystalPvP();
-         console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
-
-         // Evaluate combat situation and execute strategy
-         const strategy = await crystalPvP.evaluateCombatSituation(attacker);
-         console.log(`[COMBAT] Strategy: ${strategy}`);
+            if (useCrystalPvP) {
+              crystalPvP = this.getCrystalPvP();
+              console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
 
          // Execute initial strategy
-         await crystalPvP.executeStrategy(strategy, attacker);
+         await crystalPvP.executeCrystalCombo(attacker);
        } else {
          // Use smart weapon switching for optimal attack
          console.log('[COMBAT] 🎯 Smart weapon switching enabled!');
