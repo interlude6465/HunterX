@@ -9263,6 +9263,130 @@ class SwarmManager {
   }
 }
 
+// === TOOL SELECTOR - AUTO-EQUIP TOOLS AND ARMOR ===
+class ToolSelector {
+  constructor(bot) {
+    this.bot = bot;
+    
+    this.toolMap = {
+      // Mining
+      'mining': ['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe'],
+      'mining_stone': ['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe'],
+      'mining_diamonds': ['netherite_pickaxe', 'diamond_pickaxe'],
+      'mining_ancient_debris': ['netherite_pickaxe', 'diamond_pickaxe'],
+      'mining_obsidian': ['netherite_pickaxe', 'diamond_pickaxe'],
+      
+      // Combat
+      'combat': ['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'wooden_sword'],
+      'pvp': ['netherite_sword', 'diamond_sword'],
+      'mob_fighting': ['netherite_sword', 'diamond_sword', 'iron_sword'],
+      
+      // Other tools
+      'farming': ['netherite_hoe', 'diamond_hoe', 'iron_hoe', 'wooden_hoe'],
+      'logging': ['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe'],
+      'digging': ['netherite_shovel', 'diamond_shovel', 'iron_shovel'],
+      'fishing': ['fishing_rod'],
+      'building': ['hand'],
+      
+      'default': ['netherite_sword', 'diamond_sword']
+    };
+  }
+  
+  isToolGoodCondition(tool) {
+    // If no durability info, tool is fine
+    if (!tool.maxDurability || tool.maxDurability === 0) return true;
+    
+    const durabilityPercent = (tool.durability / tool.maxDurability) * 100;
+    
+    // Don't use if less than 10% durability left
+    if (durabilityPercent < 10) {
+      console.log(`[TOOLS] ${tool.name} too damaged (${durabilityPercent.toFixed(0)}% durability left)`);
+      return false;
+    }
+    
+    return true;
+  }
+  
+  async equipToolForAction(action) {
+    console.log(`[TOOLS] Selecting tool for: ${action}`);
+    
+    // Get preferred tools for action
+    const preferredTools = this.toolMap[action] || this.toolMap['default'];
+    
+    // Find best tool in inventory
+    const items = this.bot.inventory.items();
+    let bestTool = null;
+    
+    for (const preferred of preferredTools) {
+      const tool = items.find(i => i.name === preferred && this.isToolGoodCondition(i));
+      if (tool) {
+        bestTool = tool;
+        break;
+      }
+    }
+    
+    if (!bestTool) {
+      console.log(`[TOOLS] No suitable tool for ${action}`);
+      return false;
+    }
+    
+    // Equip the tool
+    try {
+      console.log(`[TOOLS] Equipping: ${bestTool.name}`);
+      await this.bot.equip(bestTool, 'hand');
+      console.log(`[TOOLS] ✓ Equipped: ${bestTool.name}`);
+      return true;
+    } catch (error) {
+      console.error(`[TOOLS] Failed to equip:`, error.message);
+      return false;
+    }
+  }
+  
+  async equipArmor() {
+    console.log(`[TOOLS] Equipping full armor set`);
+    
+    const items = this.bot.inventory.items();
+    
+    // Armor slots to equip: head, torso, legs, feet
+    const armorNeeded = [
+      { slot: 'head', type: 'helmet' },
+      { slot: 'torso', type: 'chestplate' },
+      { slot: 'legs', type: 'leggings' },
+      { slot: 'feet', type: 'boots' }
+    ];
+    
+    const armorPriority = ['netherite', 'diamond', 'iron', 'gold', 'chainmail', 'leather'];
+    
+    for (const armor of armorNeeded) {
+      // Find best armor piece for this slot
+      for (const material of armorPriority) {
+        const piece = items.find(i =>
+          i.name === `${material}_${armor.type}`
+        );
+        
+        if (piece) {
+          try {
+            await this.bot.equip(piece, armor.slot);
+            console.log(`[TOOLS] ✓ Equipped ${armor.slot}: ${piece.name}`);
+          } catch (error) {
+            console.log(`[TOOLS] Failed to equip ${armor.slot}:`, error.message);
+          }
+          break;
+        }
+      }
+    }
+  }
+  
+  async equipFullGear(action) {
+    console.log(`[TOOLS] Equipping full gear for: ${action}`);
+    
+    // Equip armor
+    await this.equipArmor();
+    
+    // Equip tool
+    await this.equipToolForAction(action);
+  }
+}
 
 // === HOSTILE MOB DETECTOR ===
 class HostileMobDetector {
@@ -9301,6 +9425,7 @@ class CombatAI {
     this.combatLogger = null;
     this.combatCheck = null;
     this.hostileMobDetector = new HostileMobDetector();
+    this.toolSelector = new ToolSelector(bot);
   }
   
   setCombatLogger(logger) {
@@ -9514,6 +9639,38 @@ class CombatAI {
     }
     
     try {
+       const targetName = isPlayer ? attacker.username : attacker.name;
+       const targetType = isPlayer ? 'Player' : 'Hostile Mob';
+       console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
+       this.inCombat = true;
+       this.currentTarget = attacker;
+
+       // Equip combat gear first
+       if (this.toolSelector) {
+         console.log('[COMBAT] 🛡️ Equipping combat gear...');
+         await this.toolSelector.equipFullGear('combat');
+       }
+
+       // Initialize crystal PvP if we have resources
+       const useCrystalPvP = this.hasCrystalResources();
+       let crystalPvP = null;
+
+       if (useCrystalPvP) {
+         crystalPvP = this.getCrystalPvP();
+         console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
+
+         // Evaluate combat situation and execute strategy
+         const strategy = await crystalPvP.evaluateCombatSituation(attacker);
+         console.log(`[COMBAT] Strategy: ${strategy}`);
+
+         // Execute initial strategy
+         await crystalPvP.executeStrategy(strategy, attacker);
+       } else {
+         // Use smart weapon switching for optimal attack
+         console.log('[COMBAT] 🎯 Smart weapon switching enabled!');
+         await this.executeSmartCombat(attacker);
+         await this.executeOptimalAttack(attacker);
+       }
       const targetName = isPlayer ? attacker.username : attacker.name;
       const targetType = isPlayer ? 'Player' : 'Hostile Mob';
       console.log(`[COMBAT] ⚔️ Engaged with ${targetType}: ${targetName}!`);
@@ -12559,21 +12716,27 @@ class MobHunter {
     this.abortCombat('new engagement');
     this.inCombat = true;
     this.currentTarget = attacker;
-    
+
+    // Equip combat gear first
+    if (this.bot.toolSelector) {
+      console.log('[COMBAT] 🛡️ Equipping combat gear...');
+      await this.bot.toolSelector.equipFullGear('combat');
+    }
+
     if (this.combatLogger) {
       this.combatLogger.startMonitoring(attacker);
     }
-    
+
     const useCrystalPvP = this.hasCrystalResources();
     let crystalPvP = null;
-    
+
     if (useCrystalPvP) {
       crystalPvP = this.getCrystalPvP();
       console.log('[COMBAT] 💎 Crystal PvP mode enabled!');
-      
+
       const strategy = await crystalPvP.evaluateCombatSituation(attacker);
       console.log(`[COMBAT] Strategy: ${strategy}`);
-      
+
       await crystalPvP.executeStrategy(strategy, attacker);
     } else {
       console.log('[COMBAT] ⚔️ Sword PvP mode (no crystal resources)');
@@ -14202,19 +14365,25 @@ class AutoFisher {
   }
   
   async fishForItem(itemName, quantity) {
-    console.log(`[HUNTER] 🎣 Fishing for ${quantity}x ${itemName}...`);
-    
-    // Find water
-    const water = await this.findNearbyWater();
-    if (!water) {
-      console.log(`[HUNTER] ❌ No water found for fishing`);
-      return false;
-    }
-    
-    await this.travelTo(water);
-    
-    // Equip fishing rod (preferably with Luck of the Sea)
-    await this.equipBestFishingRod();
+     console.log(`[HUNTER] 🎣 Fishing for ${quantity}x ${itemName}...`);
+
+     // Find water
+     const water = await this.findNearbyWater();
+     if (!water) {
+       console.log(`[HUNTER] ❌ No water found for fishing`);
+       return false;
+     }
+
+     await this.travelTo(water);
+
+     // Equip fishing gear
+     if (this.bot.toolSelector) {
+       console.log(`[HUNTER] 🛡️ Equipping fishing gear...`);
+       await this.bot.toolSelector.equipFullGear('fishing');
+     } else {
+       // Fallback - equip fishing rod if toolSelector unavailable
+       await this.equipBestFishingRod();
+     }
     
     let collected = 0;
     let casts = 0;
@@ -16520,6 +16689,27 @@ class ConversationAI {
   }
 
   parseResourceTask(message) {
+    const match = message.match(/(?:get me|gather|mine|fish for)\s+(\d+)?\s*([a-z_]+)/i);
+    if (!match) return null;
+
+    return {
+      amount: parseInt(match[1]) || 1,
+      item: match[2]
+    };
+  }
+
+  async executeResourceTask(task) {
+    if (!task || !task.item) return false;
+
+    try {
+      if (this.itemHunter) {
+        return await this.itemHunter.findItem(task.item, task.amount);
+      }
+      return false;
+    } catch (error) {
+      console.log(`[EXEC] Resource task failed: ${error.message}`);
+      this.bot.chat(`❌ Failed to get ${task.item}: ${error.message}`);
+      return false;
     const quantities = {
       'diamond': 64,
       'iron': 64,
@@ -23884,6 +24074,7 @@ async function launchBot(username, role = 'fighter') {
   bot.combatAI = combatAI;
   bot.combatLogger = combatLogger;
   bot.schematicLoader = schematicLoader;
+  bot.toolSelector = combatAI.toolSelector;
   
   // Safe method calls with existence checks
   if (combatAI && typeof combatAI.setCombatLogger === 'function') {
