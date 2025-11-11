@@ -28688,88 +28688,91 @@ function loadConfiguration() {
       }
 
       console.log('✅ Configuration loaded successfully!');
-      return true;
+      ensureConfigStructure(config);
+      return config;
     } else {
       console.log('⚠️  Configuration file is invalid or corrupted.');
     }
   }
 
-  return false;
+  return null;
 }
 
   // Ensure all config sections exist with proper structure
-function ensureConfigStructure() {
-  if (!config) {
-    console.error('[CONFIG] Error: config object is not initialized');
+function ensureConfigStructure(targetConfig) {
+  const cfg = targetConfig || global.config || config;
+
+  if (!cfg || typeof cfg !== 'object') {
+    console.error('[CONFIG] Error: config object is not initialized (ensureConfigStructure)');
     return false;
   }
+
+  if (cfg.mode === undefined) cfg.mode = null;
+  if (cfg.server === undefined) cfg.server = null;
+  if (!Array.isArray(cfg.whitelist)) cfg.whitelist = [];
   
-  if (!config.mode) config.mode = null;
-  if (!config.server) config.server = null;
-  if (!config.whitelist) config.whitelist = [];
-  
-  if (!config.account) {
-    config.account = { username: '', password: '', type: '' };
+  if (!cfg.account) {
+    cfg.account = { username: '', password: '', type: '' };
   }
-  if (!config.localAccount) {
-    config.localAccount = { username: '', password: '', authType: 'microsoft' };
-  }
-  
-  if (!config.proxy) {
-    config.proxy = { enabled: false, host: '', port: '', username: '', password: '' };
+  if (!cfg.localAccount) {
+    cfg.localAccount = { username: '', password: '', authType: 'microsoft' };
   }
   
-  if (!config.homeBase) {
-    config.homeBase = {
+  if (!cfg.proxy) {
+    cfg.proxy = { enabled: false, host: '', port: '', username: '', password: '' };
+  }
+  
+  if (!cfg.homeBase) {
+    cfg.homeBase = {
       coords: null, enderChestSetup: false, sharedStorage: [], inventory: {},
       defensePerimeter: 50, defenseRadius: 200, guardBots: [], lastUpdate: null
     };
   }
   
-  if (!config.stashHunt) {
-    config.stashHunt = {
+  if (!cfg.stashHunt) {
+    cfg.stashHunt = {
       active: false, startCoords: null, searchRadius: 10000, discovered: [],
       scanSpeed: 'fast', avoidPlayers: true, playerDetectionRadius: 100,
       flyHackEnabled: false, currentWaypoint: null, visitedChunks: []
     };
   }
   
-  if (!config.backup) {
-    config.backup = {
+  if (!cfg.backup) {
+    cfg.backup = {
       enabled: true, autoBackup: true,
       backupPriority: ['diamond', 'netherite_ingot', 'netherite_scrap', 'ancient_debris', 'emerald', 'diamond_block', 'emerald_block', 'elytra', 'totem_of_undying', 'shulker_box', 'enchanted_book', 'nether_star', 'beacon', 'golden_apple', 'enchanted_golden_apple'],
       leavePercentage: 0.1, riskAssessment: true, multiBot: true, maxBotsPerBackup: 3
     };
   }
   
-  if (!config.dangerEscape) {
-    config.dangerEscape = { enabled: true, playerProximityRadius: 50 };
+  if (!cfg.dangerEscape) {
+    cfg.dangerEscape = { enabled: true, playerProximityRadius: 50 };
   }
   
-  if (!config.conversationalAI) {
-    config.conversationalAI = {
+  if (!cfg.conversationalAI) {
+    cfg.conversationalAI = {
       enabled: false, useLLM: false, provider: {}, apiKey: '',
       requestTimeout: 30000, cacheTTL: 3600000, timeZoneAliases: {},
       rateLimit: { maxRequests: 10, windowMs: 60000 }, autoReplyPrefix: '[AUTO]'
     };
   }
   
-  if (!config.privateMsg) {
-    config.privateMsg = {
+  if (!cfg.privateMsg) {
+    cfg.privateMsg = {
       enabled: false, defaultTemplate: '', trustLevelRequirement: 'trusted',
       rateLimit: { windowMs: 60000, maxMessages: 10 }, forwardToConsole: false
     };
   }
   
-  if (!config.neural) {
-    config.neural = {
+  if (!cfg.neural) {
+    cfg.neural = {
       combat: null, placement: null, dupe: null, conversation: null,
       dialogue: null, movement: null, available: false, type: 'fallback', manager: null
     };
   }
   
-  if (!config.combat) {
-    config.combat = {
+  if (!cfg.combat) {
+    cfg.combat = {
       maxSelfDamage: 6, minEffectiveDamage: 4, crystalRange: 5, engageRange: 20,
       retreatHealth: 8, totemThreshold: 8, autoLoot: true, smartEquip: true,
       autoEngagement: {
@@ -28785,24 +28788,24 @@ function ensureConfigStructure() {
     };
   }
   
-  if (!config.analytics) {
-    config.analytics = {
+  if (!cfg.analytics) {
+    cfg.analytics = {
       combat: { kills: 0, deaths: 0, damageDealt: 0, damageTaken: 0, combatLogs: 0, lastCombatLog: null },
       dupe: { attempts: 0, success: 0, patterns: {}, discoveries: [], totalAttempts: 0, successfulDupes: 0, hypothesesTested: 0 },
       pvp: { victories: 0, defeats: 0, crystalsUsed: 0 }
     };
   }
   
-  if (!config.tasks) {
-    config.tasks = { current: null, queue: [], history: [], pausedForSafety: false, suspendedSnapshot: null };
+  if (!cfg.tasks) {
+    cfg.tasks = { current: null, queue: [], history: [], pausedForSafety: false, suspendedSnapshot: null };
   }
   
-  if (!config.personality) {
-    config.personality = { friendly: true, helpful: true, curious: true, cautious: true, name: 'Hunter' };
+  if (!cfg.personality) {
+    cfg.personality = { friendly: true, helpful: true, curious: true, cautious: true, name: 'Hunter' };
   }
   
-  if (!config.swarm) {
-    config.swarm = {
+  if (!cfg.swarm) {
+    cfg.swarm = {
       bots: [], c2Server: null, c2Client: null, roles: {}, sharedMemory: {},
       wsServer: null, connectedBots: new Map(), activeOperations: [], threats: [],
       guardZones: [], activeDefense: {}, initialBotCount: 3, maxBots: 50,
@@ -28814,12 +28817,16 @@ function ensureConfigStructure() {
     };
   }
   
-  if (!config.videoFeed) {
-    config.videoFeed = { enabled: true, fps: 3, resolution: 'medium' };
+  if (!cfg.videoFeed) {
+    cfg.videoFeed = { enabled: true, fps: 3, resolution: 'medium' };
   }
   
-  if (!config.lifesteal) {
-    config.lifesteal = { enabled: false, keywords: ['lifesteal'] };
+  if (!cfg.lifesteal) {
+    cfg.lifesteal = { enabled: false, keywords: ['lifesteal'] };
+  }
+  
+  if (!global.config) {
+    global.config = cfg;
   }
   
   return true;
@@ -28830,37 +28837,41 @@ function saveConfiguration() {
   const configPath = './data/config.json';
 
   try {
-    // Ensure config object exists
-    if (!config) {
-      console.error('[CONFIG] Error: config object is not initialized');
+    const cfg = (global.config && typeof global.config === 'object') ? global.config : config;
+
+    if (!cfg || typeof cfg !== 'object') {
+      console.error('[CONFIG] Error: config object is not initialized (saveConfiguration)');
       return false;
     }
 
-    // Ensure all config sections are initialized with proper structure
-    ensureConfigStructure();
+    if (!ensureConfigStructure(cfg)) {
+      return false;
+    }
+
+    global.config = cfg;
 
     // Build config to save with all sections - only save non-Map and non-null function values
     const configToSave = {
-      mode: config.mode || null,
-      server: config.server || null,
-      whitelist: (config.whitelist && Array.isArray(config.whitelist)) ? config.whitelist : [],
+      mode: cfg.mode || null,
+      server: cfg.server || null,
+      whitelist: (cfg.whitelist && Array.isArray(cfg.whitelist)) ? cfg.whitelist : [],
 
-      account: config.account || { username: '', password: '', type: '' },
-      localAccount: config.localAccount || { username: '', password: '', authType: 'microsoft' },
-      proxy: config.proxy || { enabled: false, host: '', port: '', username: '', password: '' },
-      homeBase: config.homeBase || { coords: null, enderChestSetup: false, sharedStorage: [], inventory: {}, defensePerimeter: 50, defenseRadius: 200, guardBots: [], lastUpdate: null },
-      stashHunt: config.stashHunt || { active: false, startCoords: null, searchRadius: 10000, discovered: [], scanSpeed: 'fast', avoidPlayers: true, playerDetectionRadius: 100, flyHackEnabled: false, currentWaypoint: null, visitedChunks: [] },
-      backup: config.backup || { enabled: true, autoBackup: true, backupPriority: [], leavePercentage: 0.1, riskAssessment: true, multiBot: true, maxBotsPerBackup: 3 },
-      dangerEscape: config.dangerEscape || { enabled: true, playerProximityRadius: 50 },
-      conversationalAI: config.conversationalAI || { enabled: false, useLLM: false, provider: {}, apiKey: '', requestTimeout: 30000, cacheTTL: 3600000, timeZoneAliases: {}, rateLimit: {}, autoReplyPrefix: '[AUTO]' },
-      privateMsg: config.privateMsg || { enabled: false, defaultTemplate: '', trustLevelRequirement: 'trusted', rateLimit: {}, forwardToConsole: false },
-      neural: config.neural || { combat: null, placement: null, dupe: null, conversation: null, dialogue: null, movement: null, available: false, type: 'fallback', manager: null },
-      combat: config.combat || {},
-      analytics: config.analytics || { combat: {}, dupe: {}, pvp: {} },
-      tasks: config.tasks || { current: null, queue: [], history: [], pausedForSafety: false, suspendedSnapshot: null },
-      personality: config.personality || { friendly: true, helpful: true, curious: true, cautious: true, name: 'Hunter' },
-      videoFeed: config.videoFeed || { enabled: true, fps: 3, resolution: 'medium' },
-      lifesteal: config.lifesteal || { enabled: false, keywords: [] }
+      account: cfg.account || { username: '', password: '', type: '' },
+      localAccount: cfg.localAccount || { username: '', password: '', authType: 'microsoft' },
+      proxy: cfg.proxy || { enabled: false, host: '', port: '', username: '', password: '' },
+      homeBase: cfg.homeBase || { coords: null, enderChestSetup: false, sharedStorage: [], inventory: {}, defensePerimeter: 50, defenseRadius: 200, guardBots: [], lastUpdate: null },
+      stashHunt: cfg.stashHunt || { active: false, startCoords: null, searchRadius: 10000, discovered: [], scanSpeed: 'fast', avoidPlayers: true, playerDetectionRadius: 100, flyHackEnabled: false, currentWaypoint: null, visitedChunks: [] },
+      backup: cfg.backup || { enabled: true, autoBackup: true, backupPriority: [], leavePercentage: 0.1, riskAssessment: true, multiBot: true, maxBotsPerBackup: 3 },
+      dangerEscape: cfg.dangerEscape || { enabled: true, playerProximityRadius: 50 },
+      conversationalAI: cfg.conversationalAI || { enabled: false, useLLM: false, provider: {}, apiKey: '', requestTimeout: 30000, cacheTTL: 3600000, timeZoneAliases: {}, rateLimit: {}, autoReplyPrefix: '[AUTO]' },
+      privateMsg: cfg.privateMsg || { enabled: false, defaultTemplate: '', trustLevelRequirement: 'trusted', rateLimit: {}, forwardToConsole: false },
+      neural: cfg.neural || { combat: null, placement: null, dupe: null, conversation: null, dialogue: null, movement: null, available: false, type: 'fallback', manager: null },
+      combat: cfg.combat || {},
+      analytics: cfg.analytics || { combat: {}, dupe: {}, pvp: {} },
+      tasks: cfg.tasks || { current: null, queue: [], history: [], pausedForSafety: false, suspendedSnapshot: null },
+      personality: cfg.personality || { friendly: true, helpful: true, curious: true, cautious: true, name: 'Hunter' },
+      videoFeed: cfg.videoFeed || { enabled: true, fps: 3, resolution: 'medium' },
+      lifesteal: cfg.lifesteal || { enabled: false, keywords: [] }
     };
 
     const result = safeWriteJson(configPath, configToSave);
@@ -30973,9 +30984,13 @@ async function startBot() {
     
     // First: Load configuration (must complete before anything else)
     console.log('[INIT] Loading configuration...');
-    global.config = loadConfiguration();
+    const loadedConfig = loadConfiguration();
+    const activeConfig = loadedConfig || config;
+
+    ensureConfigStructure(activeConfig);
+    global.config = activeConfig;
     
-    if (!global.config) {
+    if (!loadedConfig) {
       console.log('[INIT] No existing config found, setup wizard will guide you\n');
     } else {
       console.log('[INIT] ✓ Config loaded successfully\n');
