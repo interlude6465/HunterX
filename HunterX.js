@@ -28036,8 +28036,17 @@ function captureVideoFrame(bot) {
 
 // Show main menu
 function showMenu() {
-  console.clear();
-  console.log(`
+   const cfg = global.config || config;
+
+   // Safely access nested properties with null checks
+   const homeBaseCoords = (cfg && cfg.homeBase && cfg.homeBase.coords) ? '✅' : '❌';
+   const hasSwarmCoordinator = globalSwarmCoordinator ? '✅' : '❌';
+   const hasSupplyChain = globalSupplyChainManager ? '✅' : '❌';
+   const hasAccount = (cfg && cfg.localAccount && cfg.localAccount.username) ? '✅' : '❌';
+   const hasProxy = (cfg && cfg.proxy && cfg.proxy.enabled) ? '✅' : '❌';
+
+   console.clear();
+   console.log(`
 ╔═══════════════════════════════════════════════════════╗
 ║       HUNTERX v22.1 - ULTIMATE DUPE ENGINE            ║
 ╠═══════════════════════════════════════════════════════╣
@@ -28050,27 +28059,28 @@ function showMenu() {
 ║  [7] Configure Whitelist                              ║
 ║  [8] Reconfigure Settings                             ║
 ╠═══════════════════════════════════════════════════════╣
-║  🏠 Home Base: ${config.homeBase.coords ? '✅' : '❌'}                                 ║
-║  🐝 Swarm Coordinator: ${globalSwarmCoordinator ? '✅' : '❌'}                       ║
-║  🔗 Supply Chain: ${globalSupplyChainManager ? '✅' : '❌'}                    ║
-║  🔧 Account: ${config.localAccount.username ? '✅' : '❌'}                           ║
-║  🌐 Proxy: ${config.proxy && config.proxy.enabled ? '✅' : '❌'}                              ║
+║  🏠 Home Base: ${homeBaseCoords}                                 ║
+║  🐝 Swarm Coordinator: ${hasSwarmCoordinator}                       ║
+║  🔗 Supply Chain: ${hasSupplyChain}                    ║
+║  🔧 Account: ${hasAccount}                           ║
+║  🌐 Proxy: ${hasProxy}                              ║
 ╚═══════════════════════════════════════════════════════╝
-  `);
-  
-  rl.question('Select option (1-8): ', (answer) => {
-    switch (answer.trim()) {
-      case '1': config.mode = 'pvp'; askServer(); break;
-      case '2': config.mode = 'dupe'; askServer(); break;
-      case '3': config.mode = 'stash'; askStashConfig(); break;
-      case '4': config.mode = 'friendly'; askServer(); break;
-      case '5': config.mode = 'swarm'; launchSwarm(); break;
-      case '6': launchSupplyChainManager(); break;
-      case '7': configureWhitelist(); break;
-      case '8': reconfigureSettings(); break;
-      default: console.log('Invalid choice'); showMenu(); break;
-    }
-  });
+   `);
+
+   rl.question('Select option (1-8): ', (answer) => {
+     const cfg = global.config || config;
+     switch (answer.trim()) {
+       case '1': cfg.mode = 'pvp'; askServer(); break;
+       case '2': cfg.mode = 'dupe'; askServer(); break;
+       case '3': cfg.mode = 'stash'; askStashConfig(); break;
+       case '4': cfg.mode = 'friendly'; askServer(); break;
+       case '5': cfg.mode = 'swarm'; launchSwarm(); break;
+       case '6': launchSupplyChainManager(); break;
+       case '7': configureWhitelist(); break;
+       case '8': reconfigureSettings(); break;
+       default: console.log('Invalid choice'); showMenu(); break;
+     }
+   });
 }
 
 function mapBlockToGlyph(name) {
@@ -28490,18 +28500,53 @@ function printStartupBanner() {
 // Load configuration from file
 function loadConfiguration() {
   const configPath = './data/config.json';
-  
+
   if (fs.existsSync(configPath)) {
     const savedConfig = safeReadJson(configPath);
     if (savedConfig && validateConfig(savedConfig)) {
-      // Apply saved configuration to global config
-      if (savedConfig.localAccount) {
+      // Apply saved configuration to global config - restore ALL sections
+
+      // Core settings
+      if (typeof savedConfig.mode === 'string' || savedConfig.mode === null) {
+        config.mode = savedConfig.mode;
+      }
+      if (typeof savedConfig.server === 'string' || savedConfig.server === null) {
+        config.server = savedConfig.server;
+      }
+      if (Array.isArray(savedConfig.whitelist)) {
+        config.whitelist = savedConfig.whitelist;
+      }
+
+      // Account sections
+      if (savedConfig.account && typeof savedConfig.account === 'object') {
+        config.account = { ...config.account, ...savedConfig.account };
+      }
+      if (savedConfig.localAccount && typeof savedConfig.localAccount === 'object') {
         config.localAccount = { ...config.localAccount, ...savedConfig.localAccount };
       }
-      if (savedConfig.proxy) {
-        config.proxy = savedConfig.proxy;
+
+      // Proxy
+      if (savedConfig.proxy && typeof savedConfig.proxy === 'object') {
+        config.proxy = { ...config.proxy, ...savedConfig.proxy };
       }
-      if (savedConfig.dangerEscape) {
+
+      // Home Base (CRITICAL - this is what showMenu needs)
+      if (savedConfig.homeBase && typeof savedConfig.homeBase === 'object') {
+        config.homeBase = { ...config.homeBase, ...savedConfig.homeBase };
+      }
+
+      // Stash Hunt
+      if (savedConfig.stashHunt && typeof savedConfig.stashHunt === 'object') {
+        config.stashHunt = { ...config.stashHunt, ...savedConfig.stashHunt };
+      }
+
+      // Backup
+      if (savedConfig.backup && typeof savedConfig.backup === 'object') {
+        config.backup = { ...config.backup, ...savedConfig.backup };
+      }
+
+      // Danger Escape
+      if (savedConfig.dangerEscape && typeof savedConfig.dangerEscape === 'object') {
         const escapeSettings = savedConfig.dangerEscape;
         if (typeof escapeSettings.enabled === 'boolean') {
           config.dangerEscape.enabled = escapeSettings.enabled;
@@ -28511,7 +28556,9 @@ function loadConfiguration() {
           config.dangerEscape.playerProximityRadius = radius;
         }
       }
-      if (savedConfig.conversationalAI) {
+
+      // Conversational AI
+      if (savedConfig.conversationalAI && typeof savedConfig.conversationalAI === 'object') {
         const convoSettings = savedConfig.conversationalAI;
         if (typeof convoSettings.enabled === 'boolean') {
           config.conversationalAI.enabled = convoSettings.enabled;
@@ -28546,7 +28593,9 @@ function loadConfiguration() {
           config.conversationalAI.autoReplyPrefix = convoSettings.autoReplyPrefix;
         }
       }
-      if (savedConfig.privateMsg) {
+
+      // Private Messages
+      if (savedConfig.privateMsg && typeof savedConfig.privateMsg === 'object') {
         const privateMsgSettings = savedConfig.privateMsg;
         if (typeof privateMsgSettings.enabled === 'boolean') {
           config.privateMsg.enabled = privateMsgSettings.enabled;
@@ -28569,121 +28618,231 @@ function loadConfiguration() {
           config.privateMsg.forwardToConsole = privateMsgSettings.forwardToConsole;
         }
       }
+
+      // Neural Networks
+      if (savedConfig.neural && typeof savedConfig.neural === 'object') {
+        config.neural = { ...config.neural, ...savedConfig.neural };
+      }
+
+      // Combat
+      if (savedConfig.combat && typeof savedConfig.combat === 'object') {
+        config.combat = { ...config.combat, ...savedConfig.combat };
+      }
+
+      // Analytics
+      if (savedConfig.analytics && typeof savedConfig.analytics === 'object') {
+        config.analytics = { ...config.analytics, ...savedConfig.analytics };
+      }
+
+      // Tasks
+      if (savedConfig.tasks && typeof savedConfig.tasks === 'object') {
+        config.tasks = { ...config.tasks, ...savedConfig.tasks };
+      }
+
+      // Personality
+      if (savedConfig.personality && typeof savedConfig.personality === 'object') {
+        config.personality = { ...config.personality, ...savedConfig.personality };
+      }
+
+      // Video Feed
+      if (savedConfig.videoFeed && typeof savedConfig.videoFeed === 'object') {
+        config.videoFeed = { ...config.videoFeed, ...savedConfig.videoFeed };
+      }
+
+      // Lifesteal
+      if (savedConfig.lifesteal && typeof savedConfig.lifesteal === 'object') {
+        config.lifesteal = { ...config.lifesteal, ...savedConfig.lifesteal };
+      }
+
       console.log('✅ Configuration loaded successfully!');
       return true;
     } else {
       console.log('⚠️  Configuration file is invalid or corrupted.');
     }
   }
-  
+
   return false;
 }
 
-// Save configuration to file
-function saveConfiguration() {
-  const configPath = './data/config.json';
-  
-  // Ensure config object exists
+  // Ensure all config sections exist with proper structure
+function ensureConfigStructure() {
   if (!config) {
     console.error('[CONFIG] Error: config object is not initialized');
     return false;
   }
   
-  // Initialize missing config sections with defaults
+  if (!config.mode) config.mode = null;
+  if (!config.server) config.server = null;
+  if (!config.whitelist) config.whitelist = [];
+  
+  if (!config.account) {
+    config.account = { username: '', password: '', type: '' };
+  }
   if (!config.localAccount) {
-    config.localAccount = {
-      username: '',
-      password: '',
-      authType: 'microsoft'
-    };
+    config.localAccount = { username: '', password: '', authType: 'microsoft' };
   }
+  
   if (!config.proxy) {
-    config.proxy = {
-      enabled: false,
-      host: '',
-      port: '',
-      username: '',
-      password: ''
+    config.proxy = { enabled: false, host: '', port: '', username: '', password: '' };
+  }
+  
+  if (!config.homeBase) {
+    config.homeBase = {
+      coords: null, enderChestSetup: false, sharedStorage: [], inventory: {},
+      defensePerimeter: 50, defenseRadius: 200, guardBots: [], lastUpdate: null
     };
   }
+  
+  if (!config.stashHunt) {
+    config.stashHunt = {
+      active: false, startCoords: null, searchRadius: 10000, discovered: [],
+      scanSpeed: 'fast', avoidPlayers: true, playerDetectionRadius: 100,
+      flyHackEnabled: false, currentWaypoint: null, visitedChunks: []
+    };
+  }
+  
+  if (!config.backup) {
+    config.backup = {
+      enabled: true, autoBackup: true,
+      backupPriority: ['diamond', 'netherite_ingot', 'netherite_scrap', 'ancient_debris', 'emerald', 'diamond_block', 'emerald_block', 'elytra', 'totem_of_undying', 'shulker_box', 'enchanted_book', 'nether_star', 'beacon', 'golden_apple', 'enchanted_golden_apple'],
+      leavePercentage: 0.1, riskAssessment: true, multiBot: true, maxBotsPerBackup: 3
+    };
+  }
+  
   if (!config.dangerEscape) {
-    config.dangerEscape = {
-      enabled: true,
-      playerProximityRadius: 50
-    };
+    config.dangerEscape = { enabled: true, playerProximityRadius: 50 };
   }
+  
   if (!config.conversationalAI) {
     config.conversationalAI = {
-      enabled: false,
-      useLLM: false,
-      provider: {},
-      apiKey: '',
-      requestTimeout: 30000,
-      cacheTTL: 3600000,
-      timeZoneAliases: {},
-      rateLimit: { maxRequests: 10, windowMs: 60000 },
-      autoReplyPrefix: '[AUTO]'
+      enabled: false, useLLM: false, provider: {}, apiKey: '',
+      requestTimeout: 30000, cacheTTL: 3600000, timeZoneAliases: {},
+      rateLimit: { maxRequests: 10, windowMs: 60000 }, autoReplyPrefix: '[AUTO]'
     };
   }
+  
   if (!config.privateMsg) {
     config.privateMsg = {
-      enabled: false,
-      defaultTemplate: '',
-      trustLevelRequirement: 'trusted',
-      rateLimit: { windowMs: 60000, maxMessages: 10 },
-      forwardToConsole: false
+      enabled: false, defaultTemplate: '', trustLevelRequirement: 'trusted',
+      rateLimit: { windowMs: 60000, maxMessages: 10 }, forwardToConsole: false
     };
   }
   
-  // Extract values safely with fallbacks
-  const escapeSettings = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
-  const radius = parseFloat(escapeSettings.playerProximityRadius);
-  const normalizedRadius = Number.isFinite(radius) && radius > 0 ? radius : 50;
+  if (!config.neural) {
+    config.neural = {
+      combat: null, placement: null, dupe: null, conversation: null,
+      dialogue: null, movement: null, available: false, type: 'fallback', manager: null
+    };
+  }
   
-  const configToSave = {
-    localAccount: {
-      username: config.localAccount && config.localAccount.username ? config.localAccount.username : '',
-      password: config.localAccount && config.localAccount.password ? config.localAccount.password : '',
-      authType: config.localAccount && config.localAccount.authType ? config.localAccount.authType : 'microsoft'
-    },
-    proxy: config.proxy ? {
-      enabled: config.proxy.enabled || false,
-      host: config.proxy.host || '',
-      port: config.proxy.port || '',
-      username: config.proxy.username || '',
-      password: config.proxy.password || ''
-    } : {
-      enabled: false,
-      host: '',
-      port: '',
-      username: '',
-      password: ''
-    },
-    dangerEscape: {
-      enabled: escapeSettings.enabled !== false,
-      playerProximityRadius: normalizedRadius
-    },
-    conversationalAI: {
-      enabled: config.conversationalAI && typeof config.conversationalAI.enabled === 'boolean' ? config.conversationalAI.enabled : false,
-      useLLM: config.conversationalAI && typeof config.conversationalAI.useLLM === 'boolean' ? config.conversationalAI.useLLM : false,
-      provider: config.conversationalAI && config.conversationalAI.provider ? config.conversationalAI.provider : {},
-      apiKey: config.conversationalAI && config.conversationalAI.apiKey ? config.conversationalAI.apiKey : '',
-      requestTimeout: config.conversationalAI && typeof config.conversationalAI.requestTimeout === 'number' ? config.conversationalAI.requestTimeout : 30000,
-      cacheTTL: config.conversationalAI && typeof config.conversationalAI.cacheTTL === 'number' ? config.conversationalAI.cacheTTL : 3600000,
-      timeZoneAliases: config.conversationalAI && config.conversationalAI.timeZoneAliases ? config.conversationalAI.timeZoneAliases : {},
-      rateLimit: config.conversationalAI && config.conversationalAI.rateLimit ? config.conversationalAI.rateLimit : { maxRequests: 10, windowMs: 60000 },
-      autoReplyPrefix: config.conversationalAI && config.conversationalAI.autoReplyPrefix ? config.conversationalAI.autoReplyPrefix : '[AUTO]'
-    },
-    privateMsg: {
-      enabled: config.privateMsg && typeof config.privateMsg.enabled === 'boolean' ? config.privateMsg.enabled : false,
-      defaultTemplate: config.privateMsg && config.privateMsg.defaultTemplate ? config.privateMsg.defaultTemplate : '',
-      trustLevelRequirement: config.privateMsg && config.privateMsg.trustLevelRequirement ? config.privateMsg.trustLevelRequirement : 'trusted',
-      rateLimit: config.privateMsg && config.privateMsg.rateLimit ? config.privateMsg.rateLimit : { windowMs: 60000, maxMessages: 10 },
-      forwardToConsole: config.privateMsg && typeof config.privateMsg.forwardToConsole === 'boolean' ? config.privateMsg.forwardToConsole : false
+  if (!config.combat) {
+    config.combat = {
+      maxSelfDamage: 6, minEffectiveDamage: 4, crystalRange: 5, engageRange: 20,
+      retreatHealth: 8, totemThreshold: 8, autoLoot: true, smartEquip: true,
+      autoEngagement: {
+        autoEngageHostileMobs: true, engagementDistance: 3, monitorInterval: 300,
+        minHealthToFight: 4, requireMinHealth: true, avoidInWater: true,
+        requireArmor: true, focusSingleMob: true, neverAttackPlayers: true, autoRetaliate: true
+      },
+      logger: {
+        enabled: true, healthThreshold: 6, multipleAttackers: 2, triggerScore: 60,
+        cooldownMs: 20000, escapeDistance: 120, sweepRadius: 16, distressOnReconnect: true
+      },
+      emergency: { pendingLog: null, lastTrigger: null }
+    };
+  }
+  
+  if (!config.analytics) {
+    config.analytics = {
+      combat: { kills: 0, deaths: 0, damageDealt: 0, damageTaken: 0, combatLogs: 0, lastCombatLog: null },
+      dupe: { attempts: 0, success: 0, patterns: {}, discoveries: [], totalAttempts: 0, successfulDupes: 0, hypothesesTested: 0 },
+      pvp: { victories: 0, defeats: 0, crystalsUsed: 0 }
+    };
+  }
+  
+  if (!config.tasks) {
+    config.tasks = { current: null, queue: [], history: [], pausedForSafety: false, suspendedSnapshot: null };
+  }
+  
+  if (!config.personality) {
+    config.personality = { friendly: true, helpful: true, curious: true, cautious: true, name: 'Hunter' };
+  }
+  
+  if (!config.swarm) {
+    config.swarm = {
+      bots: [], c2Server: null, c2Client: null, roles: {}, sharedMemory: {},
+      wsServer: null, connectedBots: new Map(), activeOperations: [], threats: [],
+      guardZones: [], activeDefense: {}, initialBotCount: 3, maxBots: 50,
+      autoDetectServerType: true, serverType: null, videoFeeds: new Map(),
+      combat: {
+        combatMode: 'defensive', helpRadius: 200, autoRetaliate: true,
+        coordinatedAttack: true, spreadPositioning: true, threatCommunication: true
+      }
+    };
+  }
+  
+  if (!config.videoFeed) {
+    config.videoFeed = { enabled: true, fps: 3, resolution: 'medium' };
+  }
+  
+  if (!config.lifesteal) {
+    config.lifesteal = { enabled: false, keywords: ['lifesteal'] };
+  }
+  
+  return true;
+}
+
+// Save configuration to file
+function saveConfiguration() {
+  const configPath = './data/config.json';
+
+  try {
+    // Ensure config object exists
+    if (!config) {
+      console.error('[CONFIG] Error: config object is not initialized');
+      return false;
     }
-  };
-  
-  return safeWriteJson(configPath, configToSave);
+
+    // Ensure all config sections are initialized with proper structure
+    ensureConfigStructure();
+
+    // Build config to save with all sections - only save non-Map and non-null function values
+    const configToSave = {
+      mode: config.mode || null,
+      server: config.server || null,
+      whitelist: (config.whitelist && Array.isArray(config.whitelist)) ? config.whitelist : [],
+
+      account: config.account || { username: '', password: '', type: '' },
+      localAccount: config.localAccount || { username: '', password: '', authType: 'microsoft' },
+      proxy: config.proxy || { enabled: false, host: '', port: '', username: '', password: '' },
+      homeBase: config.homeBase || { coords: null, enderChestSetup: false, sharedStorage: [], inventory: {}, defensePerimeter: 50, defenseRadius: 200, guardBots: [], lastUpdate: null },
+      stashHunt: config.stashHunt || { active: false, startCoords: null, searchRadius: 10000, discovered: [], scanSpeed: 'fast', avoidPlayers: true, playerDetectionRadius: 100, flyHackEnabled: false, currentWaypoint: null, visitedChunks: [] },
+      backup: config.backup || { enabled: true, autoBackup: true, backupPriority: [], leavePercentage: 0.1, riskAssessment: true, multiBot: true, maxBotsPerBackup: 3 },
+      dangerEscape: config.dangerEscape || { enabled: true, playerProximityRadius: 50 },
+      conversationalAI: config.conversationalAI || { enabled: false, useLLM: false, provider: {}, apiKey: '', requestTimeout: 30000, cacheTTL: 3600000, timeZoneAliases: {}, rateLimit: {}, autoReplyPrefix: '[AUTO]' },
+      privateMsg: config.privateMsg || { enabled: false, defaultTemplate: '', trustLevelRequirement: 'trusted', rateLimit: {}, forwardToConsole: false },
+      neural: config.neural || { combat: null, placement: null, dupe: null, conversation: null, dialogue: null, movement: null, available: false, type: 'fallback', manager: null },
+      combat: config.combat || {},
+      analytics: config.analytics || { combat: {}, dupe: {}, pvp: {} },
+      tasks: config.tasks || { current: null, queue: [], history: [], pausedForSafety: false, suspendedSnapshot: null },
+      personality: config.personality || { friendly: true, helpful: true, curious: true, cautious: true, name: 'Hunter' },
+      videoFeed: config.videoFeed || { enabled: true, fps: 3, resolution: 'medium' },
+      lifesteal: config.lifesteal || { enabled: false, keywords: [] }
+    };
+
+    const result = safeWriteJson(configPath, configToSave);
+
+    if (result) {
+      console.log('[CONFIG] ✓ Configuration saved successfully');
+      return true;
+    } else {
+      console.error('[CONFIG] ✗ Failed to write configuration file');
+      return false;
+    }
+  } catch (err) {
+    console.error('[CONFIG] ✗ Error saving configuration:', err.message);
+    return false;
+  }
 }
 
 // Validate configuration
