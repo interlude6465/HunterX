@@ -28582,16 +28582,77 @@ function loadConfiguration() {
 // Save configuration to file
 function saveConfiguration() {
   const configPath = './data/config.json';
+  
+  // Ensure config object exists
+  if (!config) {
+    console.error('[CONFIG] Error: config object is not initialized');
+    return false;
+  }
+  
+  // Initialize missing config sections with defaults
+  if (!config.localAccount) {
+    config.localAccount = {
+      username: '',
+      password: '',
+      authType: 'microsoft'
+    };
+  }
+  if (!config.proxy) {
+    config.proxy = {
+      enabled: false,
+      host: '',
+      port: '',
+      username: '',
+      password: ''
+    };
+  }
+  if (!config.dangerEscape) {
+    config.dangerEscape = {
+      enabled: true,
+      playerProximityRadius: 50
+    };
+  }
+  if (!config.conversationalAI) {
+    config.conversationalAI = {
+      enabled: false,
+      useLLM: false,
+      provider: {},
+      apiKey: '',
+      requestTimeout: 30000,
+      cacheTTL: 3600000,
+      timeZoneAliases: {},
+      rateLimit: { maxRequests: 10, windowMs: 60000 },
+      autoReplyPrefix: '[AUTO]'
+    };
+  }
+  if (!config.privateMsg) {
+    config.privateMsg = {
+      enabled: false,
+      defaultTemplate: '',
+      trustLevelRequirement: 'trusted',
+      rateLimit: { windowMs: 60000, maxMessages: 10 },
+      forwardToConsole: false
+    };
+  }
+  
+  // Extract values safely with fallbacks
   const escapeSettings = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
   const radius = parseFloat(escapeSettings.playerProximityRadius);
   const normalizedRadius = Number.isFinite(radius) && radius > 0 ? radius : 50;
+  
   const configToSave = {
     localAccount: {
-      username: config.localAccount.username,
-      password: config.localAccount.password,
-      authType: config.localAccount.authType
+      username: config.localAccount && config.localAccount.username ? config.localAccount.username : '',
+      password: config.localAccount && config.localAccount.password ? config.localAccount.password : '',
+      authType: config.localAccount && config.localAccount.authType ? config.localAccount.authType : 'microsoft'
     },
-    proxy: config.proxy || {
+    proxy: config.proxy ? {
+      enabled: config.proxy.enabled || false,
+      host: config.proxy.host || '',
+      port: config.proxy.port || '',
+      username: config.proxy.username || '',
+      password: config.proxy.password || ''
+    } : {
       enabled: false,
       host: '',
       port: '',
@@ -28603,22 +28664,22 @@ function saveConfiguration() {
       playerProximityRadius: normalizedRadius
     },
     conversationalAI: {
-      enabled: config.conversationalAI.enabled,
-      useLLM: config.conversationalAI.useLLM,
-      provider: config.conversationalAI.provider,
-      apiKey: config.conversationalAI.apiKey,
-      requestTimeout: config.conversationalAI.requestTimeout,
-      cacheTTL: config.conversationalAI.cacheTTL,
-      timeZoneAliases: config.conversationalAI.timeZoneAliases,
-      rateLimit: config.conversationalAI.rateLimit,
-      autoReplyPrefix: config.conversationalAI.autoReplyPrefix
+      enabled: config.conversationalAI && typeof config.conversationalAI.enabled === 'boolean' ? config.conversationalAI.enabled : false,
+      useLLM: config.conversationalAI && typeof config.conversationalAI.useLLM === 'boolean' ? config.conversationalAI.useLLM : false,
+      provider: config.conversationalAI && config.conversationalAI.provider ? config.conversationalAI.provider : {},
+      apiKey: config.conversationalAI && config.conversationalAI.apiKey ? config.conversationalAI.apiKey : '',
+      requestTimeout: config.conversationalAI && typeof config.conversationalAI.requestTimeout === 'number' ? config.conversationalAI.requestTimeout : 30000,
+      cacheTTL: config.conversationalAI && typeof config.conversationalAI.cacheTTL === 'number' ? config.conversationalAI.cacheTTL : 3600000,
+      timeZoneAliases: config.conversationalAI && config.conversationalAI.timeZoneAliases ? config.conversationalAI.timeZoneAliases : {},
+      rateLimit: config.conversationalAI && config.conversationalAI.rateLimit ? config.conversationalAI.rateLimit : { maxRequests: 10, windowMs: 60000 },
+      autoReplyPrefix: config.conversationalAI && config.conversationalAI.autoReplyPrefix ? config.conversationalAI.autoReplyPrefix : '[AUTO]'
     },
     privateMsg: {
-      enabled: config.privateMsg.enabled,
-      defaultTemplate: config.privateMsg.defaultTemplate,
-      trustLevelRequirement: config.privateMsg.trustLevelRequirement,
-      rateLimit: config.privateMsg.rateLimit,
-      forwardToConsole: config.privateMsg.forwardToConsole
+      enabled: config.privateMsg && typeof config.privateMsg.enabled === 'boolean' ? config.privateMsg.enabled : false,
+      defaultTemplate: config.privateMsg && config.privateMsg.defaultTemplate ? config.privateMsg.defaultTemplate : '',
+      trustLevelRequirement: config.privateMsg && config.privateMsg.trustLevelRequirement ? config.privateMsg.trustLevelRequirement : 'trusted',
+      rateLimit: config.privateMsg && config.privateMsg.rateLimit ? config.privateMsg.rateLimit : { windowMs: 60000, maxMessages: 10 },
+      forwardToConsole: config.privateMsg && typeof config.privateMsg.forwardToConsole === 'boolean' ? config.privateMsg.forwardToConsole : false
     }
   };
   
@@ -28848,28 +28909,56 @@ function validateBasicProxy(host, port) {
 
 // Interactive setup wizard
 function runSetupWizard() {
-  // Ensure config and its nested properties are properly initialized
-  if (!global.config) {
-    global.config = config;
-  }
-  if (!config.localAccount) {
-    config.localAccount = {
-      username: '',
-      password: '',
-      authType: 'microsoft'
-    };
-  }
-  if (!config.proxy) {
-    config.proxy = {
-      enabled: false,
-      host: '',
-      port: '',
-      username: '',
-      password: ''
-    };
-  }
-  
-  console.log('\n🔧 HUNTERX SETUP WIZARD');
+   // Ensure config and its nested properties are properly initialized
+   if (!global.config) {
+     global.config = config;
+   }
+   if (!config.localAccount) {
+     config.localAccount = {
+       username: '',
+       password: '',
+       authType: 'microsoft'
+     };
+   }
+   if (!config.proxy) {
+     config.proxy = {
+       enabled: false,
+       host: '',
+       port: '',
+       username: '',
+       password: ''
+     };
+   }
+   if (!config.dangerEscape) {
+     config.dangerEscape = {
+       enabled: true,
+       playerProximityRadius: 50
+     };
+   }
+   if (!config.conversationalAI) {
+     config.conversationalAI = {
+       enabled: false,
+       useLLM: false,
+       provider: {},
+       apiKey: '',
+       requestTimeout: 30000,
+       cacheTTL: 3600000,
+       timeZoneAliases: {},
+       rateLimit: { maxRequests: 10, windowMs: 60000 },
+       autoReplyPrefix: '[AUTO]'
+     };
+   }
+   if (!config.privateMsg) {
+     config.privateMsg = {
+       enabled: false,
+       defaultTemplate: '',
+       trustLevelRequirement: 'trusted',
+       rateLimit: { windowMs: 60000, maxMessages: 10 },
+       forwardToConsole: false
+     };
+   }
+
+   console.log('\n🔧 HUNTERX SETUP WIZARD');
   console.log('═'.repeat(50));
   console.log('Let\'s configure your Minecraft account and proxy settings.\n');
   
@@ -30692,9 +30781,9 @@ async function startBot() {
     
     // First: Load configuration (must complete before anything else)
     console.log('[INIT] Loading configuration...');
-    const configLoaded = loadConfiguration();
+    global.config = loadConfiguration();
     
-    if (!configLoaded) {
+    if (!global.config) {
       console.log('[INIT] No existing config found, setup wizard will guide you\n');
     } else {
       console.log('[INIT] ✓ Config loaded successfully\n');
