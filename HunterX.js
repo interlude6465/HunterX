@@ -28150,7 +28150,15 @@ function askStashConfig() {
         if (cfg && cfg.stashHunt) {
           cfg.stashHunt.flyHackEnabled = fly.toLowerCase() === 'y';
         }
-        askServer();
+        
+        // Save configuration before proceeding
+        if (saveConfiguration()) {
+          console.log('\n✅ Stash hunt configuration saved successfully!');
+          askServer();
+        } else {
+          console.log('\n❌ Failed to save stash hunt configuration!');
+          setTimeout(() => showMenu(), 2000);
+        }
       });
     });
   });
@@ -28243,7 +28251,14 @@ async function askServer() {
       }
     }
     
-    launch();
+    // Save configuration before launching bot
+    if (saveConfiguration()) {
+      console.log('\n✅ Server configuration saved successfully!');
+      launch();
+    } else {
+      console.log('\n❌ Failed to save server configuration!');
+      setTimeout(() => showMenu(), 2000);
+    }
   });
 }
 
@@ -28285,21 +28300,30 @@ async function launchSwarm() {
         const cfg = global.config || config;
         cfg.mode = mode.trim() || 'friendly';
         
-        const modeDisplay = cfg.mode;
-        const serverTypeStr = cfg.swarm && cfg.swarm.serverType ? (cfg.swarm.serverType.cracked ? 'CRACKED' : 'PREMIUM') : 'Unknown';
-        console.log(`\n🚀 Launching ${botCount} bots in ${modeDisplay} mode...`);
-        console.log(`Server type: ${serverTypeStr}\n`);
-        
-        globalBotSpawner.spawnMultiple(cfg.server, botCount, cfg.mode).then(() => {
-          console.log(`\n✅ Successfully spawned ${botCount} bots!`);
-          console.log(`Total active bots: ${globalBotSpawner.getActiveBotCount()}`);
-          console.log(`\nCommands:`);
-          console.log(`  - Chat "spawn 5 more bots" to add more bots`);
-          console.log(`  - Chat "!swarm status" for bot info`);
-          console.log(`  - Chat "!help x y z" to send all bots to coordinates`);
-        }).catch(err => {
-          console.error(`❌ Failed to spawn bots: ${err.message}`);
-        });
+        // Save configuration before spawning bots
+        if (saveConfiguration()) {
+          console.log('\n✅ Swarm configuration saved successfully!');
+          
+          const modeDisplay = cfg.mode;
+          const serverTypeStr = cfg.swarm && cfg.swarm.serverType ? (cfg.swarm.serverType.cracked ? 'CRACKED' : 'PREMIUM') : 'Unknown';
+          console.log(`\n🚀 Launching ${botCount} bots in ${modeDisplay} mode...`);
+          console.log(`Server type: ${serverTypeStr}\n`);
+          
+          globalBotSpawner.spawnMultiple(cfg.server, botCount, cfg.mode).then(() => {
+            console.log(`\n✅ Successfully spawned ${botCount} bots!`);
+            console.log(`Total active bots: ${globalBotSpawner.getActiveBotCount()}`);
+            console.log(`\nCommands:`);
+            console.log(`  - Chat "spawn 5 more bots" to add more bots`);
+            console.log(`  - Chat "!swarm status" for bot info`);
+            console.log(`  - Chat "!help x y z" to send all bots to coordinates`);
+          }).catch(err => {
+            console.error(`❌ Failed to spawn bots: ${err.message}`);
+          });
+        } else {
+          console.log('\n❌ Failed to save swarm configuration!');
+          setTimeout(() => showMenu(), 2000);
+          return;
+        }
         
         rl.close();
       });
@@ -28320,61 +28344,70 @@ function launchSupplyChainManager() {
   initializeSupplyChainServer();
   
   rl.question('Server IP:PORT: ', (server) => {
-    config.server = server.trim();
+    const cfg = global.config || config;
+    cfg.server = server.trim();
     
     rl.question('Number of worker bots to launch (1-5): ', (count) => {
       const botCount = Math.min(5, Math.max(1, parseInt(count) || 2));
       
-      console.log(`\n🚀 Launching ${botCount} supply chain workers...\n`);
-      
-      // Launch worker bots
-      for (let i = 0; i < botCount; i++) {
-        const botName = `SupplyWorker_${i + 1}_${Date.now().toString(36)}`;
-        setTimeout(() => {
-          console.log(`[SUPPLY] Launching worker ${i + 1}/${botCount}: ${botName}`);
-          const bot = launchBot(botName, 'supply_chain');
-          
-          // Register with supply chain manager after bot is ready
-          if (bot) {
-            bot.once('spawn', () => {
-              globalSupplyChainManager.registerBot(bot).catch(err => {
-                console.error(`[SUPPLY] Error registering bot ${bot.username}:`, err);
+      // Save configuration before launching bots
+      if (saveConfiguration()) {
+        console.log('\n✅ Supply chain configuration saved successfully!');
+        console.log(`\n🚀 Launching ${botCount} supply chain workers...\n`);
+        
+        // Launch worker bots
+        for (let i = 0; i < botCount; i++) {
+          const botName = `SupplyWorker_${i + 1}_${Date.now().toString(36)}`;
+          setTimeout(() => {
+            console.log(`[SUPPLY] Launching worker ${i + 1}/${botCount}: ${botName}`);
+            const bot = launchBot(botName, 'supply_chain');
+            
+            // Register with supply chain manager after bot is ready
+            if (bot) {
+              bot.once('spawn', () => {
+                globalSupplyChainManager.registerBot(bot).catch(err => {
+                  console.error(`[SUPPLY] Error registering bot ${bot.username}:`, err);
+                });
               });
-            });
-          }
-        }, i * 2000);
+            }
+          }, i * 2000);
+        }
+        
+        // Start queue processor
+        setTimeout(() => {
+          globalSupplyChainManager.processQueue();
+          console.log('[SUPPLY] Queue processor started');
+        }, botCount * 2000 + 3000);
+        
+        // Add some sample tasks
+        setTimeout(() => {
+          console.log('[SUPPLY] Adding sample tasks...');
+          globalSupplyChainManager.taskQueue.addTask({
+            type: 'collect',
+            item: 'oak_log',
+            quantity: 64,
+            priority: 'normal'
+          });
+          
+          globalSupplyChainManager.taskQueue.addTask({
+            type: 'collect',
+            item: 'cobblestone',
+            quantity: 128,
+            priority: 'high'
+          });
+          
+          globalSupplyChainManager.taskQueue.addTask({
+            type: 'find',
+            item: 'diamond',
+            quantity: 5,
+            priority: 'urgent'
+          });
+        }, 10000);
+      } else {
+        console.log('\n❌ Failed to save supply chain configuration!');
+        setTimeout(() => showMenu(), 2000);
+        return;
       }
-      
-      // Start queue processor
-      setTimeout(() => {
-        globalSupplyChainManager.processQueue();
-        console.log('[SUPPLY] Queue processor started');
-      }, botCount * 2000 + 3000);
-      
-      // Add some sample tasks
-      setTimeout(() => {
-        console.log('[SUPPLY] Adding sample tasks...');
-        globalSupplyChainManager.taskQueue.addTask({
-          type: 'collect',
-          item: 'oak_log',
-          quantity: 64,
-          priority: 'normal'
-        });
-        
-        globalSupplyChainManager.taskQueue.addTask({
-          type: 'collect',
-          item: 'cobblestone',
-          quantity: 128,
-          priority: 'high'
-        });
-        
-        globalSupplyChainManager.taskQueue.addTask({
-          type: 'find',
-          item: 'diamond',
-          quantity: 5,
-          priority: 'urgent'
-        });
-      }, 10000);
       
       rl.close();
     });
