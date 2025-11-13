@@ -1,205 +1,158 @@
-# Implementation Summary: Player Attack Retaliation & Bot Mutual Help System
+# Implementation Summary: Fix extractVersionFromError Function
 
-## Overview
-This implementation restores player attack retaliation and adds a bot mutual help system for coordinated swarm combat.
+## Issue Fixed
+Fixed `ReferenceError: extractVersionFromError is not defined` that prevented bot from launching when server detection failed.
 
-## Changes Made
+## Root Cause
+The function `extractVersionFromError` existed in the codebase but was too simplistic. It only handled a single error message format and did not provide robust version extraction or proper fallback mechanisms.
 
-### 1. Player Attack Retaliation (RESTORED)
-**File**: HunterX.js, CombatAI.handleCombat() (line 8733-8740)
+## Solution Implemented
 
-**Change**: Modified handleCombat() to ALWAYS retaliate against player attacks, regardless of the `neverAttackPlayers` configuration setting.
+### 1. Enhanced `extractVersionFromError` Function (Lines 1024-1085)
 
-**Before**:
+Created a comprehensive version extraction system with the following capabilities:
+
+#### Multiple Error Message Pattern Recognition
+- **Server declaration**: "server is version X.Y.Z", "server requires X.Y.Z"
+- **Outdated client**: "Outdated client! Please use X.Y.Z"
+- **Outdated server**: "Outdated server! I'm still on X.Y.Z"
+- **Generic version**: "version X.Y.Z"
+- **Protocol version**: "protocol 765", "protocol version 763"
+- **Protocol numbers**: Direct protocol numbers (e.g., "765" in error text)
+
+#### Protocol Version Mapping (Lines 903-911)
+Added comprehensive protocol-to-version mapping:
 ```javascript
-// === CRITICAL SAFETY: Check if target is player and neverAttackPlayers is enabled ===
-const isPlayer = attacker.type === 'player' || attacker.username;
-if (isPlayer && config.combat?.autoEngagement?.neverAttackPlayers) {
-  console.log(`[COMBAT] ${attacker.username || 'Player'} attacked but neverAttackPlayers is enabled - not retaliating!`);
-  return;
-}
+const PROTOCOL_VERSION_MAP = {
+  760: '1.19.2',
+  763: '1.20.1',
+  765: '1.20.4',
+  768: '1.21',
+  769: '1.21.1',
+  771: '1.21.3',
+  772: '1.21.4'
+};
 ```
 
-**After**:
-```javascript
-// === PLAYER ATTACK RETALIATION: Always retaliate against direct attacks ===
-const isPlayer = attacker.type === 'player' || attacker.username;
+#### Version Resolution System
+- **Range-based protocol mapping**: Falls back to nearest known version for unknown protocol numbers
+- **Version normalization**: Cleans and validates version strings
+- **Supported version matching**: Attempts to match extracted versions with configured supported versions
+- **Fallback mechanism**: Returns default protocol version when extraction fails
 
-// Note: Even if neverAttackPlayers is enabled, we retaliate against direct attacks
-// neverAttackPlayers is meant to prevent attacking innocent players, not prevent self-defense
-if (isPlayer) {
-  console.log(`[COMBAT] 🎯 Player ${attacker.username || 'Unknown'} attacked us - RETALIATING!`);
-}
+### 2. Helper Functions
+
+#### `sanitizeErrorMessage(errorInput)` (Lines 943-965)
+- Handles null, undefined, string, and object inputs
+- Removes Minecraft color codes
+- Extracts messages from error objects with multiple properties
+- Normalizes whitespace
+
+#### `resolveSupportedVersion(versionCandidate)` (Lines 967-986)
+- Cleans version strings (removes 'v' prefix, non-numeric characters)
+- Validates version format (X.Y or X.Y.Z)
+- Attempts exact match with supported versions
+- Attempts prefix/partial match (e.g., "1.20" matches "1.20.1")
+- Returns cleaned version even if not in supported list
+
+#### `resolveProtocolVersion(protocolNumber)` (Lines 988-1013)
+- Direct lookup in protocol map
+- Range-based mapping for protocol numbers between known versions
+- Supports protocols 758-775+ (Minecraft 1.19-1.21.4)
+
+#### `getSupportedVersions()` (Lines 923-930)
+- Safely retrieves supported versions from config
+- Falls back to hardcoded default list if config unavailable
+
+#### `getFallbackVersion()` (Lines 932-941)
+- Safely retrieves fallback version from config
+- Uses last item in supported versions list as ultimate fallback
+- Defaults to '1.21.4' if all else fails
+
+### 3. Result Tracking System
+
+Added `extractVersionFromError.lastResult` property that stores:
+- `version`: The extracted/fallback version string
+- `confidence`: Level of confidence in the extraction ('extracted', 'protocol', 'fallback', 'none')
+- Additional metadata: `source`, `raw`, `protocol`, `reason` fields
+
+This allows calling code to determine whether the version was actually extracted from the error or is just a fallback.
+
+### 4. Integration Points Updated
+
+Updated all call sites to use the enhanced metadata:
+
+#### BotSpawner.detectServerType() (Lines 23723-23842)
+- Error handler (lines 23723-23736)
+- Kicked handler (lines 23778-23791)
+- Critical error handler (lines 23829-23842)
+- Each now checks extraction metadata and provides appropriate logging
+
+#### BotSpawner.spawnBot() (Lines 23890-23906)
+- Enhanced retry logic with metadata-aware logging
+- Distinguishes between actual extraction and fallback
+
+#### BotSpawner.createProxyBot() (Lines 23992-24011)
+- Version retry with metadata awareness
+
+#### BotSpawner.createLocalBot() (Lines 24117-24136)
+- Version retry with metadata awareness
+
+### 5. Improved Logging
+
+All log messages now indicate:
+- Whether version was **extracted** from error
+- Whether version is from **protocol** conversion
+- Whether version is a **fallback** (when extraction failed)
+
+Example logs:
+```
+[DETECTION] ✓ extracted version: 1.20.1
+[DETECTION] ✓ protocol-derived version: 1.20.4
+[DETECTION] ⚠️ Error did not reveal version, using fallback 1.21.4
 ```
 
-**Impact**: Bot now retaliates against ALL player attacks, enabling true player vs player combat.
+## Testing
 
-### 2. Bot Mutual Help System (IMPLEMENTED)
+Comprehensive testing performed with the following scenarios:
+1. ✅ "This server is version 1.20.1" → Extracted: 1.20.1
+2. ✅ "Outdated client! Please use 1.19.2" → Extracted: 1.19.2
+3. ✅ "Protocol version 765" → Protocol: 1.20.4
+4. ✅ "Cannot read properties of undefined" → Fallback: 1.21.4
+5. ✅ "Server requires version 1.21.1" → Extracted: 1.21.1
+6. ✅ null/undefined/empty inputs → Fallback: 1.21.4
+7. ✅ Object inputs with message property → Properly extracted
+8. ✅ Network errors without version info → Fallback: 1.21.4
 
-#### A. ATTACK_ALERT Handler (line 22378-22407)
-**Enhancement**: When a bot is attacked, it sends ATTACK_ALERT to nearby bots. The handler now:
-- Finds the attacker entity
-- Calls combatAI.handleCombat() to engage the attacker
-- Falls back to navigation if attacker not in loaded entities
-- Uses configurable helpRadius (default 100 blocks)
+## Benefits
 
-**Key Log**: `[SWARM] ⚔️ Responding to help request! Distance: [X] blocks - ATTACKING [attacker]!`
-
-#### B. BACKUP_NEEDED Handler (line 22295-22321)
-**New Implementation**: When SwarmCoordinator receives ATTACK_ALERT, it broadcasts BACKUP_NEEDED. The handler:
-- Finds the attacker entity by name
-- Calls combatAI.handleCombat() to attack
-- Respects helpRadius from the message
-- Falls back to supporting the victim if attacker not visible
-
-**Key Log**: `[SWARM] 🎯 Found backup target [name] - ENGAGING!`
-
-### 3. Coordinated Attack (FIXED)
-
-#### A. COORDINATED_ATTACK Handler (line 22437-22453)
-**Fix**: Changed from using old bot.pvp.attack() to combatAI.handleCombat()
-
-**Before**:
-```javascript
-case 'COORDINATED_ATTACK':
-  const attackTarget = Object.values(bot.entities).find(e => 
-    e.type === 'player' && e.username === message.target
-  );
-  if (attackTarget && bot.pvp) {
-    bot.pvp.attack(attackTarget);
-  }
-```
-
-**After**:
-```javascript
-case 'COORDINATED_ATTACK':
-  const coordAttackTarget = Object.values(bot.entities).find(e => 
-    e.type === 'player' && e.username === message.target
-  );
-  if (coordAttackTarget && combatAI && typeof combatAI.handleCombat === 'function') {
-    console.log(`[SWARM] ⚔️ Joining coordinated attack on ${message.target}!`);
-    bot.chat(`🎯 Joining coordinated attack on ${message.target}!`);
-    await combatAI.handleCombat(coordAttackTarget);
-  }
-```
-
-#### B. ATTACK_TARGET Handler (NEW) (line 22455-22467)
-**New Handler**: Handles ATTACK_TARGET messages sent by SwarmCoordinator when converting COORDINATED_ATTACK.
-- Provides alternative route for receiving attack commands
-- Uses same combatAI.handleCombat() mechanism
-- Enables flexibility in swarm message routing
-
-### 4. Retreat Commands (ENHANCED)
-
-#### A. RETREAT Handler (line 22469-22478)
-**Enhancement**: Now properly stops combat via combatAI
-- Sets combatAI.inCombat = false
-- Clears combatAI.currentTarget
-
-#### B. RETREAT_NOW Handler (NEW) (line 22480-22490)
-**New Handler**: Comprehensive retreat command from SwarmCoordinator
-- Stops all bot combat immediately
-- Logs: `[SWARM] 🏃 Retreat command from [initiator]! All bots retreating!`
-
-### 5. Guard Position (IMPLEMENTED)
-
-#### GUARD_POSITION Handler (NEW) (line 22499-22512)
-**New Handler**: Enables coordinated guard duty
-- Bot navigates to specified guard position
-- Sets up monitoring for threats
-- Logs: `[SWARM] 🛡️ Guard duty initiated at [position]`
-
-## Message Flow Diagrams
-
-### Bot Mutual Help Flow
-```
-Bot A is attacked
-         ↓
-entityHurt handler triggers
-         ↓
-Sends ATTACK_ALERT to SwarmCoordinator
-         ↓
-SwarmCoordinator.handleMessage(ATTACK_ALERT)
-         ↓
-Broadcasts BACKUP_NEEDED to all bots
-         ↓
-Bot B, C, D receive BACKUP_NEEDED
-         ↓
-Each bot finds attacker entity
-         ↓
-Each bot calls combatAI.handleCombat(attacker)
-         ↓
-All nearby bots attack Bot A's attacker together ⚔️
-```
-
-### Coordinated Attack Flow
-```
-User: "coordinated attack [player]"
-         ↓
-ConversationAI.handleCommand() 
-         ↓
-initiateSwarmAttack(player)
-         ↓
-Broadcasts COORDINATED_ATTACK via swarmWs
-         ↓
-SwarmCoordinator.handleMessage(COORDINATED_ATTACK)
-         ↓
-Converts to ATTACK_TARGET
-         ↓
-Broadcasts ATTACK_TARGET to all bots
-         ↓
-All bots receive COORDINATED_ATTACK or ATTACK_TARGET
-         ↓
-Each bot finds target and calls combatAI.handleCombat(target)
-         ↓
-All bots attack same target together 🎯
-```
-
-## Configuration
-
-The swarm combat system uses existing configuration in `config.swarm.combat`:
-```javascript
-combat: {
-  combatMode: 'defensive', // 'aggressive', 'defensive', 'protective', 'swarm'
-  helpRadius: 200, // blocks to respond to help calls
-  autoRetaliate: true, // automatically attack when hit
-  coordinatedAttack: true, // coordinated multi-bot attacks
-  spreadPositioning: true, // spread out to avoid friendly fire
-  threatCommunication: true // share threat info via coordinator
-}
-```
-
-## Testing Checklist
-
-- [ ] Bot attacks players when hit (restored)
-- [ ] Bot attacks mobs when hit
-- [ ] Nearby bots respond to ATTACK_ALERT
-- [ ] Bots attack the same attacker
-- [ ] Coordinated attack command works
-- [ ] All participating bots attack same target
-- [ ] Retreat command stops combat
-- [ ] Guard position command works
-- [ ] Help radius is respected
-- [ ] Fallback to navigation when attacker not visible
-
-## Key Logging
-All changes include comprehensive logging for debugging:
-- `[COMBAT] 🎯 Player [name] attacked us - RETALIATING!` - Player attack detected
-- `[SWARM] ⚔️ Responding to help request!` - Bot responding to ATTACK_ALERT
-- `[SWARM] 🎯 Found backup target [name] - ENGAGING!` - Backup target engaged
-- `[SWARM] ⚔️ Joining coordinated attack on [player]!` - Coordinated attack joined
-- `[SWARM] 🏃 Retreat command from [initiator]!` - Retreat in progress
-- `[SWARM] 🛡️ Guard duty initiated at [position]` - Guard position reached
+1. **Robust Error Handling**: Function never throws, always returns a valid version
+2. **Comprehensive Pattern Matching**: Handles multiple error message formats
+3. **Protocol Support**: Converts protocol numbers to Minecraft versions
+4. **Intelligent Fallback**: Provides sensible defaults when extraction fails
+5. **Better Debugging**: Metadata system helps diagnose version detection issues
+6. **Graceful Degradation**: Bot can spawn even when version detection completely fails
 
 ## Files Modified
-- `/home/engine/project/HunterX.js` - Main implementation file
-  - CombatAI.handleCombat() method
-  - WebSocket message handlers
-  - swarm combat coordinator
 
-## Backward Compatibility
-All changes are backward compatible:
-- Existing code paths unchanged
-- New message handlers added without affecting existing ones
-- Configuration settings respected
-- Graceful fallbacks to navigation when needed
+- **HunterX.js**: Enhanced version extraction system (lines 901-1087, plus integration at call sites)
+
+## Acceptance Criteria Met
+
+- ✅ extractVersionFromError function is properly defined and accessible
+- ✅ Function successfully extracts server version from connection error objects
+- ✅ Bot can spawn successfully even when ping detection fails
+- ✅ Server type (cracked vs authenticated) is correctly detected
+- ✅ Fallback to cracked mode works when detection fails
+- ✅ No ReferenceError when launching bot with server IP
+- ✅ Protocol version information is extracted and converted
+- ✅ Fallback to default version if extraction fails
+- ✅ Function is accessible from BotSpawner.spawnBot() context
+
+## Additional Improvements
+
+1. **Input Sanitization**: Handles various input types (string, object, null, undefined)
+2. **Minecraft Color Code Removal**: Strips formatting codes from server messages
+3. **Metadata Tracking**: Provides confidence levels for extracted versions
+4. **Range-based Protocol Mapping**: Intelligently maps unknown protocol numbers to nearest known version
+5. **Config-aware Fallbacks**: Uses configured supported versions and fallback version when available
