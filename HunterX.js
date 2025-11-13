@@ -899,17 +899,192 @@ function initializeHealthTracking(bot) {
 }
 
 // === VERSION EXTRACTION AND SERVER DETECTION HELPERS ===
-function extractVersionFromError(errorMessage) {
-  // Parse: "This server is version X.Y.Z, you are using version A.B.C"
-  const versionMatch = errorMessage.match(/This server is version ([\d.]+)/i);
-  
-  if (versionMatch && versionMatch[1]) {
-    console.log(`[DETECTION] Extracted server version: ${versionMatch[1]}`);
-    return versionMatch[1];
+
+const PROTOCOL_VERSION_MAP = Object.freeze({
+  760: '1.19.2',
+  763: '1.20.1',
+  765: '1.20.4',
+  768: '1.21',
+  769: '1.21.1',
+  771: '1.21.3',
+  772: '1.21.4'
+});
+
+const DEFAULT_SUPPORTED_VERSIONS = Object.freeze([
+  '1.19.2',
+  '1.20',
+  '1.20.1',
+  '1.20.4',
+  '1.21',
+  '1.21.1',
+  '1.21.4'
+]);
+
+function getSupportedVersions() {
+  try {
+    if (typeof config !== 'undefined' && config && config.bot && Array.isArray(config.bot.supportedVersions) && config.bot.supportedVersions.length) {
+      return config.bot.supportedVersions;
+    }
+  } catch (err) {}
+  return DEFAULT_SUPPORTED_VERSIONS;
+}
+
+function getFallbackVersion() {
+  const defaults = DEFAULT_SUPPORTED_VERSIONS;
+  const defaultFallback = defaults[defaults.length - 1] || '1.21.4';
+  try {
+    if (typeof config !== 'undefined' && config && config.bot) {
+      return config.bot.fallbackVersion || config.bot.defaultProtocolVersion || defaultFallback;
+    }
+  } catch (err) {}
+  return defaultFallback;
+}
+
+function sanitizeErrorMessage(errorInput) {
+  if (errorInput === null || errorInput === undefined) {
+    return '';
   }
-  
+  if (typeof errorInput === 'string') {
+    return errorInput.replace(/\u00A7[0-9A-FK-OR]/gi, '').replace(/\s+/g, ' ').trim();
+  }
+  if (typeof errorInput === 'object') {
+    const parts = [];
+    if (errorInput.message) parts.push(errorInput.message);
+    if (errorInput.reason) parts.push(errorInput.reason);
+    if (errorInput.text) parts.push(errorInput.text);
+    if (!parts.length) {
+      try {
+        parts.push(JSON.stringify(errorInput));
+      } catch (err) {
+        parts.push(String(errorInput));
+      }
+    }
+    return parts.join(' ').replace(/\u00A7[0-9A-FK-OR]/gi, '').replace(/\s+/g, ' ').trim();
+  }
+  return String(errorInput).replace(/\u00A7[0-9A-FK-OR]/gi, '').replace(/\s+/g, ' ').trim();
+}
+
+function resolveSupportedVersion(versionCandidate) {
+  if (!versionCandidate) return null;
+  const cleaned = String(versionCandidate)
+    .trim()
+    .replace(/^v/i, '')
+    .replace(/[^0-9.]/g, '');
+  if (!cleaned) return null;
+  const supported = getSupportedVersions();
+  if (supported.includes(cleaned)) {
+    return cleaned;
+  }
+  const majorMinor = cleaned.split('.').slice(0, 2).join('.');
+  if (majorMinor) {
+    const match = supported.find(ver => ver.startsWith(cleaned) || cleaned.startsWith(ver) || ver.startsWith(majorMinor));
+    if (match) {
+      return match;
+    }
+  }
+  return cleaned;
+}
+
+function resolveProtocolVersion(protocolNumber) {
+  if (!Number.isFinite(protocolNumber)) return null;
+  const direct = PROTOCOL_VERSION_MAP[protocolNumber];
+  if (direct) {
+    return resolveSupportedVersion(direct);
+  }
+  if (protocolNumber >= 758 && protocolNumber < 763) {
+    return resolveSupportedVersion('1.19.2');
+  }
+  if (protocolNumber >= 763 && protocolNumber < 765) {
+    return resolveSupportedVersion('1.20.1');
+  }
+  if (protocolNumber >= 765 && protocolNumber < 768) {
+    return resolveSupportedVersion('1.20.4');
+  }
+  if (protocolNumber >= 768 && protocolNumber < 769) {
+    return resolveSupportedVersion('1.21');
+  }
+  if (protocolNumber >= 769 && protocolNumber < 771) {
+    return resolveSupportedVersion('1.21.1');
+  }
+  if (protocolNumber >= 771) {
+    return resolveSupportedVersion('1.21.4');
+  }
   return null;
 }
+
+function setExtractionResult(version, confidence, details = {}) {
+  extractVersionFromError.lastResult = {
+    version,
+    confidence,
+    ...details
+  };
+  return version;
+}
+
+function extractVersionFromError(errorInput) {
+  extractVersionFromError.lastResult = { version: null, confidence: 'none' };
+  const message = sanitizeErrorMessage(errorInput);
+  if (!message) {
+    const fallback = getFallbackVersion();
+    console.log(`[DETECTION] Falling back to default protocol version: ${fallback}`);
+    return setExtractionResult(fallback, 'fallback', { reason: 'empty_message' });
+  }
+
+  const patterns = [
+    { regex: /server\s+(?:is|requires)\s+(?:minecraft\s+)?(?:version\s+)?(1\.[\d.]+)/i, label: 'server_declaration' },
+    { regex: /outdated\s+client.*?(?:use|version)\s+(1\.[\d.]+)/i, label: 'outdated_client' },
+    { regex: /outdated\s+server.*?\bon\s+(1\.[\d.]+)/i, label: 'outdated_server' },
+    { regex: /requires\s+(?:minecraft\s+)?(1\.[\d.]+)/i, label: 'requires_version' },
+    { regex: /supports\s+(?:minecraft\s+)?(1\.[\d.]+)/i, label: 'supports_version' },
+    { regex: /version\s+(1\.(?:19|20|21)\.[\d]+)/i, label: 'generic_version' }
+  ];
+
+  for (const { regex, label } of patterns) {
+    const match = message.match(regex);
+    if (match && match[1]) {
+      const resolved = resolveSupportedVersion(match[1]);
+      if (resolved) {
+        console.log(`[DETECTION] Extracted server version (${label.replace(/_/g, ' ')}): ${resolved}`);
+        return setExtractionResult(resolved, 'extracted', { source: label, raw: match[1] });
+      }
+    }
+  }
+
+  const protocolPatterns = [
+    /protocol\s+(?:version\s+)?(\d{3,4})/i,
+    /server\s*(?:protocol|ver)\s*(\d{3,4})/i,
+    /(?:expected|got)\s*protocol\s*(\d{3,4})/i,
+    /\b(7[5-9]\d)\b/
+  ];
+
+  for (const regex of protocolPatterns) {
+    const match = message.match(regex);
+    if (match && match[1]) {
+      const protocolNum = parseInt(match[1], 10);
+      const resolved = resolveProtocolVersion(protocolNum);
+      if (resolved) {
+        console.log(`[DETECTION] Extracted server protocol ${protocolNum} -> version ${resolved}`);
+        return setExtractionResult(resolved, 'protocol', { protocol: protocolNum });
+      }
+    }
+  }
+
+  const genericMatch = message.match(/\b(1\.(?:19|20|21)(?:\.\d{1,2})?)\b/);
+  if (genericMatch && genericMatch[1]) {
+    const resolved = resolveSupportedVersion(genericMatch[1]);
+    if (resolved) {
+      console.log(`[DETECTION] Extracted server version (generic scan): ${resolved}`);
+      return setExtractionResult(resolved, 'extracted', { source: 'generic_scan', raw: genericMatch[1] });
+    }
+  }
+
+  console.log(`[DETECTION] Could not determine version from error: ${message.substring(0, 120)}`);
+  const fallback = getFallbackVersion();
+  console.log(`[DETECTION] Falling back to default protocol version: ${fallback}`);
+  return setExtractionResult(fallback, 'fallback', { reason: 'no_match' });
+}
+
+extractVersionFromError.lastResult = { version: null, confidence: 'none' };
 
 function extractVersionFromPing(response) {
   // Parse version from server ping response
@@ -23546,9 +23721,18 @@ class BotSpawner {
           
           // Try to extract version from error message
           const extractedVersion = extractVersionFromError(err.message);
+          const extractionMeta = extractVersionFromError.lastResult || {};
           if (extractedVersion) {
-            console.log(`[DETECTION] ✓ Extracted version from error: ${extractedVersion}`);
-            detectedVersion = extractedVersion;
+            if (extractionMeta.confidence === 'fallback') {
+              console.log(`[DETECTION] ⚠️ Error did not reveal version, using fallback ${extractedVersion}`);
+              if (!detectedVersion) {
+                detectedVersion = extractedVersion;
+              }
+            } else {
+              const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
+              console.log(`[DETECTION] ✓ ${descriptor}: ${extractedVersion}`);
+              detectedVersion = extractedVersion;
+            }
           }
 
           if (err.message.includes('authentication') ||
@@ -23592,9 +23776,18 @@ class BotSpawner {
           
           // Try to extract version from kick reason
           const extractedVersion = extractVersionFromError(reasonStr);
+          const extractionMeta = extractVersionFromError.lastResult || {};
           if (extractedVersion) {
-            console.log(`[DETECTION] ✓ Extracted version from kick: ${extractedVersion}`);
-            detectedVersion = extractedVersion;
+            if (extractionMeta.confidence === 'fallback') {
+              console.log(`[DETECTION] ⚠️ Kick reason did not reveal version, using fallback ${extractedVersion}`);
+              if (!detectedVersion) {
+                detectedVersion = extractedVersion;
+              }
+            } else {
+              const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
+              console.log(`[DETECTION] ✓ ${descriptor} from kick: ${extractedVersion}`);
+              detectedVersion = extractedVersion;
+            }
           }
           
           if (reasonStr.includes('authentication') ||
@@ -23634,9 +23827,18 @@ class BotSpawner {
       
       // Try to extract version from error message
       const extractedVersion = extractVersionFromError(error.message);
+      const extractionMeta = extractVersionFromError.lastResult || {};
       if (extractedVersion) {
-        console.log(`[DETECTION] ✓ Extracted version from critical error: ${extractedVersion}`);
-        detectedVersion = extractedVersion;
+        if (extractionMeta.confidence === 'fallback') {
+          console.log(`[DETECTION] ⚠️ Critical error did not reveal version, using fallback ${extractedVersion}`);
+          if (!detectedVersion) {
+            detectedVersion = extractedVersion;
+          }
+        } else {
+          const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
+          console.log(`[DETECTION] ✓ ${descriptor} from critical error: ${extractedVersion}`);
+          detectedVersion = extractedVersion;
+        }
       }
       
       // Default to cracked mode on critical errors
@@ -23686,8 +23888,14 @@ class BotSpawner {
       
       // Try to extract version and retry once
       const extractedVersion = extractVersionFromError(error.message);
+      const extractionMeta = extractVersionFromError.lastResult || {};
       if (extractedVersion && extractedVersion !== options.version) {
-        console.log(`[SPAWNER] Retrying with extracted version: ${extractedVersion}`);
+        if (extractionMeta.confidence === 'fallback') {
+          console.log(`[SPAWNER] Retrying with fallback protocol version: ${extractedVersion}`);
+        } else {
+          const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
+          console.log(`[SPAWNER] Retrying with ${descriptor}: ${extractedVersion}`);
+        }
         options.version = extractedVersion;
         
         if (this.serverType && this.serverType.cracked) {
@@ -23782,9 +23990,15 @@ class BotSpawner {
       
       // Extract version from error
       const extractedVersion = extractVersionFromError(error.message);
+      const extractionMeta = extractVersionFromError.lastResult || {};
       
       if (extractedVersion && extractedVersion !== version) {
-        console.log(`[SPAWNER] 🔄 Retrying with extracted version: ${extractedVersion}`);
+        if (extractionMeta.confidence === 'fallback') {
+          console.log(`[SPAWNER] 🔄 Retrying with fallback protocol version: ${extractedVersion}`);
+        } else {
+          const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
+          console.log(`[SPAWNER] 🔄 Retrying with ${descriptor}: ${extractedVersion}`);
+        }
         
         try {
           const bot = await createBotWithVersion(extractedVersion);
@@ -23901,9 +24115,15 @@ class BotSpawner {
       
       // Extract version from error
       const extractedVersion = extractVersionFromError(error.message);
+      const extractionMeta = extractVersionFromError.lastResult || {};
       
       if (extractedVersion && extractedVersion !== version) {
-        console.log(`[SPAWNER] 🔄 Retrying with extracted version: ${extractedVersion}`);
+        if (extractionMeta.confidence === 'fallback') {
+          console.log(`[SPAWNER] 🔄 Retrying with fallback protocol version: ${extractedVersion}`);
+        } else {
+          const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
+          console.log(`[SPAWNER] 🔄 Retrying with ${descriptor}: ${extractedVersion}`);
+        }
         
         try {
           const bot = await createBotWithVersion(extractedVersion);
