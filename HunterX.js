@@ -28532,7 +28532,27 @@ function printStartupBanner() {
 
 // Load configuration from file
 function loadConfiguration() {
+  console.log('[CONFIG] loadConfiguration() called');
   const configPath = './data/config.json';
+  
+  // Safely get reference to module-level config
+  // This defensive check ensures config is accessible
+  let workingConfig;
+  try {
+    // Try to reference the module-level config
+    workingConfig = (typeof config !== 'undefined') ? config : null;
+  } catch (e) {
+    console.error('[CONFIG] Error accessing module-level config:', e.message);
+    workingConfig = null;
+  }
+  
+  if (!workingConfig) {
+    console.error('[CONFIG] CRITICAL: Module-level config is not accessible!');
+    console.error('[CONFIG] This indicates a fundamental initialization order problem.');
+    throw new Error('config is not defined - module-level config object is not accessible');
+  }
+  
+  console.log('[CONFIG] Working config reference obtained');
 
   if (fs.existsSync(configPath)) {
     const savedConfig = safeReadJson(configPath);
@@ -28541,52 +28561,52 @@ function loadConfiguration() {
 
       // Core settings
       if (typeof savedConfig.mode === 'string' || savedConfig.mode === null) {
-        config.mode = savedConfig.mode;
+        workingConfig.mode = savedConfig.mode;
       }
       if (typeof savedConfig.server === 'string' || savedConfig.server === null) {
-        config.server = savedConfig.server;
+        workingConfig.server = savedConfig.server;
       }
       if (Array.isArray(savedConfig.whitelist)) {
-        config.whitelist = savedConfig.whitelist;
+        workingConfig.whitelist = savedConfig.whitelist;
       }
 
       // Account sections
       if (savedConfig.account && typeof savedConfig.account === 'object') {
-        config.account = { ...config.account, ...savedConfig.account };
+        workingConfig.account = { ...workingConfig.account, ...savedConfig.account };
       }
       if (savedConfig.localAccount && typeof savedConfig.localAccount === 'object') {
-        config.localAccount = { ...config.localAccount, ...savedConfig.localAccount };
+        workingConfig.localAccount = { ...workingConfig.localAccount, ...savedConfig.localAccount };
       }
 
       // Proxy
       if (savedConfig.proxy && typeof savedConfig.proxy === 'object') {
-        config.proxy = { ...config.proxy, ...savedConfig.proxy };
+        workingConfig.proxy = { ...workingConfig.proxy, ...savedConfig.proxy };
       }
 
       // Home Base (CRITICAL - this is what showMenu needs)
       if (savedConfig.homeBase && typeof savedConfig.homeBase === 'object') {
-        config.homeBase = { ...config.homeBase, ...savedConfig.homeBase };
+        workingConfig.homeBase = { ...workingConfig.homeBase, ...savedConfig.homeBase };
       }
 
       // Stash Hunt
       if (savedConfig.stashHunt && typeof savedConfig.stashHunt === 'object') {
-        config.stashHunt = { ...config.stashHunt, ...savedConfig.stashHunt };
+        workingConfig.stashHunt = { ...workingConfig.stashHunt, ...savedConfig.stashHunt };
       }
 
       // Backup
       if (savedConfig.backup && typeof savedConfig.backup === 'object') {
-        config.backup = { ...config.backup, ...savedConfig.backup };
+        workingConfig.backup = { ...workingConfig.backup, ...savedConfig.backup };
       }
 
       // Danger Escape
       if (savedConfig.dangerEscape && typeof savedConfig.dangerEscape === 'object') {
         const escapeSettings = savedConfig.dangerEscape;
         if (typeof escapeSettings.enabled === 'boolean') {
-          config.dangerEscape.enabled = escapeSettings.enabled;
+          workingConfig.dangerEscape.enabled = escapeSettings.enabled;
         }
         const radius = parseFloat(escapeSettings.playerProximityRadius);
         if (Number.isFinite(radius) && radius > 0) {
-          config.dangerEscape.playerProximityRadius = radius;
+          workingConfig.dangerEscape.playerProximityRadius = radius;
         }
       }
 
@@ -28594,36 +28614,36 @@ function loadConfiguration() {
       if (savedConfig.conversationalAI && typeof savedConfig.conversationalAI === 'object') {
         const convoSettings = savedConfig.conversationalAI;
         if (typeof convoSettings.enabled === 'boolean') {
-          config.conversationalAI.enabled = convoSettings.enabled;
+          workingConfig.conversationalAI.enabled = convoSettings.enabled;
         }
         if (typeof convoSettings.useLLM === 'boolean') {
-          config.conversationalAI.useLLM = convoSettings.useLLM;
+          workingConfig.conversationalAI.useLLM = convoSettings.useLLM;
         }
         if (convoSettings.provider && typeof convoSettings.provider === 'object') {
-          config.conversationalAI.provider = { ...config.conversationalAI.provider, ...convoSettings.provider };
+          workingConfig.conversationalAI.provider = { ...workingConfig.conversationalAI.provider, ...convoSettings.provider };
         }
         if (typeof convoSettings.apiKey === 'string') {
-          config.conversationalAI.apiKey = convoSettings.apiKey;
+          workingConfig.conversationalAI.apiKey = convoSettings.apiKey;
         }
         if (typeof convoSettings.requestTimeout === 'number' && convoSettings.requestTimeout > 0) {
-          config.conversationalAI.requestTimeout = convoSettings.requestTimeout;
+          workingConfig.conversationalAI.requestTimeout = convoSettings.requestTimeout;
         }
         if (typeof convoSettings.cacheTTL === 'number' && convoSettings.cacheTTL > 0) {
-          config.conversationalAI.cacheTTL = convoSettings.cacheTTL;
+          workingConfig.conversationalAI.cacheTTL = convoSettings.cacheTTL;
         }
         if (convoSettings.timeZoneAliases && typeof convoSettings.timeZoneAliases === 'object') {
-          config.conversationalAI.timeZoneAliases = { ...config.conversationalAI.timeZoneAliases, ...convoSettings.timeZoneAliases };
+          workingConfig.conversationalAI.timeZoneAliases = { ...workingConfig.conversationalAI.timeZoneAliases, ...convoSettings.timeZoneAliases };
         }
         if (convoSettings.rateLimit && typeof convoSettings.rateLimit === 'object') {
           if (typeof convoSettings.rateLimit.maxRequests === 'number' && convoSettings.rateLimit.maxRequests > 0) {
-            config.conversationalAI.rateLimit.maxRequests = convoSettings.rateLimit.maxRequests;
+            workingConfig.conversationalAI.rateLimit.maxRequests = convoSettings.rateLimit.maxRequests;
           }
           if (typeof convoSettings.rateLimit.windowMs === 'number' && convoSettings.rateLimit.windowMs > 0) {
-            config.conversationalAI.rateLimit.windowMs = convoSettings.rateLimit.windowMs;
+            workingConfig.conversationalAI.rateLimit.windowMs = convoSettings.rateLimit.windowMs;
           }
         }
         if (typeof convoSettings.autoReplyPrefix === 'string') {
-          config.conversationalAI.autoReplyPrefix = convoSettings.autoReplyPrefix;
+          workingConfig.conversationalAI.autoReplyPrefix = convoSettings.autoReplyPrefix;
         }
       }
 
@@ -28631,81 +28651,97 @@ function loadConfiguration() {
       if (savedConfig.privateMsg && typeof savedConfig.privateMsg === 'object') {
         const privateMsgSettings = savedConfig.privateMsg;
         if (typeof privateMsgSettings.enabled === 'boolean') {
-          config.privateMsg.enabled = privateMsgSettings.enabled;
+          workingConfig.privateMsg.enabled = privateMsgSettings.enabled;
         }
         if (typeof privateMsgSettings.defaultTemplate === 'string') {
-          config.privateMsg.defaultTemplate = privateMsgSettings.defaultTemplate;
+          workingConfig.privateMsg.defaultTemplate = privateMsgSettings.defaultTemplate;
         }
         if (typeof privateMsgSettings.trustLevelRequirement === 'string') {
-          config.privateMsg.trustLevelRequirement = privateMsgSettings.trustLevelRequirement;
+          workingConfig.privateMsg.trustLevelRequirement = privateMsgSettings.trustLevelRequirement;
         }
         if (privateMsgSettings.rateLimit && typeof privateMsgSettings.rateLimit === 'object') {
           if (typeof privateMsgSettings.rateLimit.windowMs === 'number' && privateMsgSettings.rateLimit.windowMs > 0) {
-            config.privateMsg.rateLimit.windowMs = privateMsgSettings.rateLimit.windowMs;
+            workingConfig.privateMsg.rateLimit.windowMs = privateMsgSettings.rateLimit.windowMs;
           }
           if (typeof privateMsgSettings.rateLimit.maxMessages === 'number' && privateMsgSettings.rateLimit.maxMessages > 0) {
-            config.privateMsg.rateLimit.maxMessages = privateMsgSettings.rateLimit.maxMessages;
+            workingConfig.privateMsg.rateLimit.maxMessages = privateMsgSettings.rateLimit.maxMessages;
           }
         }
         if (typeof privateMsgSettings.forwardToConsole === 'boolean') {
-          config.privateMsg.forwardToConsole = privateMsgSettings.forwardToConsole;
+          workingConfig.privateMsg.forwardToConsole = privateMsgSettings.forwardToConsole;
         }
       }
 
       // Neural Networks
       if (savedConfig.neural && typeof savedConfig.neural === 'object') {
-        config.neural = { ...config.neural, ...savedConfig.neural };
+        workingConfig.neural = { ...workingConfig.neural, ...savedConfig.neural };
       }
 
       // Combat
       if (savedConfig.combat && typeof savedConfig.combat === 'object') {
-        config.combat = { ...config.combat, ...savedConfig.combat };
+        workingConfig.combat = { ...workingConfig.combat, ...savedConfig.combat };
       }
 
       // Analytics
       if (savedConfig.analytics && typeof savedConfig.analytics === 'object') {
-        config.analytics = { ...config.analytics, ...savedConfig.analytics };
+        workingConfig.analytics = { ...workingConfig.analytics, ...savedConfig.analytics };
       }
 
       // Tasks
       if (savedConfig.tasks && typeof savedConfig.tasks === 'object') {
-        config.tasks = { ...config.tasks, ...savedConfig.tasks };
+        workingConfig.tasks = { ...workingConfig.tasks, ...savedConfig.tasks };
       }
 
       // Personality
       if (savedConfig.personality && typeof savedConfig.personality === 'object') {
-        config.personality = { ...config.personality, ...savedConfig.personality };
+        workingConfig.personality = { ...workingConfig.personality, ...savedConfig.personality };
       }
 
       // Video Feed
       if (savedConfig.videoFeed && typeof savedConfig.videoFeed === 'object') {
-        config.videoFeed = { ...config.videoFeed, ...savedConfig.videoFeed };
+        workingConfig.videoFeed = { ...workingConfig.videoFeed, ...savedConfig.videoFeed };
       }
 
       // Lifesteal
       if (savedConfig.lifesteal && typeof savedConfig.lifesteal === 'object') {
-        config.lifesteal = { ...config.lifesteal, ...savedConfig.lifesteal };
+        workingConfig.lifesteal = { ...workingConfig.lifesteal, ...savedConfig.lifesteal };
       }
 
       console.log('✅ Configuration loaded successfully!');
-      ensureConfigStructure(config);
-      return config;
+      ensureConfigStructure(workingConfig);
+      return workingConfig;
     } else {
       console.log('⚠️  Configuration file is invalid or corrupted.');
     }
   }
 
   // No config file found or invalid - return default config with structure ensured
-  ensureConfigStructure(config);
-  return config;
+  console.log('[CONFIG] Using default configuration');
+  ensureConfigStructure(workingConfig);
+  return workingConfig;
 }
 
   // Ensure all config sections exist with proper structure
 function ensureConfigStructure(targetConfig) {
-  const cfg = targetConfig || global.config || config;
+  // Defensive fallback chain - prioritize passed config, then global, then module-level
+  let cfg = targetConfig;
+  if (!cfg) {
+    cfg = global.config;
+  }
+  if (!cfg) {
+    // Try to access module-level config safely
+    try {
+      if (typeof config !== 'undefined') {
+        cfg = config;
+      }
+    } catch (e) {
+      // config is not accessible
+    }
+  }
 
   if (!cfg || typeof cfg !== 'object') {
     console.error('[CONFIG] Error: config object is not initialized (ensureConfigStructure)');
+    console.error('[CONFIG] No valid config found - this should never happen!');
     return false;
   }
 
@@ -31000,6 +31036,7 @@ async function startBot() {
     console.log('[INIT] ✓ Bot initialization complete\n');
   } catch (err) {
     console.error('[INIT] Startup error:', err.message);
+    console.error('[INIT] Stack trace:', err.stack);
     process.exit(1);
   }
 }
