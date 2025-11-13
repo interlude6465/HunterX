@@ -28695,7 +28695,9 @@ function loadConfiguration() {
     }
   }
 
-  return null;
+  // No config file found or invalid - return default config with structure ensured
+  ensureConfigStructure(config);
+  return config;
 }
 
   // Ensure all config sections exist with proper structure
@@ -30984,17 +30986,12 @@ async function startBot() {
     
     // First: Load configuration (must complete before anything else)
     console.log('[INIT] Loading configuration...');
-    const loadedConfig = loadConfiguration();
-    const activeConfig = loadedConfig || config;
+    const activeConfig = loadConfiguration();
 
-    ensureConfigStructure(activeConfig);
+    // loadConfiguration() now always returns a valid config with structure ensured
     global.config = activeConfig;
     
-    if (!loadedConfig) {
-      console.log('[INIT] No existing config found, setup wizard will guide you\n');
-    } else {
-      console.log('[INIT] ✓ Config loaded successfully\n');
-    }
+    console.log('[INIT] ✓ Config loaded successfully\n');
     
     // Second: Initialize HunterX after config is ready
     console.log('[INIT] Initializing HunterX systems...\n');
