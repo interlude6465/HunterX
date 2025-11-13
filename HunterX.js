@@ -54,6 +54,11 @@ const pvp = require('mineflayer-pvp').plugin;
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const Vec3 = require('vec3').Vec3;
 
+// === MODULE-LEVEL CONFIG ===
+// Must be declared here at module level (before all classes and functions)
+// so that all functions including loadConfiguration() can access it
+let config = {};
+
 // === ENHANCED NEURAL BRAIN SYSTEM WITH MULTIPLE FALLBACKS ===
 // Supports ml5.js, brain.js, synaptic, tensorflow with graceful fallbacks
 
@@ -1456,7 +1461,7 @@ class LLMBridge {
   }
 }
 
-const config = {
+config = {
   mode: null,
   server: null,
   whitelist: [], // Whitelisted players with trust levels: { name, level }
@@ -28535,23 +28540,14 @@ function loadConfiguration() {
   console.log('[CONFIG] loadConfiguration() called');
   const configPath = './data/config.json';
   
-  // Safely get reference to module-level config
-  // This defensive check ensures config is accessible
-  let workingConfig;
-  try {
-    // Try to reference the module-level config
-    workingConfig = (typeof config !== 'undefined') ? config : null;
-  } catch (e) {
-    console.error('[CONFIG] Error accessing module-level config:', e.message);
-    workingConfig = null;
-  }
-  
-  if (!workingConfig) {
-    console.error('[CONFIG] CRITICAL: Module-level config is not accessible!');
+  const workingConfig = config;
+
+  if (!workingConfig || typeof workingConfig !== 'object') {
+    console.error('[CONFIG] CRITICAL: Module-level config is not initialized!');
     console.error('[CONFIG] This indicates a fundamental initialization order problem.');
-    throw new Error('config is not defined - module-level config object is not accessible');
+    throw new Error('config object is not initialized at module scope');
   }
-  
+
   console.log('[CONFIG] Working config reference obtained');
 
   if (fs.existsSync(configPath)) {
@@ -28721,23 +28717,10 @@ function loadConfiguration() {
   return workingConfig;
 }
 
-  // Ensure all config sections exist with proper structure
+// Ensure all config sections exist with proper structure
 function ensureConfigStructure(targetConfig) {
-  // Defensive fallback chain - prioritize passed config, then global, then module-level
-  let cfg = targetConfig;
-  if (!cfg) {
-    cfg = global.config;
-  }
-  if (!cfg) {
-    // Try to access module-level config safely
-    try {
-      if (typeof config !== 'undefined') {
-        cfg = config;
-      }
-    } catch (e) {
-      // config is not accessible
-    }
-  }
+  // Use passed config, or fall back to global.config, or module-level config
+  let cfg = targetConfig || global.config || config;
 
   if (!cfg || typeof cfg !== 'object') {
     console.error('[CONFIG] Error: config object is not initialized (ensureConfigStructure)');
