@@ -1086,6 +1086,55 @@ function extractVersionFromError(errorInput) {
 
 extractVersionFromError.lastResult = { version: null, confidence: 'none' };
 
+function extractVersionSafely(sourceMessage, context = 'general') {
+  const fallbackVersion = typeof getFallbackVersion === 'function'
+    ? getFallbackVersion()
+    : ((config && config.bot && config.bot.defaultProtocolVersion) || DEFAULT_SUPPORTED_VERSIONS[DEFAULT_SUPPORTED_VERSIONS.length - 1] || null);
+
+  let version = fallbackVersion;
+  let meta = {
+    confidence: fallbackVersion ? 'fallback' : 'none',
+    reason: 'extractor_missing',
+    context
+  };
+
+  if (typeof extractVersionFromError === 'function') {
+    try {
+      version = extractVersionFromError(sourceMessage);
+      meta = {
+        ...(extractVersionFromError.lastResult || {}),
+        context
+      };
+    } catch (err) {
+      console.warn(`[DETECTION] extractVersionFromError failed during ${context}: ${err.message}`);
+      version = fallbackVersion;
+      meta = {
+        confidence: fallbackVersion ? 'fallback' : 'none',
+        reason: 'extractor_error',
+        error: err.message,
+        context
+      };
+      if (fallbackVersion) {
+        console.log(`[DETECTION] Falling back to default protocol version: ${fallbackVersion}`);
+      }
+    }
+  } else {
+    if (!extractVersionSafely._missingLogged) {
+      console.warn('[DETECTION] extractVersionFromError helper is not defined - using fallback protocol detection');
+      extractVersionSafely._missingLogged = true;
+    }
+    if (fallbackVersion) {
+      console.log(`[DETECTION] Falling back to default protocol version: ${fallbackVersion}`);
+    }
+  }
+
+  extractVersionSafely.lastResult = { version, ...meta };
+  return { version, meta };
+}
+
+extractVersionSafely.lastResult = { version: null, confidence: 'none' };
+extractVersionSafely._missingLogged = false;
+
 function extractVersionFromPing(response) {
   // Parse version from server ping response
   if (response?.version?.name) {
@@ -23720,8 +23769,7 @@ class BotSpawner {
           safeCleanup();
           
           // Try to extract version from error message
-          const extractedVersion = extractVersionFromError(err.message);
-          const extractionMeta = extractVersionFromError.lastResult || {};
+          const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(err.message, 'server detection error');
           if (extractedVersion) {
             if (extractionMeta.confidence === 'fallback') {
               console.log(`[DETECTION] ⚠️ Error did not reveal version, using fallback ${extractedVersion}`);
@@ -23775,8 +23823,7 @@ class BotSpawner {
           const reasonStr = typeof reason === 'string' ? reason : JSON.stringify(reason);
           
           // Try to extract version from kick reason
-          const extractedVersion = extractVersionFromError(reasonStr);
-          const extractionMeta = extractVersionFromError.lastResult || {};
+          const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(reasonStr, 'server detection kick');
           if (extractedVersion) {
             if (extractionMeta.confidence === 'fallback') {
               console.log(`[DETECTION] ⚠️ Kick reason did not reveal version, using fallback ${extractedVersion}`);
@@ -23826,8 +23873,7 @@ class BotSpawner {
       console.error('[DETECTION] Critical error:', error.message);
       
       // Try to extract version from error message
-      const extractedVersion = extractVersionFromError(error.message);
-      const extractionMeta = extractVersionFromError.lastResult || {};
+      const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(error.message, 'server detection critical error');
       if (extractedVersion) {
         if (extractionMeta.confidence === 'fallback') {
           console.log(`[DETECTION] ⚠️ Critical error did not reveal version, using fallback ${extractedVersion}`);
@@ -23887,8 +23933,7 @@ class BotSpawner {
       console.error('[SPAWNER] Error in spawnBot:', error.message);
       
       // Try to extract version and retry once
-      const extractedVersion = extractVersionFromError(error.message);
-      const extractionMeta = extractVersionFromError.lastResult || {};
+      const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(error.message, 'spawnBot failure');
       if (extractedVersion && extractedVersion !== options.version) {
         if (extractionMeta.confidence === 'fallback') {
           console.log(`[SPAWNER] Retrying with fallback protocol version: ${extractedVersion}`);
@@ -23989,8 +24034,7 @@ class BotSpawner {
       console.error(`[SPAWNER] Failed with version ${version}: ${error.message}`);
       
       // Extract version from error
-      const extractedVersion = extractVersionFromError(error.message);
-      const extractionMeta = extractVersionFromError.lastResult || {};
+      const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(error.message, 'proxy bot creation failure');
       
       if (extractedVersion && extractedVersion !== version) {
         if (extractionMeta.confidence === 'fallback') {
@@ -24114,8 +24158,7 @@ class BotSpawner {
       console.error(`[SPAWNER] Failed with version ${version}: ${error.message}`);
       
       // Extract version from error
-      const extractedVersion = extractVersionFromError(error.message);
-      const extractionMeta = extractVersionFromError.lastResult || {};
+      const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(error.message, 'local bot creation failure');
       
       if (extractedVersion && extractedVersion !== version) {
         if (extractionMeta.confidence === 'fallback') {
