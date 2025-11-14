@@ -28206,6 +28206,9 @@ async function launchBot(username, role = 'fighter') {
   const combatAI = new CombatAI(bot);
   combatAI.hostileMobDetector = new HostileMobDetector();
   const combatLogger = new CombatLogger(bot, combatAI);
+  
+  // Initialize movement mode manager BEFORE ConversationAI to ensure it's available for command handling
+  bot.movementModeManager = new MovementModeManager(bot);
   const conversationAI = new ConversationAI(bot);
   
   // Load persisted dialogue RL model if available
