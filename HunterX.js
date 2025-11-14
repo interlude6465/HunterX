@@ -1675,49 +1675,397 @@ function getNearbyPlayers(bot, radius) {
 const eventListeners = [];
 const activeIntervals = [];
 const activeBots = new Set();
+const botCleanupRegistry = new WeakMap();
 
-function addTrackedListener(emitter, event, handler) {
-  emitter.on(event, handler);
-  eventListeners.push({ emitter, event, handler });
+function getDefaultCleanupEvents(eventName) {
+  switch (eventName) {
+    case 'end':
+      return ['end'];
+    case 'kicked':
+      return ['kicked', 'end'];
+    case 'error':
+      return ['error', 'end'];
+    default:
+      return ['end', 'kicked', 'error'];
+  }
 }
 
-function safeSetInterval(callback, ms, label) {
+function getBotCleanupEntry(bot) {
+  let entry = botCleanupRegistry.get(bot);
+  if (!entry) {
+    entry = {
+      bot,
+      cleanups: new Set(),
+      lifecycleHandlersAttached: false
+    };
+    botCleanupRegistry.set(bot, entry);
+  }
+  return entry;
+}
+
+function ensureBotLifecycleHandlers(bot, registryEntry) {
+  if (registryEntry.lifecycleHandlersAttached) {
+    return;
+  }
+
+  registryEntry.lifecycleHandlersAttached = true;
+  const lifecycleEvents = ['end', 'kicked', 'error'];
+
+  const runCleanupForEvent = (eventName, reason) => {
+    for (const cleanupMeta of Array.from(registryEntry.cleanups)) {
+      if (cleanupMeta.called) {
+        continue;
+      }
+
+      const shouldRun = cleanupMeta.events.has(eventName) || eventName === 'end';
+      if (!shouldRun) {
+        continue;
+      }
+
+      cleanupMeta.called = true;
+      registryEntry.cleanups.delete(cleanupMeta);
+
+      try {
+        cleanupMeta.fn({ event: eventName, reason });
+      } catch (err) {
+        console.error(`[CLEANUP] Error running cleanup for ${bot.username || 'bot'} on ${eventName}: ${err.message}`);
+      }
+    }
+
+    if (registryEntry.cleanups.size === 0) {
+      botCleanupRegistry.delete(bot);
+    }
+  };
+
+  lifecycleEvents.forEach(eventName => {
+    bot.once(eventName, reason => runCleanupForEvent(eventName, reason));
+  });
+}
+
+function registerBotCleanup(bot, cleanupFn, events) {
+  if (!bot || typeof cleanupFn !== 'function') {
+    return null;
+  }
+
+  const cleanupEvents = Array.isArray(events) && events.length ? events : ['end', 'kicked', 'error'];
+  const registryEntry = getBotCleanupEntry(bot);
+  const cleanupMeta = {
+    fn: cleanupFn,
+    events: new Set(cleanupEvents),
+    called: false,
+    registry: registryEntry
+  };
+
+  registryEntry.cleanups.add(cleanupMeta);
+  ensureBotLifecycleHandlers(bot, registryEntry);
+
+  return cleanupMeta;
+}
+
+function cleanupTrackedListener(entry, context) {
+  if (!entry || entry.cleaned) {
+    return;
+  }
+
+  entry.cleaned = true;
+
+  const { emitter, event, handler } = entry;
+  if (emitter && handler) {
+    const remover = typeof emitter.off === 'function'
+      ? emitter.off.bind(emitter)
+      : typeof emitter.removeListener === 'function'
+        ? emitter.removeListener.bind(emitter)
+        : null;
+
+    if (remover) {
+      try {
+        remover(event, handler);
+      } catch (err) {
+        console.error(`[CLEANUP] Failed to remove listener ${event}: ${err.message}`);
+      }
+    }
+  }
+
+  const index = eventListeners.indexOf(entry);
+  if (index !== -1) {
+    eventListeners.splice(index, 1);
+  }
+
+  if (entry.cleanupMeta && entry.cleanupMeta.registry && !entry.cleanupMeta.called) {
+    entry.cleanupMeta.called = true;
+    entry.cleanupMeta.registry.cleanups.delete(entry.cleanupMeta);
+    if (entry.cleanupMeta.registry.cleanups.size === 0) {
+      botCleanupRegistry.delete(entry.cleanupMeta.registry.bot);
+    }
+  }
+
+  if (context && context.event && entry.bot) {
+    console.log(`[CLEANUP] Listener ${entry.label} cleaned during ${context.event}`);
+  }
+}
+
+function addTrackedListener(emitter, event, handler, options = {}) {
+  if (!emitter || typeof emitter.on !== 'function' || typeof handler !== 'function' || !event) {
+    return () => {};
+  }
+
+  const normalizedEvent = typeof event === 'string' ? event : String(event);
+  const owningBot = options.bot || (emitter && emitter.username ? emitter : null);
+  const cleanupEvents = Array.isArray(options.cleanupEvents) && options.cleanupEvents.length
+    ? options.cleanupEvents
+    : getDefaultCleanupEvents(normalizedEvent);
+  const label = options.label || (owningBot ? `${owningBot.username || 'bot'}:${normalizedEvent}` : normalizedEvent);
+  const useOnce = Boolean(options.once && typeof emitter.once === 'function');
+
+  const entry = {
+    bot: owningBot,
+    emitter,
+    event: normalizedEvent,
+    handler: null,
+    label,
+    cleanupEvents,
+    createdAt: Date.now(),
+    cleaned: false
+  };
+
+  const invokeCleanup = (context) => cleanupTrackedListener(entry, context);
+
+  let attachedHandler = handler;
+  if (useOnce) {
+    attachedHandler = function onceWrapper(...args) {
+      try {
+        return handler.apply(this, args);
+      } finally {
+        invokeCleanup({ event: normalizedEvent, reason: 'once' });
+      }
+    };
+  }
+
+  entry.handler = attachedHandler;
+  entry.cleanup = invokeCleanup;
+
+  if (useOnce) {
+    emitter.once(normalizedEvent, attachedHandler);
+  } else {
+    emitter.on(normalizedEvent, attachedHandler);
+  }
+
+  eventListeners.push(entry);
+
+  if (owningBot) {
+    const cleanupMeta = registerBotCleanup(owningBot, invokeCleanup, cleanupEvents);
+    if (cleanupMeta) {
+      entry.cleanupMeta = cleanupMeta;
+    }
+  }
+
+  return invokeCleanup;
+}
+
+function safeSetInterval(callback, ms, labelOrOptions, maybeOptions) {
+  if (typeof callback !== 'function') {
+    throw new TypeError('safeSetInterval requires a callback function');
+  }
+
+  let label = 'interval';
+  let options = {};
+
+  if (typeof labelOrOptions === 'string') {
+    label = labelOrOptions;
+    options = typeof maybeOptions === 'object' && maybeOptions ? maybeOptions : {};
+  } else if (labelOrOptions && typeof labelOrOptions === 'object') {
+    options = labelOrOptions;
+    if (typeof options.label === 'string') {
+      label = options.label;
+    }
+  }
+
+  const owningBot = options.bot || null;
+  const cleanupEvents = Array.isArray(options.cleanupEvents) && options.cleanupEvents.length
+    ? options.cleanupEvents
+    : ['end', 'kicked', 'error'];
+
   const handle = setInterval(callback, ms);
-  activeIntervals.push({ handle, label });
+  const entry = {
+    bot: owningBot,
+    handle,
+    label,
+    cleanupEvents,
+    createdAt: Date.now(),
+    cleaned: false
+  };
+
+  const cleanup = () => {
+    if (entry.cleaned) {
+      return;
+    }
+
+    entry.cleaned = true;
+    clearInterval(handle);
+
+    const index = activeIntervals.indexOf(entry);
+    if (index !== -1) {
+      activeIntervals.splice(index, 1);
+    }
+
+    if (entry.cleanupMeta && entry.cleanupMeta.registry && !entry.cleanupMeta.called) {
+      entry.cleanupMeta.called = true;
+      entry.cleanupMeta.registry.cleanups.delete(entry.cleanupMeta);
+      if (entry.cleanupMeta.registry.cleanups.size === 0) {
+        botCleanupRegistry.delete(entry.cleanupMeta.registry.bot);
+      }
+    }
+  };
+
+  entry.cleanup = cleanup;
+  activeIntervals.push(entry);
   console.log(`[INTERVAL] Started: ${label}`);
+
+  if (owningBot) {
+    const cleanupMeta = registerBotCleanup(owningBot, cleanup, cleanupEvents);
+    if (cleanupMeta) {
+      entry.cleanupMeta = cleanupMeta;
+    }
+  }
+
   return handle;
 }
 
 function clearTrackedInterval(handle) {
-  const index = activeIntervals.findIndex(entry => entry.handle === handle);
-  if (index >= 0) {
-    clearInterval(activeIntervals[index].handle);
-    activeIntervals.splice(index, 1);
-  } else if (handle) {
+  if (!handle) {
+    return;
+  }
+
+  const entry = activeIntervals.find(interval => interval.handle === handle);
+  if (entry) {
+    entry.cleanup();
+  } else {
     clearInterval(handle);
   }
 }
 
-function clearAllIntervals() {
-  console.log(`[CLEANUP] Clearing ${activeIntervals.length} intervals...`);
-  for (const { handle, label } of activeIntervals) {
-    clearInterval(handle);
-    console.log(`[CLEANUP] Cleared interval: ${label}`);
-  }
-  activeIntervals.length = 0;
+function clearAllIntervals(targetBot = null) {
+  const intervals = targetBot ? activeIntervals.filter(entry => entry.bot === targetBot) : [...activeIntervals];
+  const suffix = targetBot ? ` for ${targetBot.username || 'bot'}` : '';
+  console.log(`[CLEANUP] Clearing ${intervals.length} intervals${suffix}...`);
+  intervals.forEach(entry => entry.cleanup());
 }
 
-function clearAllEventListeners() {
-  console.log(`[CLEANUP] Removing ${eventListeners.length} event listeners...`);
-  for (const { emitter, event, handler } of eventListeners) {
-    try {
-      emitter.removeListener(event, handler);
-    } catch (err) {
-      console.log(`[CLEANUP] Failed to remove listener: ${err.message}`);
+function clearAllEventListeners(targetBot = null) {
+  const listeners = targetBot ? eventListeners.filter(entry => entry.bot === targetBot) : [...eventListeners];
+  const suffix = targetBot ? ` for ${targetBot.username || 'bot'}` : '';
+  console.log(`[CLEANUP] Removing ${listeners.length} event listeners${suffix}...`);
+  listeners.forEach(entry => entry.cleanup({ event: targetBot ? 'bot_cleanup' : 'global_cleanup' }));
+  console.log(`[CLEANUP] Event listeners cleared${suffix}`);
+}
+
+function getTrackedEventListeners(targetBot = null) {
+  const listeners = targetBot ? eventListeners.filter(entry => entry.bot === targetBot) : eventListeners;
+  return listeners.map(entry => ({
+    bot: entry.bot,
+    event: entry.event,
+    label: entry.label,
+    emitter: entry.emitter,
+    handler: entry.handler
+  }));
+}
+
+function getActiveIntervals(targetBot = null) {
+  const intervals = targetBot ? activeIntervals.filter(entry => entry.bot === targetBot) : activeIntervals;
+  return intervals.map(entry => ({
+    bot: entry.bot,
+    label: entry.label,
+    handle: entry.handle
+  }));
+}
+
+function registerBotListeners(bot, cleanupFns = []) {
+  if (!bot || typeof bot.on !== 'function') {
+    return {
+      on: () => () => {},
+      track: (emitter, eventName, handler, options = {}) => addTrackedListener(emitter, eventName, handler, options),
+      addCleanup: () => {},
+      cleanup: () => {}
+    };
+  }
+
+  const cleanupEntries = new Set();
+
+  const normalizeCleanup = (entry) => {
+    if (!entry) return null;
+    if (typeof entry === 'function') {
+      return { fn: entry, events: ['end'], called: false };
     }
-  }
-  eventListeners.length = 0;
-  console.log('[CLEANUP] Event listeners cleared');
+    if (typeof entry.fn === 'function') {
+      const events = Array.isArray(entry.events) && entry.events.length ? entry.events.map(e => String(e)) : ['end'];
+      return { fn: entry.fn, events, called: false };
+    }
+    return null;
+  };
+
+  const addCleanupEntry = (entry) => {
+    const normalized = normalizeCleanup(entry);
+    if (normalized) {
+      cleanupEntries.add(normalized);
+    }
+  };
+
+  cleanupFns.forEach(addCleanupEntry);
+  addCleanupEntry({ fn: () => clearAllIntervals(bot), events: ['end'] });
+  addCleanupEntry({ fn: () => clearAllEventListeners(bot), events: ['end'] });
+
+  const executeCleanup = (eventName, reason) => {
+    for (const entry of cleanupEntries) {
+      if (entry.called) continue;
+      if (eventName === 'manual' || entry.events.includes(eventName)) {
+        entry.called = true;
+        try {
+          entry.fn(eventName, reason);
+        } catch (err) {
+          console.error(`[CLEANUP] Error during ${eventName} cleanup for ${bot.username || 'bot'}: ${err.message}`);
+        }
+      }
+    }
+  };
+
+  ['end', 'kicked', 'error'].forEach(eventName => {
+    addTrackedListener(bot, eventName, reason => {
+      setImmediate(() => executeCleanup(eventName, reason));
+    }, {
+      bot,
+      label: `bot-lifecycle:${eventName}`,
+      cleanupEvents: eventName === 'end' ? ['end'] : [eventName, 'end']
+    });
+  });
+
+  return {
+    on(eventName, handler, options = {}) {
+      const meta = { ...options, bot };
+      if (!meta.cleanupEvents) {
+        meta.cleanupEvents = getDefaultCleanupEvents(eventName);
+        if (eventName === 'end') {
+          meta.cleanupEvents = ['end'];
+        }
+      }
+      if (meta.once === true) {
+        meta.once = true;
+      }
+      return addTrackedListener(bot, eventName, handler, meta);
+    },
+    track(emitter, eventName, handler, options = {}) {
+      const meta = { ...options, bot: options.bot || bot };
+      if (!meta.cleanupEvents) {
+        meta.cleanupEvents = getDefaultCleanupEvents(eventName);
+      }
+      return addTrackedListener(emitter, eventName, handler, meta);
+    },
+    addCleanup(entry) {
+      addCleanupEntry(entry);
+    },
+    cleanup(reason) {
+      executeCleanup('manual', reason);
+    }
+  };
 }
 
 function registerBot(bot) {
@@ -3245,16 +3593,16 @@ class EquipmentManager {
     let inventoryUpdateTimeout = null;
     
     // Listen for inventory updates to auto-equip armor (with debounce)
-    this.bot.on('inventoryUpdate', () => {
+    addTrackedListener(this.bot, 'inventoryUpdate', () => {
       if (inventoryUpdateTimeout) clearTimeout(inventoryUpdateTimeout);
       inventoryUpdateTimeout = setTimeout(() => {
         this.checkAndEquipArmor();
       }, 300); // Wait 300ms for inventory to settle
-    });
+    }, { bot: this.bot, label: 'equipment:inventoryUpdate' });
     
     // Also listen for slot updates (more granular)
-    if (this.bot.inventory && this.bot.inventory.on) {
-      this.bot.inventory.on('updateSlot', (oldItem, newItem) => {
+    if (this.bot.inventory && typeof this.bot.inventory.on === 'function') {
+      addTrackedListener(this.bot.inventory, 'updateSlot', (oldItem, newItem) => {
         if (newItem && this.isArmorPiece(newItem.name)) {
           console.log(`[EQUIPMENT] Armor picked up: ${newItem.name}`);
           // Check if we should attempt to equip this item
@@ -3262,7 +3610,7 @@ class EquipmentManager {
             this.autoEquipArmor(newItem);
           }
         }
-      });
+      }, { bot: this.bot, label: 'equipment:updateSlot' });
     }
     
     console.log('[EQUIPMENT] Auto-armor equipping enabled');
@@ -4251,7 +4599,7 @@ class AntiCheatDetector {
           console.log('[ANTICHEAT] 🚀 FULL OVERPOWERED MODE RESTORED');
         }
       }
-    }, config.anticheat.deescalateInterval || 600000, 'AntiCheatDeescalation');
+    }, config.anticheat.deescalateInterval || 600000, { label: 'AntiCheatDeescalation', bot: this.bot });
   }
   
   getNextDeescalationTime() {
@@ -4422,7 +4770,7 @@ class Tier2AdvancedEvasion extends Tier1Humanization {
       } catch (err) {
         // Ignore errors from disconnected bot
       }
-    }, 100, 'SmartSprint');
+    }, 100, { label: 'SmartSprint', bot: this.bot });
     
     return interval;
   }
@@ -4494,7 +4842,7 @@ class Tier3MLCounter extends Tier2AdvancedEvasion {
       
       // Apply pattern settings
       this.applyCPSCurve(pattern.cpsCurve);
-    }, this.behaviorRotationInterval, 'BehaviorPatternRotation');
+    }, this.behaviorRotationInterval, { label: 'BehaviorPatternRotation', bot: this.bot });
   }
   
   applyCPSCurve(curve) {
@@ -4511,7 +4859,7 @@ class Tier3MLCounter extends Tier2AdvancedEvasion {
   monitorServerFlags() {
     let recentActions = [];
     
-    this.bot.on('packet', (data, meta) => {
+    addTrackedListener(this.bot, 'packet', (data, meta) => {
       try {
         // Monitor for potential flag packets
         if (meta.name === 'position' || meta.name === 'entity_velocity') {
@@ -4534,7 +4882,7 @@ class Tier3MLCounter extends Tier2AdvancedEvasion {
       } catch (err) {
         // Ignore packet errors
       }
-    });
+    }, { bot: this.bot, label: 'anticheat:packet-monitor' });
   }
   
   detectRubberbanding(actions) {
@@ -5684,7 +6032,7 @@ class BaseMonitor {
   
   subscribeToEvents() {
     // Block updates (breaks/places)
-    this.bot.on('blockUpdate', (oldBlock, newBlock) => {
+    addTrackedListener(this.bot, 'blockUpdate', (oldBlock, newBlock) => {
       if (!this.enabled) return;
       if (!this.isInPerimeter(newBlock.position)) return;
       
@@ -5712,10 +6060,10 @@ class BaseMonitor {
           this.incrementSuspicion(player.username, 5);
         }
       }
-    });
+    }, { bot: this.bot, label: 'base-monitor:blockUpdate' });
     
     // Chest lid movements
-    this.bot.on('chestLidMove', (block) => {
+    addTrackedListener(this.bot, 'chestLidMove', (block) => {
       if (!this.enabled) return;
       if (!this.isInPerimeter(block.position)) return;
       
@@ -5741,7 +6089,7 @@ class BaseMonitor {
     });
     
     // Player collect (item pickup)
-    this.bot.on('playerCollect', (collector, collected) => {
+    addTrackedListener(this.bot, 'playerCollect', (collector, collected) => {
       if (!this.enabled) return;
       if (collector.username === this.bot.username) return;
       if (!this.isInPerimeter(collector.position)) return;
@@ -5756,7 +6104,7 @@ class BaseMonitor {
       });
       
       this.incrementSuspicion(collector.username, 3);
-    });
+    }, { bot: this.bot, label: 'base-monitor:playerCollect' });
     
     // Monitor bot's own inventory for unexpected changes when near base
     setInterval(() => {
@@ -5895,7 +6243,7 @@ class BaseMonitor {
           }
         }
       }
-    }, this.suspicionDecayInterval);
+    }, this.suspicionDecayInterval, { label: 'base-monitor:suspicion-decay', bot: this.bot });
   }
   
   getRecentIncidents(count = 20) {
@@ -5990,16 +6338,18 @@ class LootOperation {
     }, 2000);
     
     // Monitor for block breaks (grief detection)
-    this.bot.on('blockUpdate', (oldBlock, newBlock) => {
+    addTrackedListener(this.bot, 'blockUpdate', (oldBlock, newBlock) => {
       if (!this.monitoringActive) return;
       this.handleBlockUpdate(oldBlock, newBlock);
-    });
+    }, { bot: this.bot, label: 'base-monitor:blockUpdate-active' });
     
     // Monitor for chest openings (theft detection)
-    this.bot._client.on('open_window', (packet) => {
-      if (!this.monitoringActive) return;
-      this.handleChestOpening(packet);
-    });
+    if (this.bot._client && typeof this.bot._client.on === 'function') {
+      addTrackedListener(this.bot._client, 'open_window', (packet) => {
+        if (!this.monitoringActive) return;
+        this.handleChestOpening(packet);
+      }, { bot: this.bot, label: 'base-monitor:open-window' });
+    }
   }
   
   checkForIntruders() {
@@ -6624,7 +6974,7 @@ class AutoRepair {
           clearTrackedInterval(checkInterval);
           resolve();
         }
-      }, 5000, 'Armor Repair Check');
+      }, 5000, { label: 'Armor Repair Check', bot: this.bot });
       
       setTimeout(() => {
         clearTrackedInterval(checkInterval);
@@ -27601,13 +27951,8 @@ async function launchBot(username, role = 'fighter') {
   const [host, portStr] = config.server.split(':');
   const port = parseInt(portStr) || 25565;
   
-  // Track event listeners for cleanup
-  const eventListeners = [];
-  // Helper to track event listeners for cleanup
-  function addTrackedListener(emitter, event, handler) {
-    emitter.on(event, handler);
-    eventListeners.push({ emitter, event, handler });
-  }
+  const listenerRegistry = registerBotListeners(bot);
+  const trackBotListener = (eventName, handler, options = {}) => listenerRegistry.on(eventName, handler, options);
 
   
   bot.loadPlugin(pvp);
@@ -27622,7 +27967,7 @@ async function launchBot(username, role = 'fighter') {
       
       // Re-add the listeners with the correct event name
       originalListeners.forEach(listener => {
-        bot.on('physicsTick', listener);
+        trackBotListener('physicsTick', listener, { label: 'pvp:physicsTick' });
       });
       
       console.log('[PVP] Fixed deprecated physicTick event -> physicsTick');
@@ -27820,7 +28165,7 @@ async function launchBot(username, role = 'fighter') {
     try {
       wsClient = new WebSocket(`ws://localhost:9090/${username}`);
       
-      wsClient.on('open', () => {
+      listenerRegistry.track(wsClient, 'open', () => {
         console.log(`[SWARM] ${username} connected to coordinator`);
         
         // Store wsClient on bot for access by other components
@@ -27838,10 +28183,10 @@ async function launchBot(username, role = 'fighter') {
               status: combatAI.inCombat ? 'combat' : (config.tasks.current ? 'busy' : 'idle')
             }));
           }
-        }, 3000, 'swarm-heartbeat');
-      });
+        }, 3000, { label: 'swarm-heartbeat', bot });
+      }, { label: 'swarm:open' });
       
-      wsClient.on('message', async (data) => {
+      listenerRegistry.track(wsClient, 'message', async (data) => {
         try {
           const message = JSON.parse(data);
           
@@ -28147,11 +28492,11 @@ async function launchBot(username, role = 'fighter') {
         } catch (err) {
           console.log('[SWARM] Error processing message:', err.message);
         }
-      });
+      }, { label: 'swarm:message' });
       
-      wsClient.on('error', (err) => {
+      listenerRegistry.track(wsClient, 'error', (err) => {
         console.log(`[SWARM] WebSocket error: ${err.message}`);
-      });
+      }, { label: 'swarm:error' });
       
     } catch (err) {
       console.log(`[SWARM] Failed to connect: ${err.message}`);
@@ -28201,14 +28546,14 @@ async function launchBot(username, role = 'fighter') {
     }
     
     // Chat handler with intelligence gathering
-    bot.on('chat', async (username, message) => {
+    trackBotListener('chat', async (username, message) => {
       if (username === bot.username) return;
       
       // Process message through intelligence system
       if (config.intelligence.enabled && intelligenceDB) {
         intelligenceDB.processMessage(username, message);
       }
-    });
+    }, { label: 'chat:intelligence' });
       
     // Initialize base monitor if home base is set
     if (config.homeBase.coords) {
@@ -28226,7 +28571,7 @@ async function launchBot(username, role = 'fighter') {
     bot.deathRecovery = new DeathRecovery(bot);
 
     // Chat handler
-    bot.on('chat', async (username, message) => {
+    trackBotListener('chat', async (username, message) => {
       if (username === bot.username) return;
       try {
         if (await farmIntegration.tryHandleChat(username, message)) {
@@ -28236,13 +28581,13 @@ async function launchBot(username, role = 'fighter') {
         console.log('[FARM] Chat handler error:', e.message);
       }
       await conversationAI.handleMessage(username, message);
-    });
+    }, { label: 'chat:conversation' });
 
-    bot.on('death', async () => {
-        if(bot.deathRecovery) {
-            await bot.deathRecovery.onDeath();
-        }
-    });
+    trackBotListener('death', async () => {
+      if (bot.deathRecovery) {
+        await bot.deathRecovery.onDeath();
+      }
+    }, { label: 'bot:death-recovery' });
     
     // Player movement tracking for intelligence
     setInterval(() => {
@@ -28258,11 +28603,11 @@ async function launchBot(username, role = 'fighter') {
     }, 5000); // Track every 5 seconds
     
     // Player logout tracking
-    bot.on('playerLeft', (player) => {
+    trackBotListener('playerLeft', (player) => {
       if (config.intelligence.enabled && intelligenceDB && player.entity) {
         intelligenceDB.logPlayerLogout(player.username, player.entity.position);
       }
-    });
+    }, { label: 'intelligence:player-left' });
     
     // Periodic intelligence save
     setInterval(() => {
@@ -28311,7 +28656,7 @@ async function launchBot(username, role = 'fighter') {
     }
     
     // Combat handler
-    bot.on('entityHurt', async (entity) => {
+    trackBotListener('entityHurt', async (entity) => {
       if (entity === bot.entity) {
         // Initialize hostile mob detector if not exists
         if (!combatAI.hostileMobDetector) {
@@ -28415,7 +28760,7 @@ async function launchBot(username, role = 'fighter') {
           }
         }
       }
-    });
+    }, { label: 'combat:entityHurt' });
     
     // Start monitoring for nearby hostile mobs (passive defense)
     if (combatAI && config.combat.autoEngagement?.autoEngageHostileMobs) {
@@ -28424,26 +28769,26 @@ async function launchBot(username, role = 'fighter') {
     }
     
     // Totem pop detection (for metrics)
-    bot.on('entityEffect', (entity, effect) => {
+    trackBotListener('entityEffect', (entity, effect) => {
       if (entity === bot.entity && effect.id === 10) { // Regeneration effect from totem
         if (combatAI && combatAI.crystalPvP && combatAI.crystalPvP.metrics) {
           combatAI.crystalPvP.metrics.totemPops++;
           console.log('[TOTEM] 🛡️ Totem activated!');
         }
       }
-    });
-    
+    }, { label: 'bot:entityEffect' });
+
     // Death handler
-    bot.on('death', () => {
+    trackBotListener('death', () => {
       console.log('[DEATH] Respawning...');
       config.analytics.combat.deaths++;
       combatLogger.stopMonitoring('death');
       bot.localAnalytics.deaths++;
       updateGlobalAnalytics();
-    });
+    }, { label: 'bot:death-analytics' });
     
     // Kill handler
-    bot.on('entityDead', (entity) => {
+    trackBotListener('entityDead', (entity) => {
       if (entity.type === 'player' && combatAI && combatAI.currentTarget === entity) {
         console.log(`[KILL] Eliminated ${entity.username}!`);
         config.analytics.combat.kills++;
@@ -28451,10 +28796,10 @@ async function launchBot(username, role = 'fighter') {
         bot.localAnalytics.kills++;
         updateGlobalAnalytics();
       }
-    });
+    }, { label: 'combat:entityDead' });
     
     // Auto-reconnect
-    bot.on('end', () => {
+    trackBotListener('end', () => {
       console.log('[DISCONNECT] Reconnecting in 5s...');
       
       // Save build state before disconnect
@@ -28473,10 +28818,10 @@ async function launchBot(username, role = 'fighter') {
       // === COMPREHENSIVE CLEANUP (Issues #5, #6, #7) ===
       
       // Clear all intervals
-      clearAllIntervals();
+      clearAllIntervals(bot);
       
       // Clear all tracked event listeners
-      clearAllEventListeners();
+      clearAllEventListeners(bot);
       
       // Break all circular references (Issue #5)
       if (bot.combatAI) {
@@ -28581,9 +28926,9 @@ async function launchBot(username, role = 'fighter') {
       console.log('[CLEANUP] All references cleared');
       
       setTimeout(() => launchBot(username, role), 5000);
-    });
+    }, { cleanupEvents: ['end'], label: 'bot:end-handler' });
     
-    bot.on('error', (err) => {
+    trackBotListener('error', (err) => {
       const errorCode = err.code || 'UNKNOWN';
       const errorMsg = err.message || 'Unknown error';
       
@@ -28613,7 +28958,7 @@ async function launchBot(username, role = 'fighter') {
       
       // Don't crash - let auto-reconnect handle it
       // The bot.on('end') handler will trigger reconnection
-    });
+    }, { label: 'bot:error-handler', cleanupEvents: ['error', 'end'] });
   });
   
   return bot;
