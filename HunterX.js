@@ -628,6 +628,7 @@ function initializeNeuralSystem() {
 }
 const fs = require('fs');
 const path = require('path');
+const { sanitizeFileName, ensureSafeFileName, resolveSafePath, createSafeFileName } = require('./utils/pathSecurity');
 const readline = require('readline');
 
 // Create readline interface for user input
@@ -666,9 +667,15 @@ process.on('uncaughtException', (err) => {
 });
 
 // === SAFE DIRECTORIES ===
-['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics', './data/inventory', './data/production'].forEach(d => 
+['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics', './data/inventory', './data/production', './data/rl_snapshots'].forEach(d => 
   fs.mkdirSync(d, { recursive: true })
 );
+
+const PROJECT_ROOT = __dirname;
+const DATA_DIR = path.join(PROJECT_ROOT, 'data');
+const SCHEMATIC_STORAGE_DIR = path.join(DATA_DIR, 'schematics');
+const RL_SNAPSHOT_DIR = path.join(DATA_DIR, 'rl_snapshots');
+const DUPES_DIR = path.join(PROJECT_ROOT, 'dupes');
 
 // === SAFE FILE I/O WRAPPERS (Issue #2) ===
 function safeWriteFile(filePath, data) {
@@ -1399,21 +1406,10 @@ async function safeGoTo(bot, position, timeout = 60000) {
 }
 
 // === SECURITY HELPERS (Issue #13, #14) ===
-function sanitizeFileName(fileName) {
-  if (!fileName || typeof fileName !== 'string') {
-    return 'unnamed_file';
-  }
-  
-  // Remove path separators and dangerous characters
-  return fileName
-    .replace(/[\/\\]/g, '_')           // Replace slashes
-    .replace(/\.\./g, '_')             // Remove ..
-    .replace(/[^a-zA-Z0-9._-]/g, '_')  // Only allow safe chars
-    .substring(0, 255);                // Limit length
-}
+// sanitizeFileName and related helpers are provided by ./utils/pathSecurity
 
-// Rate limiting for HTTP endpoints  
-// NOTE: Main checkRateLimit function is defined later at line ~783
+// Rate limiting for HTTP endpoints
+
 // This is a specialized version for HTTP with different defaults
 const httpRateLimits = new Map(); // IP -> { count, resetTime }
 
@@ -16973,8 +16969,12 @@ try {
         const domain = domainMatch[1];
         const snapshot = globalRLAnalytics.exportSnapshot(domain);
         if (snapshot) {
-          safeWriteJson(`./data/rl_snapshots/${domain}_${Date.now()}.json`, snapshot);
-          this.bot.chat(`✅ Saved ${domain} snapshot to disk!`);
+          const timestamp = Date.now();
+          const safeDomain = ensureSafeFileName(domain, `domain_${timestamp}`);
+          const fileName = `${safeDomain}_${timestamp}.json`;
+          const snapshotPath = resolveSafePath(RL_SNAPSHOT_DIR, fileName);
+          safeWriteJson(snapshotPath, snapshot);
+          this.bot.chat(`✅ Saved ${safeDomain} snapshot to disk!`);
         } else {
           this.bot.chat(`❌ Domain ${domain} not found!`);
         }
@@ -25503,10 +25503,11 @@ class SchematicLoader {
     const normalized = this.normalizeSchematic(parsedData, format);
     
     // Save to disk
-    const schematicName = fileName.replace(/\.[^.]+$/, '');
-    await this.saveSchematic(schematicName, normalized);
+    const fallbackBase = `schematic_${Date.now()}`;
+    const schematicBaseName = ensureSafeFileName(fileName.replace(/\.[^.]+$/, ''), fallbackBase);
+    await this.saveSchematic(schematicBaseName, normalized);
 
-    console.log(`[SCHEMATIC] ✅ Successfully loaded ${schematicName}: ${normalized.metadata.dimensions.x}x${normalized.metadata.dimensions.y}x${normalized.metadata.dimensions.z}, ${normalized.metadata.totalBlocks} blocks`);
+    console.log(`[SCHEMATIC] ✅ Successfully loaded ${schematicBaseName}: ${normalized.metadata.dimensions.x}x${normalized.metadata.dimensions.y}x${normalized.metadata.dimensions.z}, ${normalized.metadata.totalBlocks} blocks`);
     
     if (this.warnings.length > 0) {
       console.log(`[SCHEMATIC] ⚠️ Warnings: ${this.warnings.length}`);
@@ -25921,11 +25922,13 @@ class SchematicLoader {
   }
 
   async saveSchematic(name, normalizedData) {
-    const filePath = `./data/schematics/${name}.json`;
+    const safeBaseName = ensureSafeFileName(name, `schematic_${Date.now()}`);
+    const filePath = resolveSafePath(SCHEMATIC_STORAGE_DIR, `${safeBaseName}.json`);
     
     try {
       safeWriteFile(filePath, JSON.stringify(normalizedData, null, 2));
       console.log(`[SCHEMATIC] 💾 Saved to: ${filePath}`);
+      return filePath;
     } catch (err) {
       console.log(`[SCHEMATIC] Error saving schematic: ${err.message}`);
       throw err;
@@ -25933,7 +25936,10 @@ class SchematicLoader {
   }
 
   async loadSchematic(name) {
-    const filePath = `./data/schematics/${name}.json`;
+    const incoming = typeof name === 'string' ? name : '';
+    const baseName = path.basename(incoming).replace(/\.json$/i, '');
+    const safeBaseName = ensureSafeFileName(baseName, 'schematic');
+    const filePath = resolveSafePath(SCHEMATIC_STORAGE_DIR, `${safeBaseName}.json`);
     
     try {
       const data = fs.readFileSync(filePath, 'utf8');
@@ -25946,7 +25952,7 @@ class SchematicLoader {
 
   listSchematics() {
     try {
-      const files = fs.readdirSync('./data/schematics')
+      const files = fs.readdirSync(SCHEMATIC_STORAGE_DIR)
         .filter(file => file.endsWith('.json'))
         .map(file => file.replace('.json', ''));
       
@@ -26417,12 +26423,18 @@ http.createServer((req, res) => {
           return;
         }
         
-        // === SECURITY: Sanitize fileName (Issue #13) ===
-        fileName = sanitizeFileName(fileName);
+        const incomingName = path.basename(fileName);
+        const ext = path.extname(incomingName).toLowerCase();
+        const timestamp = Date.now();
         
         // Check if it's a schematic file
-        if (fileName.endsWith('.schem') || fileName.endsWith('.schematic') || fileName.endsWith('.nbt')) {
-          const tempPath = path.join('./data', `schematics_${Date.now()}_${fileName}`);
+        if (ext === '.schem' || ext === '.schematic' || ext === '.nbt') {
+          const safeFileName = createSafeFileName(incomingName, {
+            fallbackBase: `schematic_${timestamp}`,
+            allowedExtensions: ['.schem', '.schematic', '.nbt'],
+            defaultExtension: ext || '.schem'
+          });
+          const tempPath = path.join(DATA_DIR, `schematics_${timestamp}_${safeFileName}`);
           safeWriteFile(tempPath, fileContent);
           
           const schematicLoader = new SchematicLoader();
@@ -26442,15 +26454,19 @@ http.createServer((req, res) => {
             }
           }));
         } else {
-          // Save file temporarily (fileName already sanitized above)
-          const tempPath = path.join('./dupes', `uploaded_${Date.now()}_${fileName}`);
+          const safeFileName = createSafeFileName(incomingName, {
+            fallbackBase: `plugin_${timestamp}`,
+            allowedExtensions: ['.jar'],
+            defaultExtension: ext || '.jar'
+          });
+          const tempPath = path.join(DUPES_DIR, `uploaded_${timestamp}_${safeFileName}`);
           safeWriteFile(tempPath, fileContent);
           
           // Analyze the plugin
-          const analysis = await globalPluginAnalyzer.analyzeJarFile(tempPath, fileName);
+          const analysis = await globalPluginAnalyzer.analyzeJarFile(tempPath, safeFileName);
           
           config.dupeDiscovery.uploadedPlugins.push({
-            fileName,
+            fileName: safeFileName,
             timestamp: Date.now(),
             analysis
           });
@@ -26512,12 +26528,9 @@ http.createServer((req, res) => {
           return;
         }
         
-        // === SECURITY: Sanitize fileName to prevent path traversal (Issue #13) ===
-        fileName = sanitizeFileName(fileName);
-        
-        // Check file extension
-        const ext = fileName.toLowerCase().substring(fileName.lastIndexOf('.'));
-        if (!globalSchematicLoader.supportedFormats.includes(ext)) {
+        const incomingName = path.basename(fileName);
+        const ext = path.extname(incomingName).toLowerCase();
+        if (!ext || !globalSchematicLoader.supportedFormats.includes(ext)) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ 
             success: false, 
@@ -26525,15 +26538,26 @@ http.createServer((req, res) => {
           }));
           return;
         }
+
+        const timestamp = Date.now();
+        const safeFileName = createSafeFileName(incomingName, {
+          fallbackBase: `schematic_${timestamp}`,
+          allowedExtensions: globalSchematicLoader.supportedFormats,
+          defaultExtension: ext
+        });
+        const safeBaseName = ensureSafeFileName(
+          safeFileName.replace(/\.[^.]+$/, ''),
+          `schematic_${timestamp}`
+        );
         
         // Parse schematic
-        const schematicData = await globalSchematicLoader.loadFromBuffer(fileContent, fileName);
+        const schematicData = await globalSchematicLoader.loadFromBuffer(fileContent, safeFileName);
         
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           success: true,
           schematic: {
-            name: fileName.replace(/\.[^.]+$/, ''),
+            name: safeBaseName,
             format: schematicData.format,
             dimensions: schematicData.metadata.dimensions,
             totalBlocks: schematicData.metadata.totalBlocks,
@@ -26625,12 +26649,16 @@ http.createServer((req, res) => {
       const domainName = req.url.split('/').pop();
       const snapshot = globalRLAnalytics.exportSnapshot(domainName);
       if (snapshot) {
-      safeWriteJson(`./data/rl_snapshots/${domainName}_${Date.now()}.json`, snapshot);
+      const timestamp = Date.now();
+      const safeDomain = ensureSafeFileName(domainName, `domain_${timestamp}`);
+      const fileName = `${safeDomain}_${timestamp}.json`;
+      const snapshotPath = resolveSafePath(RL_SNAPSHOT_DIR, fileName);
+      safeWriteJson(snapshotPath, snapshot);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: true,
         snapshot,
-        exportedTo: `./data/rl_snapshots/${domainName}_${Date.now()}.json`
+        exportedTo: `./data/rl_snapshots/${fileName}`
       }));
       } else {
       res.writeHead(404, { 'Content-Type': 'application/json' });
