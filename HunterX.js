@@ -27805,13 +27805,350 @@ http.createServer((req, res) => {
       }
     });
   } else {
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(dashboardHTML);
+    // Serve static files from public directory
+    let filePath = req.url === '/' ? '/index.html' : req.url;
+    filePath = path.join(__dirname, 'public', filePath);
+    
+    // Security check: ensure file is within public directory
+    const publicDir = path.join(__dirname, 'public');
+    if (!filePath.startsWith(publicDir)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+    
+    // Determine content type
+    const ext = path.extname(filePath).toLowerCase();
+    const contentTypes = {
+      '.html': 'text/html',
+      '.css': 'text/css',
+      '.js': 'application/javascript',
+      '.json': 'application/json',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon'
+    };
+    const contentType = contentTypes[ext] || 'text/plain';
+    
+    // Try to serve file, fallback to old dashboard
+    fs.readFile(filePath, (err, content) => {
+      if (err) {
+        if (err.code === 'ENOENT') {
+          // File not found, serve old dashboard HTML as fallback
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(dashboardHTML);
+        } else {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Server Error');
+        }
+      } else {
+        res.writeHead(200, { 'Content-Type': contentType });
+        res.end(content);
+      }
+    });
   }
   }
 }).listen(8080);
 
 console.log('[DASHBOARD] http://localhost:8080');
+
+// === WEBSOCKET TELEMETRY SERVER FOR DASHBOARD (PORT 9090) ===
+const dashboardWss = new WebSocket.Server({ port: 9090 });
+let dashboardClients = new Set();
+
+dashboardWss.on('connection', (ws) => {
+  console.log('[DASHBOARD-WS] Client connected');
+  dashboardClients.add(ws);
+  
+  // Send initial status
+  if (globalBot) {
+    sendDashboardMessage(ws, {
+      type: 'status',
+      data: getBotStatusData()
+    });
+  }
+  
+  ws.on('message', (data) => {
+    try {
+      const message = JSON.parse(data.toString());
+      handleDashboardMessage(ws, message);
+    } catch (err) {
+      console.error('[DASHBOARD-WS] Error parsing message:', err);
+    }
+  });
+  
+  ws.on('close', () => {
+    console.log('[DASHBOARD-WS] Client disconnected');
+    dashboardClients.delete(ws);
+  });
+  
+  ws.on('error', (err) => {
+    console.error('[DASHBOARD-WS] WebSocket error:', err);
+    dashboardClients.delete(ws);
+  });
+});
+
+console.log('[DASHBOARD-WS] WebSocket server listening on port 9090');
+
+// Handle dashboard WebSocket messages
+function handleDashboardMessage(ws, message) {
+  console.log('[DASHBOARD-WS] Received:', message.type, message.action);
+  
+  switch (message.type) {
+    case 'status':
+      if (message.action === 'getStatus') {
+        sendDashboardMessage(ws, {
+          type: 'status',
+          data: getBotStatusData()
+        });
+      }
+      break;
+      
+    case 'telemetry':
+      if (message.action === 'getTelemetry') {
+        sendDashboardMessage(ws, {
+          type: 'telemetry',
+          data: getTelemetryData()
+        });
+      } else if (message.action === 'getInventory') {
+        sendDashboardMessage(ws, {
+          type: 'inventory',
+          data: getInventoryData()
+        });
+      }
+      break;
+      
+    case 'config':
+      if (message.action === 'getConfig') {
+        sendDashboardMessage(ws, {
+          type: 'config',
+          data: getConfigData()
+        });
+      }
+      break;
+      
+    case 'command':
+      if (message.command && globalBot) {
+        executeCommand(ws, message.command);
+      } else {
+        sendDashboardMessage(ws, {
+          type: 'command_response',
+          data: {
+            success: false,
+            message: 'Bot not connected or invalid command',
+            command: message.command
+          }
+        });
+      }
+      break;
+      
+    default:
+      console.log('[DASHBOARD-WS] Unknown message type:', message.type);
+  }
+}
+
+// Get bot status data
+function getBotStatusData() {
+  if (!globalBot) {
+    return {
+      connected: false,
+      username: '-',
+      server: '-',
+      version: '-',
+      mode: config.mode || '-',
+      health: 0,
+      food: 0,
+      startTime: null
+    };
+  }
+  
+  return {
+    connected: true,
+    username: globalBot.username || '-',
+    server: config.server || '-',
+    version: globalBot.version || '-',
+    mode: config.mode || '-',
+    health: globalBot.health || 0,
+    food: globalBot.food || 0,
+    startTime: globalBot.startTime || Date.now()
+  };
+}
+
+// Get telemetry data
+function getTelemetryData() {
+  if (!globalBot || !globalBot.entity) {
+    return {
+      position: { x: 0, y: 0, z: 0 },
+      dimension: 'unknown',
+      nearbyPlayers: 0,
+      kills: 0,
+      deaths: 0,
+      activity: 'Disconnected',
+      currentTask: 'None'
+    };
+  }
+  
+  const nearbyPlayers = Object.keys(globalBot.players || {}).filter(name => {
+    const player = globalBot.players[name];
+    return player && player.entity && player.entity.position.distanceTo(globalBot.entity.position) < 100;
+  }).length;
+  
+  return {
+    position: globalBot.entity.position,
+    dimension: globalBot.game?.dimension || 'unknown',
+    nearbyPlayers: nearbyPlayers,
+    kills: globalBot.kills || 0,
+    deaths: globalBot.deaths || 0,
+    activity: globalBot.currentActivity || 'Idle',
+    currentTask: globalBot.currentTask || 'None'
+  };
+}
+
+// Get inventory data
+function getInventoryData() {
+  if (!globalBot || !globalBot.inventory) {
+    return {
+      items: [],
+      equipment: {
+        helmet: null,
+        chestplate: null,
+        leggings: null,
+        boots: null,
+        mainHand: null,
+        offHand: null
+      }
+    };
+  }
+  
+  const items = globalBot.inventory.items().map(item => ({
+    name: item.name,
+    count: item.count,
+    slot: item.slot
+  }));
+  
+  const equipment = {
+    helmet: globalBot.inventory.slots[5] ? globalBot.inventory.slots[5].name : null,
+    chestplate: globalBot.inventory.slots[6] ? globalBot.inventory.slots[6].name : null,
+    leggings: globalBot.inventory.slots[7] ? globalBot.inventory.slots[7].name : null,
+    boots: globalBot.inventory.slots[8] ? globalBot.inventory.slots[8].name : null,
+    mainHand: globalBot.inventory.slots[globalBot.quickBarSlot + 36] ? globalBot.inventory.slots[globalBot.quickBarSlot + 36].name : null,
+    offHand: globalBot.inventory.slots[45] ? globalBot.inventory.slots[45].name : null
+  };
+  
+  return { items, equipment };
+}
+
+// Get config data
+function getConfigData() {
+  return {
+    mode: config.mode,
+    server: config.server,
+    bot: {
+      name: config.bot?.name || 'HunterX',
+      defaultProtocolVersion: config.bot?.defaultProtocolVersion || '1.21.4'
+    },
+    combat: {
+      enabled: config.combat?.enabled || false,
+      crystalPvP: config.combat?.crystalPvP || false
+    },
+    swarm: {
+      enabled: config.swarm?.enabled || false,
+      role: config.swarm?.role || 'solo'
+    }
+  };
+}
+
+// Execute command via dashboard
+async function executeCommand(ws, command) {
+  try {
+    if (!globalBot) {
+      sendDashboardMessage(ws, {
+        type: 'command_response',
+        data: {
+          success: false,
+          message: 'Bot not connected',
+          command: command
+        }
+      });
+      return;
+    }
+    
+    // Process through conversation AI if available
+    if (typeof ConversationAI !== 'undefined') {
+      const conversationAI = new ConversationAI(globalBot);
+      await conversationAI.handleCommand('WebDashboard', command);
+      
+      sendDashboardMessage(ws, {
+        type: 'command_response',
+        data: {
+          success: true,
+          message: 'Command executed',
+          command: command
+        }
+      });
+    } else {
+      // Direct command execution
+      globalBot.chat(command);
+      
+      sendDashboardMessage(ws, {
+        type: 'command_response',
+        data: {
+          success: true,
+          message: 'Command sent to bot',
+          command: command
+        }
+      });
+    }
+    
+    // Broadcast to console
+    broadcastToAllDashboards({
+      type: 'chat',
+      data: {
+        message: `Command executed: ${command}`
+      }
+    });
+  } catch (err) {
+    console.error('[DASHBOARD-WS] Command execution error:', err);
+    sendDashboardMessage(ws, {
+      type: 'command_response',
+      data: {
+        success: false,
+        message: `Error: ${err.message}`,
+        command: command
+      }
+    });
+  }
+}
+
+// Send message to specific dashboard client
+function sendDashboardMessage(ws, message) {
+  if (ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify(message));
+    } catch (err) {
+      console.error('[DASHBOARD-WS] Error sending message:', err);
+    }
+  }
+}
+
+// Broadcast to all dashboard clients
+function broadcastToAllDashboards(message) {
+  dashboardClients.forEach(client => {
+    sendDashboardMessage(client, message);
+  });
+}
+
+// Periodic updates to dashboard (every 2 seconds)
+setInterval(() => {
+  if (dashboardClients.size > 0 && globalBot) {
+    broadcastToAllDashboards({
+      type: 'telemetry',
+      data: getTelemetryData()
+    });
+  }
+}, 2000);
 
 // === SCHEMATIC BUILDER SYSTEM ===
 
@@ -28202,6 +28539,19 @@ async function launchBot(username, role = 'fighter') {
   }
   
   globalBot = bot;
+  
+  // Set up dashboard chat relay
+  bot.on('message', (jsonMsg) => {
+    try {
+      const message = jsonMsg.toString();
+      broadcastToAllDashboards({
+        type: 'chat',
+        data: { message }
+      });
+    } catch (err) {
+      // Ignore errors
+    }
+  });
   
   const combatAI = new CombatAI(bot);
   combatAI.hostileMobDetector = new HostileMobDetector();

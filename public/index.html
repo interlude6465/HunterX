@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HunterX Control Dashboard</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="dashboard-header">
+    <div class="header-content">
+      <h1>🎯 HUNTERX CONTROL DASHBOARD</h1>
+      <div class="connection-status">
+        <span class="status-indicator" id="wsStatus">●</span>
+        <span id="wsStatusText">Connecting...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Dashboard Grid -->
+  <div class="dashboard-container">
+    
+    <!-- Bot Status Panel -->
+    <section class="panel bot-status-panel">
+      <h2>🤖 Bot Status</h2>
+      <div class="status-grid">
+        <div class="status-item">
+          <span class="label">Connection:</span>
+          <span class="value" id="botConnection">Disconnected</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Username:</span>
+          <span class="value" id="botUsername">-</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Server:</span>
+          <span class="value" id="botServer">-</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Version:</span>
+          <span class="value" id="botVersion">-</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Uptime:</span>
+          <span class="value" id="botUptime">-</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Mode:</span>
+          <span class="value" id="botMode">-</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Health:</span>
+          <span class="value" id="botHealth">20/20</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Food:</span>
+          <span class="value" id="botFood">20/20</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Control Panel -->
+    <section class="panel control-panel">
+      <h2>🎮 Control Panel</h2>
+      <div class="control-buttons">
+        <button class="btn btn-success" onclick="sendCommand('start')">Start Bot</button>
+        <button class="btn btn-danger" onclick="sendCommand('stop')">Stop Bot</button>
+        <button class="btn btn-warning" onclick="emergencyStop()">Emergency Stop</button>
+      </div>
+      <div class="command-input-section">
+        <input type="text" id="commandInput" placeholder="Enter command (e.g., 'come to 100 64 200')" onkeypress="handleCommandEnter(event)">
+        <button class="btn btn-primary" onclick="sendCustomCommand()">Send Command</button>
+      </div>
+      <div class="quick-commands">
+        <h3>Quick Commands</h3>
+        <div class="quick-btn-grid">
+          <button class="btn-quick" onclick="quickCommand('change to pvp mode')">PvP Mode</button>
+          <button class="btn-quick" onclick="quickCommand('change to friendly mode')">Friendly Mode</button>
+          <button class="btn-quick" onclick="quickCommand('change to dupe mode')">Dupe Mode</button>
+          <button class="btn-quick" onclick="quickCommand('change to stash mode')">Stash Mode</button>
+          <button class="btn-quick" onclick="quickCommand('what are you doing')">Status</button>
+          <button class="btn-quick" onclick="quickCommand('come here')">Come Here</button>
+        </div>
+      </div>
+      <div class="command-history" id="commandHistory">
+        <h3>Command History</h3>
+        <div class="history-list" id="historyList"></div>
+      </div>
+    </section>
+
+    <!-- Telemetry Panel -->
+    <section class="panel telemetry-panel">
+      <h2>📊 Telemetry & Stats</h2>
+      <div class="telemetry-grid">
+        <div class="telemetry-item">
+          <span class="label">Position:</span>
+          <span class="value" id="botPosition">0, 0, 0</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="label">Dimension:</span>
+          <span class="value" id="botDimension">overworld</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="label">Nearby Players:</span>
+          <span class="value" id="nearbyPlayers">0</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="label">Kills:</span>
+          <span class="value" id="botKills">0</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="label">Deaths:</span>
+          <span class="value" id="botDeaths">0</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="label">K/D Ratio:</span>
+          <span class="value" id="botKD">0.00</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="label">Activity:</span>
+          <span class="value" id="botActivity">Idle</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="label">Current Task:</span>
+          <span class="value" id="currentTask">None</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Inventory Panel -->
+    <section class="panel inventory-panel">
+      <h2>🎒 Inventory</h2>
+      <div class="inventory-controls">
+        <button class="btn btn-sm" onclick="requestInventory()">Refresh Inventory</button>
+      </div>
+      <div class="inventory-grid" id="inventoryGrid">
+        <p class="empty-message">Loading inventory...</p>
+      </div>
+      <div class="equipment-section">
+        <h3>Equipment</h3>
+        <div class="equipment-slots">
+          <div class="equip-slot">
+            <span class="slot-name">Helmet:</span>
+            <span class="slot-value" id="equipHelmet">Empty</span>
+          </div>
+          <div class="equip-slot">
+            <span class="slot-name">Chestplate:</span>
+            <span class="slot-value" id="equipChestplate">Empty</span>
+          </div>
+          <div class="equip-slot">
+            <span class="slot-name">Leggings:</span>
+            <span class="slot-value" id="equipLeggings">Empty</span>
+          </div>
+          <div class="equip-slot">
+            <span class="slot-name">Boots:</span>
+            <span class="slot-value" id="equipBoots">Empty</span>
+          </div>
+          <div class="equip-slot">
+            <span class="slot-name">Main Hand:</span>
+            <span class="slot-value" id="equipMainHand">Empty</span>
+          </div>
+          <div class="equip-slot">
+            <span class="slot-name">Off Hand:</span>
+            <span class="slot-value" id="equipOffHand">Empty</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Console/Chat Panel -->
+    <section class="panel console-panel">
+      <h2>💬 Console & Chat</h2>
+      <div class="console-controls">
+        <button class="btn btn-sm" onclick="clearConsole()">Clear</button>
+        <label>
+          <input type="checkbox" id="autoScrollCheckbox" checked>
+          Auto-scroll
+        </label>
+      </div>
+      <div class="console-output" id="consoleOutput">
+        <div class="console-line startup">Dashboard initialized. Connecting to bot...</div>
+      </div>
+    </section>
+
+    <!-- Configuration Panel -->
+    <section class="panel config-panel">
+      <h2>⚙️ Configuration</h2>
+      <div class="config-controls">
+        <button class="btn btn-sm" onclick="requestConfig()">Load Config</button>
+      </div>
+      <div class="config-display" id="configDisplay">
+        <p class="empty-message">Click "Load Config" to view current configuration</p>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Footer -->
+  <footer class="dashboard-footer">
+    <p>HunterX v22.1 Dashboard | WebSocket: <span id="wsUrl">ws://localhost:9090</span> | HTTP API: <span id="httpUrl">http://localhost:8080</span></p>
+  </footer>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
