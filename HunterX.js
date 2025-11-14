@@ -1293,6 +1293,8 @@ function resolveTimeZoneAlias(alias) {
 function getConversationCacheKey(type, identifier) {
   const keyGenerator = CONVERSATION_CACHE_KEYS[type];
   return keyGenerator ? keyGenerator(identifier) : null;
+}
+
 // === HEALTH TRACKING SYSTEM ===
 function initializeHealthTracking(bot) {
   if (!bot) {
@@ -19304,9 +19306,8 @@ class DialogueRL {
     if (this.initialized) {
       safeNeuralSave('dialogue', './models/dialogue_model.json');
       console.log('[DIALOGUE_RL] Dialogue model saved to disk');
-      }
-      }
-      }
+    }
+  }
 }
 
 // === MOVEMENT RL ===
@@ -27005,7 +27006,7 @@ let globalRLAnalytics = new RLAnalyticsManager();
 let intervalHandles = []; // Track intervals for cleanup
 // globalSchematicBuilder declared earlier
 let globalSchematicLoader = new SchematicLoader();
-let globalBackupManager = null; // Will be instantiated after BackupManager class definition
+// globalBackupManager declared earlier at line 7756
 
 // Anti-cheat bypass system global instances
 let serverProfileManager = null;
