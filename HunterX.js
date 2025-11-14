@@ -24717,7 +24717,7 @@ class BotSpawner {
       }
       
       // Use detected version or default
-      const versionToTry = detectedVersion || config.bot.defaultProtocolVersion;
+      const versionToTry = detectedVersion || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4';
       
       console.log(`[DETECTION] Testing connection with version: ${versionToTry}`);
       
@@ -24743,7 +24743,7 @@ class BotSpawner {
         return { 
           cracked: true, 
           useProxy: true, 
-          version: detectedVersion || config.bot.defaultProtocolVersion,
+          version: detectedVersion || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4',
           detectedVersion: detectedVersion,
           error: createError.message 
         };
@@ -24754,7 +24754,7 @@ class BotSpawner {
           safeBotQuit(testBot, 'Server detection timeout');
           testBot = null;
           reject(new Error('Connection timeout'));
-        }, config.bot.connectionTimeout);
+        }, (config.bot && config.bot.connectionTimeout) || 10000);
 
         const safeCleanup = () => {
           if (timeout) {
@@ -24906,7 +24906,7 @@ class BotSpawner {
       return { 
         cracked: true, 
         useProxy: true, 
-        version: detectedVersion || config.bot.defaultProtocolVersion,
+        version: detectedVersion || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4',
         detectedVersion: detectedVersion,
         error: error.message 
       };
@@ -24922,7 +24922,7 @@ class BotSpawner {
       // Use detected version if available, otherwise use provided or default
       let versionToUse = this.serverType.detectedVersion || 
                         options.version || 
-                        config.bot.defaultProtocolVersion;
+                        (config.bot && config.bot.defaultProtocolVersion) || '1.21.4';
       
       console.log(`[SPAWNER] Server type: ${this.serverType.cracked ? 'CRACKED' : 'PREMIUM'}`);
       console.log(`[SPAWNER] Using: ${this.serverType.useProxy ? 'Proxy' : 'Local Account'}`);
@@ -24978,7 +24978,7 @@ class BotSpawner {
     }
 
     const username = options.username || this.generateRandomUsername();
-    const initialVersion = options.version || this.serverType.version || config.bot.defaultProtocolVersion;
+    const initialVersion = options.version || this.serverType.version || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4';
     let version = initialVersion;
 
     // Validate protocol version
@@ -25072,7 +25072,8 @@ class BotSpawner {
       // Try alternative versions if extraction didn't work
       console.log('[SPAWNER] Trying alternative versions...');
       
-      for (const altVersion of config.bot.supportedVersions) {
+      const supportedVersions = (config.bot && Array.isArray(config.bot.supportedVersions)) ? config.bot.supportedVersions : ['1.19.2', '1.20', '1.20.1', '1.20.4', '1.21', '1.21.1', '1.21.4'];
+      for (const altVersion of supportedVersions) {
         if (altVersion === version || altVersion === extractedVersion) continue;
         
         try {
@@ -25100,7 +25101,7 @@ class BotSpawner {
       throw new Error('Local account credentials not configured');
     }
 
-    const initialVersion = options.version || this.serverType.version || config.bot.defaultProtocolVersion;
+    const initialVersion = options.version || this.serverType.version || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4';
     let version = initialVersion;
 
     // Validate protocol version
@@ -25196,7 +25197,8 @@ class BotSpawner {
       // Try alternative versions
       console.log('[SPAWNER] Trying alternative versions...');
       
-      for (const altVersion of config.bot.supportedVersions) {
+      const supportedVersions = (config.bot && Array.isArray(config.bot.supportedVersions)) ? config.bot.supportedVersions : ['1.19.2', '1.20', '1.20.1', '1.20.4', '1.21', '1.21.1', '1.21.4'];
+      for (const altVersion of supportedVersions) {
         if (altVersion === version || altVersion === extractedVersion) continue;
         
         try {
@@ -30352,6 +30354,19 @@ function ensureConfigStructure(targetConfig) {
   
   if (!cfg.lifesteal) {
     cfg.lifesteal = { enabled: false, keywords: ['lifesteal'] };
+  }
+  
+  if (!cfg.bot) {
+    cfg.bot = {
+      name: 'HunterX',
+      defaultProtocolVersion: '1.21.4',
+      supportedVersions: [
+        '1.19.2', '1.20', '1.20.1', '1.20.4', '1.21', '1.21.1', '1.21.4'
+      ],
+      fallbackVersion: '1.21.4',
+      connectionTimeout: 10000,
+      maxRetries: 3
+    };
   }
   
   if (!global.config) {
