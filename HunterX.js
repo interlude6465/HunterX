@@ -24673,6 +24673,27 @@ class ProxyManager {
   }
 }
 
+// Server version detection helper - add this at module level, before BotSpawner class
+function extractVersionSafely(error, serverIP) {
+  try {
+    // Try to extract version from error message
+    if (error && error.message) {
+      const versionMatch = error.message.match(/version[:\s]+(\d+)/i);
+      if (versionMatch && versionMatch[1]) {
+        return parseInt(versionMatch[1]);
+      }
+    }
+    
+    // Fallback to common Minecraft version
+    // Most servers are 1.12 (protocol 340) or 1.8 (protocol 47)
+    return 340;
+  } catch (err) {
+    console.log('[VERSION] Error extracting version:', err.message);
+    return 340; // Default fallback
+  }
+}
+
+
 // === BOT SPAWNER WITH SERVER TYPE DETECTION ===
 class BotSpawner {
   constructor() {
