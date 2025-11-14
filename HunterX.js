@@ -28597,13 +28597,121 @@ async function launchSwarm() {
       });
     });
   });
-}
+  }
 
-function launchSupplyChainManager() {
-  console.log('\n🔗 SUPPLY CHAIN MANAGER - Task Queue System\n');
-  
-  // Initialize supply chain manager
-  if (!globalSupplyChainManager) {
+  function initializeSupplyChainServer() {
+    const port = (config.supplyChain && config.supplyChain.port) || 3000;
+
+    try {
+      const server = http.createServer((req, res) => {
+        // Set CORS headers
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+        if (req.method === 'OPTIONS') {
+          res.writeHead(200);
+          res.end();
+          return;
+        }
+
+        // Supply chain status endpoint
+        if (req.url === '/api/supply-chain/status' && req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          const status = globalSupplyChainManager ? globalSupplyChainManager.getStatus() : { error: 'Supply chain manager not initialized' };
+          res.end(JSON.stringify(status));
+          return;
+        }
+
+        // Inventory endpoint
+        if (req.url === '/api/supply-chain/inventory' && req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          if (globalSupplyChainManager && globalSupplyChainManager.globalInventory) {
+            res.end(JSON.stringify(globalSupplyChainManager.globalInventory.getInventoryReport()));
+          } else {
+            res.end(JSON.stringify({ error: 'Global inventory not available' }));
+          }
+          return;
+        }
+
+        // Add task endpoint
+        if (req.url === '/api/supply-chain/task' && req.method === 'POST') {
+          let body = '';
+          req.on('data', chunk => {
+            body += chunk.toString();
+          });
+          req.on('end', () => {
+            try {
+              const task = JSON.parse(body);
+              if (globalSupplyChainManager) {
+                globalSupplyChainManager.taskQueue.addTask(task);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, message: 'Task added to queue' }));
+              } else {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Supply chain manager not initialized' }));
+              }
+            } catch (error) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Invalid JSON or malformed request' }));
+            }
+          });
+          return;
+        }
+
+        // Bot status endpoint
+        if (req.url === '/api/supply-chain/bots' && req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          if (globalSupplyChainManager) {
+            const botsInfo = [];
+            for (const [botUsername, botInfo] of globalSupplyChainManager.activeBots) {
+              botsInfo.push({
+                username: botUsername,
+                status: botInfo.status,
+                tasksCompleted: botInfo.stats.tasksCompleted,
+                itemsCollected: botInfo.stats.itemsCollected,
+                lastActivity: botInfo.stats.lastActivity
+              });
+            }
+            res.end(JSON.stringify(botsInfo));
+          } else {
+            res.end(JSON.stringify({ error: 'Supply chain manager not initialized' }));
+          }
+          return;
+        }
+
+        // Default 404 response
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Endpoint not found' }));
+      });
+
+      server.listen(port, () => {
+        console.log(`[SUPPLY] HTTP server listening on http://localhost:${port}`);
+        console.log(`[SUPPLY] Available endpoints:`);
+        console.log(`[SUPPLY]   GET /api/supply-chain/status`);
+        console.log(`[SUPPLY]   GET /api/supply-chain/inventory`);
+        console.log(`[SUPPLY]   GET /api/supply-chain/bots`);
+        console.log(`[SUPPLY]   POST /api/supply-chain/task`);
+      });
+
+      server.on('error', (error) => {
+        if (error.code === 'EADDRINUSE') {
+          console.error(`[SUPPLY] Port ${port} is already in use. Supply chain server not started.`);
+        } else {
+          console.error(`[SUPPLY] Server error: ${error.message}`);
+        }
+      });
+
+    } catch (error) {
+      console.error('[SUPPLY] Failed to initialize supply chain server:', error.message);
+    }
+  }
+
+  function launchSupplyChainManager() {
+    console.log('\n🔗 SUPPLY CHAIN MANAGER - Task Queue System\n');
+
+    // Initialize supply chain manager
+    if (!globalSupplyChainManager) {
     globalSupplyChainManager = new SupplyChainManager();
     console.log('[SUPPLY] Supply Chain Manager initialized');
   }
