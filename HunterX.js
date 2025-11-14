@@ -30041,6 +30041,10 @@ function loadConfiguration() {
   }
 
   console.log('[CONFIG] Working config reference obtained');
+  
+  // Ensure all config sections exist BEFORE loading saved config
+  // This prevents "Cannot set properties of undefined" errors
+  ensureConfigStructure(workingConfig);
 
   if (fs.existsSync(configPath)) {
     const savedConfig = safeReadJson(configPath);
@@ -30196,7 +30200,6 @@ function loadConfiguration() {
       }
 
       console.log('✅ Configuration loaded successfully!');
-      ensureConfigStructure(workingConfig);
       return workingConfig;
     } else {
       console.log('⚠️  Configuration file is invalid or corrupted.');
@@ -30205,7 +30208,6 @@ function loadConfiguration() {
 
   // No config file found or invalid - return default config with structure ensured
   console.log('[CONFIG] Using default configuration');
-  ensureConfigStructure(workingConfig);
   return workingConfig;
 }
 
@@ -30269,12 +30271,26 @@ function ensureConfigStructure(targetConfig) {
       rateLimit: { maxRequests: 10, windowMs: 60000 }, autoReplyPrefix: '[AUTO]'
     };
   }
+  // Ensure nested objects exist
+  if (!cfg.conversationalAI.provider) {
+    cfg.conversationalAI.provider = {};
+  }
+  if (!cfg.conversationalAI.timeZoneAliases) {
+    cfg.conversationalAI.timeZoneAliases = {};
+  }
+  if (!cfg.conversationalAI.rateLimit) {
+    cfg.conversationalAI.rateLimit = { maxRequests: 10, windowMs: 60000 };
+  }
   
   if (!cfg.privateMsg) {
     cfg.privateMsg = {
       enabled: false, defaultTemplate: '', trustLevelRequirement: 'trusted',
       rateLimit: { windowMs: 60000, maxMessages: 10 }, forwardToConsole: false
     };
+  }
+  // Ensure nested rateLimit object exists
+  if (!cfg.privateMsg.rateLimit) {
+    cfg.privateMsg.rateLimit = { windowMs: 60000, maxMessages: 10 };
   }
   
   if (!cfg.neural) {
