@@ -1723,12 +1723,118 @@ function clearAllEventListeners() {
 function registerBot(bot) {
   if (bot) {
     activeBots.add(bot);
+    // Add to heartbeat tracking
+    updateBotHeartbeat(bot.username, bot);
   }
 }
 
 function unregisterBot(bot) {
   if (bot && activeBots.has(bot)) {
     activeBots.delete(bot);
+    // Also remove from heartbeat tracking
+    if (botHeartbeats.has(bot.username)) {
+      botHeartbeats.delete(bot.username);
+    }
+  }
+}
+
+// === HEARTBEAT TRACKING AND PERIODIC SWEEP SYSTEM ===
+
+const botHeartbeats = new Map(); // username -> { lastSeen: timestamp, bot: bot }
+const HEARTBEAT_TIMEOUT = 30000; // 30 seconds without heartbeat = inactive
+const SWEEP_INTERVAL = 10000; // Check every 10 seconds
+
+function updateBotHeartbeat(username, bot) {
+  if (!username || !bot) return;
+  
+  botHeartbeats.set(username, {
+    lastSeen: Date.now(),
+    bot: bot
+  });
+}
+
+function removeBotHeartbeat(username) {
+  if (botHeartbeats.has(username)) {
+    botHeartbeats.delete(username);
+  }
+}
+
+function performBotSweep() {
+  const now = Date.now();
+  const deadBots = [];
+  
+  // Check for dead bots in heartbeat tracking
+  for (const [username, heartbeat] of botHeartbeats.entries()) {
+    if (now - heartbeat.lastSeen > HEARTBEAT_TIMEOUT) {
+      deadBots.push({ username, bot: heartbeat.bot });
+    }
+  }
+  
+  // Remove dead bots from all tracking systems
+  for (const { username, bot } of deadBots) {
+    console.log(`[SWEEP] Removing inactive bot: ${username} (no heartbeat for ${Math.round((now - botHeartbeats.get(username).lastSeen) / 1000)}s)`);
+    
+    // Remove from heartbeat tracking
+    removeBotHeartbeat(username);
+    
+    // Remove from global activeBots
+    if (bot && activeBots.has(bot)) {
+      activeBots.delete(bot);
+    }
+    
+    // Remove from supply chain manager
+    if (globalSupplyChainManager && globalSupplyChainManager.activeBots.has(username)) {
+      globalSupplyChainManager.unregisterBot(username);
+    }
+    
+    // Remove from swarm coordinator
+    if (globalSwarmCoordinator && globalSwarmCoordinator.bots.has(username)) {
+      globalSwarmCoordinator.unregisterBot(username);
+    }
+  }
+  
+  // Also clean up any bots in activeBots that aren't in heartbeat tracking
+  const orphanedBots = [];
+  for (const bot of activeBots) {
+    if (!botHeartbeats.has(bot.username)) {
+      orphanedBots.push(bot);
+    }
+  }
+  
+  for (const bot of orphanedBots) {
+    console.log(`[SWEEP] Removing orphaned bot: ${bot.username}`);
+    activeBots.delete(bot);
+  }
+  
+  // Perform swarm manager sweep if available
+  let swarmCleanupCount = 0;
+  if (globalSwarmCoordinator && globalSwarmCoordinator.performSwarmSweep) {
+    swarmCleanupCount = globalSwarmCoordinator.performSwarmSweep();
+  }
+  
+  const totalCleaned = deadBots.length + orphanedBots.length + swarmCleanupCount;
+  if (totalCleaned > 0) {
+    updateGlobalAnalytics();
+    console.log(`[SWEEP] Cleaned up ${totalCleaned} inactive bots (${deadBots.length} heartbeat, ${orphanedBots.length} orphaned, ${swarmCleanupCount} swarm)`);
+  }
+}
+
+// Start the periodic sweep
+let botSweepInterval = null;
+function startBotSweep() {
+  if (botSweepInterval) {
+    clearInterval(botSweepInterval);
+  }
+  
+  botSweepInterval = safeSetInterval(performBotSweep, SWEEP_INTERVAL, 'bot-sweep');
+  console.log('[SWEEP] Bot cleanup sweep started');
+}
+
+function stopBotSweep() {
+  if (botSweepInterval) {
+    clearTrackedInterval(botSweepInterval);
+    botSweepInterval = null;
+    console.log('[SWEEP] Bot cleanup sweep stopped');
   }
 }
 
@@ -1743,16 +1849,26 @@ function updateGlobalAnalytics() {
     dupeSuccesses: 0
   };
   
-  activeBots.forEach(bot => {
-    const stats = bot.localAnalytics || {};
-    summary.kills += stats.kills || 0;
-    summary.deaths += stats.deaths || 0;
-    summary.damageDealt += stats.damageDealt || 0;
-    summary.damageTaken += stats.damageTaken || 0;
-    summary.stashesFound += stats.stashesFound || 0;
-    summary.dupeAttempts += stats.dupeAttempts || 0;
-    summary.dupeSuccesses += stats.dupeSuccesses || 0;
-  });
+  // Use a safe iteration that handles disappearing bots
+  const botsToProcess = Array.from(activeBots).filter(bot => bot && bot.username);
+  
+  for (const bot of botsToProcess) {
+    try {
+      const stats = bot.localAnalytics || {};
+      summary.kills += stats.kills || 0;
+      summary.deaths += stats.deaths || 0;
+      summary.damageDealt += stats.damageDealt || 0;
+      summary.damageTaken += stats.damageTaken || 0;
+      summary.stashesFound += stats.stashesFound || 0;
+      summary.dupeAttempts += stats.dupeAttempts || 0;
+      summary.dupeSuccesses += stats.dupeSuccesses || 0;
+    } catch (err) {
+      console.log(`[ANALYTICS] Error processing stats for bot ${bot.username}: ${err.message}`);
+      // Remove problematic bot from tracking
+      activeBots.delete(bot);
+      removeBotHeartbeat(bot.username);
+    }
+  }
   
   config.analytics.combat.kills = summary.kills;
   config.analytics.combat.deaths = summary.deaths;
@@ -10070,6 +10186,13 @@ class SwarmManager {
   }
   
   handleMessage(message, ws) {
+    // Update lastSeen timestamp for this bot
+    if (message.username && this.bots.has(message.username)) {
+      const botInfo = this.bots.get(message.username);
+      botInfo.lastSeen = Date.now();
+      botInfo.ws = ws; // Update WebSocket reference in case it changed
+    }
+    
     switch (message.type) {
       case 'ATTACK_ALERT':
         this.handleAttackAlert(message);
@@ -10116,6 +10239,52 @@ class SwarmManager {
     
     config.swarm.bots.push(message.username);
     console.log(`[SWARM] Registered bot: ${message.username} (${message.role})`);
+  }
+  
+  unregisterBot(username) {
+    if (this.bots.has(username)) {
+      const botInfo = this.bots.get(username);
+      
+      // Close WebSocket connection if open
+      if (botInfo.ws && botInfo.ws.readyState === WebSocket.OPEN) {
+        botInfo.ws.close();
+      }
+      
+      // Remove from tracking
+      this.bots.delete(username);
+      
+      // Remove from config
+      const configIndex = config.swarm.bots.indexOf(username);
+      if (configIndex >= 0) {
+        config.swarm.bots.splice(configIndex, 1);
+      }
+      
+      console.log(`[SWARM] Unregistered bot: ${username}`);
+    }
+  }
+  
+  // Periodic cleanup for swarm bots with no heartbeat
+  performSwarmSweep() {
+    const now = Date.now();
+    const deadBots = [];
+    
+    for (const [username, botInfo] of this.bots.entries()) {
+      // Check if WebSocket is still connected
+      if (!botInfo.ws || botInfo.ws.readyState !== WebSocket.OPEN) {
+        deadBots.push(username);
+      }
+      // Check if bot hasn't sent any message recently (timeout after 60 seconds)
+      else if (now - botInfo.lastSeen > 60000) {
+        deadBots.push(username);
+      }
+    }
+    
+    for (const username of deadBots) {
+      console.log(`[SWARM] Removing inactive bot: ${username}`);
+      this.unregisterBot(username);
+    }
+    
+    return deadBots.length;
   }
   
   handleAttackAlert(alert) {
@@ -27674,6 +27843,13 @@ async function launchBot(username, role = 'fighter') {
   registerBot(bot);
   updateGlobalAnalytics();
   
+  // Start periodic heartbeat updates for this bot
+  const heartbeatUpdateInterval = safeSetInterval(() => {
+    if (bot && bot.username && bot.entity) {
+      updateBotHeartbeat(bot.username, bot);
+    }
+  }, 5000, `heartbeat-${bot.username}`); // Update every 5 seconds
+  
   // Store component references on bot for access
   bot.combatAI = combatAI;
   bot.combatLogger = combatLogger;
@@ -28472,6 +28648,9 @@ async function launchBot(username, role = 'fighter') {
       
       // === COMPREHENSIVE CLEANUP (Issues #5, #6, #7) ===
       
+      // Stop the bot sweep system
+      stopBotSweep();
+      
       // Clear all intervals
       clearAllIntervals();
       
@@ -28580,6 +28759,30 @@ async function launchBot(username, role = 'fighter') {
       
       console.log('[CLEANUP] All references cleared');
       
+      setTimeout(() => launchBot(username, role), 5000);
+    });
+    
+    // Handle kick events - unregister bot from all tracking systems
+    bot.on('kicked', (reason) => {
+      console.log(`[KICKED] Bot ${bot.username} was kicked: ${reason}`);
+      
+      // Unregister from supply chain manager
+      if (globalSupplyChainManager && globalSupplyChainManager.activeBots.has(bot.username)) {
+        globalSupplyChainManager.unregisterBot(bot.username);
+      }
+      
+      // Unregister from swarm coordinator if connected
+      if (globalSwarmCoordinator && globalSwarmCoordinator.bots.has(bot.username)) {
+        globalSwarmCoordinator.unregisterBot(bot.username);
+      }
+      
+      // Unregister bot from global tracking
+      unregisterBot(bot);
+      updateGlobalAnalytics();
+      
+      console.log('[KICKED] Bot unregistered from all systems due to kick');
+      
+      // Schedule reconnection
       setTimeout(() => launchBot(username, role), 5000);
     });
     
@@ -30486,6 +30689,9 @@ async function initializeHunterX() {
   
   // Initialize global config-dependent resources now that config is loaded
   initializeGlobalConfigDependencies();
+  
+  // Start the bot cleanup sweep system
+  startBotSweep();
   
   // Load neural models after config is available
   loadNeuralModels();
