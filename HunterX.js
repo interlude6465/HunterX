@@ -59,6 +59,419 @@ const Vec3 = require('vec3').Vec3;
 // so that all functions including loadConfiguration() can access it
 let config = {};
 
+// === CENTRALIZED INPUT VALIDATION SYSTEM ===
+// Comprehensive validators for all user-provided inputs
+
+class InputValidator {
+  constructor() {
+    this.errors = [];
+    this.warnings = [];
+  }
+
+  // Reset error/warning state
+  reset() {
+    this.errors = [];
+    this.warnings = [];
+  }
+
+  // Add error message
+  addError(message) {
+    this.errors.push(message);
+  }
+
+  // Add warning message
+  addWarning(message) {
+    this.warnings.push(message);
+  }
+
+  // Get validation result
+  getResult() {
+    return {
+      isValid: this.errors.length === 0,
+      errors: [...this.errors],
+      warnings: [...this.warnings]
+    };
+  }
+
+  // Validate server IP:PORT format
+  validateServerAddress(address) {
+    this.reset();
+    
+    if (!address || typeof address !== 'string') {
+      this.addError('Server address is required and must be a string');
+      return this.getResult();
+    }
+
+    const trimmed = address.trim();
+    if (trimmed.length === 0) {
+      this.addError('Server address cannot be empty');
+      return this.getResult();
+    }
+
+    // Check for IP:PORT format
+    const parts = trimmed.split(':');
+    if (parts.length !== 2) {
+      this.addError('Server address must be in format "IP:PORT" (e.g., "localhost:25565")');
+      return this.getResult();
+    }
+
+    const [ip, port] = parts;
+    
+    // Validate IP/hostname
+    if (!this.validateIP(ip).isValid && !this.validateHostname(ip).isValid) {
+      this.addError('Invalid IP address or hostname');
+      return this.getResult();
+    }
+
+    // Validate port
+    const portValidation = this.validatePort(port);
+    if (!portValidation.isValid) {
+      this.errors.push(...portValidation.errors);
+      return this.getResult();
+    }
+
+    return this.getResult();
+  }
+
+  // Validate IP address (IPv4)
+  validateIP(ip) {
+    this.reset();
+    
+    if (!ip || typeof ip !== 'string') {
+      this.addError('IP address is required');
+      return this.getResult();
+    }
+
+    const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    if (!ipv4Regex.test(ip.trim())) {
+      this.addError('Invalid IPv4 format (e.g., "192.168.1.1")');
+      return this.getResult();
+    }
+
+    const octets = ip.trim().split('.');
+    for (const octet of octets) {
+      const num = parseInt(octet);
+      if (num < 0 || num > 255) {
+        this.addError(`IP octet "${octet}" must be between 0 and 255`);
+        return this.getResult();
+      }
+    }
+
+    return this.getResult();
+  }
+
+  // Validate hostname
+  validateHostname(hostname) {
+    this.reset();
+    
+    if (!hostname || typeof hostname !== 'string') {
+      this.addError('Hostname is required');
+      return this.getResult();
+    }
+
+    const trimmed = hostname.trim();
+    if (trimmed.length === 0) {
+      this.addError('Hostname cannot be empty');
+      return this.getResult();
+    }
+
+    if (trimmed.length > 253) {
+      this.addError('Hostname too long (max 253 characters)');
+      return this.getResult();
+    }
+
+    // Basic hostname validation
+    const hostnameRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$/;
+    if (!hostnameRegex.test(trimmed)) {
+      this.addError('Invalid hostname format');
+      return this.getResult();
+    }
+
+    return this.getResult();
+  }
+
+  // Validate port number
+  validatePort(port) {
+    this.reset();
+    
+    const portNum = typeof port === 'string' ? parseInt(port.trim()) : port;
+    
+    if (isNaN(portNum)) {
+      this.addError('Port must be a valid number');
+      return this.getResult();
+    }
+
+    if (portNum < 1 || portNum > 65535) {
+      this.addError('Port must be between 1 and 65535');
+      return this.getResult();
+    }
+
+    // Warn about common system ports
+    if (portNum < 1024) {
+      this.addWarning(`Port ${portNum} is a privileged port - ensure you have permission`);
+    }
+
+    return this.getResult();
+  }
+
+  // Validate Minecraft username
+  validateUsername(username) {
+    this.reset();
+    
+    if (!username || typeof username !== 'string') {
+      this.addError('Username is required and must be a string');
+      return this.getResult();
+    }
+
+    const trimmed = username.trim();
+    if (trimmed.length === 0) {
+      this.addError('Username cannot be empty');
+      return this.getResult();
+    }
+
+    if (trimmed.length < 3) {
+      this.addError('Username must be at least 3 characters');
+      return this.getResult();
+    }
+
+    if (trimmed.length > 16) {
+      this.addError('Username cannot exceed 16 characters');
+      return this.getResult();
+    }
+
+    // Minecraft username validation (letters, numbers, underscores)
+    const usernameRegex = /^[a-zA-Z0-9_]+$/;
+    if (!usernameRegex.test(trimmed)) {
+      this.addError('Username can only contain letters, numbers, and underscores');
+      return this.getResult();
+    }
+
+    // Check for reserved usernames (basic list)
+    const reservedNames = ['admin', 'moderator', 'server', 'system', 'console', 'op', 'operator'];
+    if (reservedNames.includes(trimmed.toLowerCase())) {
+      this.addWarning(`"${trimmed}" may be a reserved username`);
+    }
+
+    return this.getResult();
+  }
+
+  // Validate bot count
+  validateBotCount(count, min = 1, max = 10) {
+    this.reset();
+    
+    const numCount = typeof count === 'string' ? parseInt(count.trim()) : count;
+    
+    if (isNaN(numCount)) {
+      this.addError('Bot count must be a valid number');
+      return this.getResult();
+    }
+
+    if (numCount < min) {
+      this.addError(`Bot count must be at least ${min}`);
+      return this.getResult();
+    }
+
+    if (numCount > max) {
+      this.addError(`Bot count cannot exceed ${max} (performance limit)`);
+      return this.getResult();
+    }
+
+    return this.getResult();
+  }
+
+  // Validate trust level
+  validateTrustLevel(trustLevel) {
+    this.reset();
+    
+    const validLevels = ['untrusted', 'neutral', 'trusted', 'admin', 'owner'];
+    
+    if (!trustLevel || typeof trustLevel !== 'string') {
+      this.addError('Trust level is required and must be a string');
+      return this.getResult();
+    }
+
+    const trimmed = trustLevel.trim().toLowerCase();
+    if (!validLevels.includes(trimmed)) {
+      this.addError(`Invalid trust level. Valid options: ${validLevels.join(', ')}`);
+      return this.getResult();
+    }
+
+    return this.getResult();
+  }
+
+  // Validate proxy configuration
+  validateProxyConfig(proxyConfig) {
+    this.reset();
+    
+    if (!proxyConfig || typeof proxyConfig !== 'object') {
+      this.addError('Proxy configuration must be an object');
+      return this.getResult();
+    }
+
+    if (proxyConfig.enabled) {
+      if (!proxyConfig.host || typeof proxyConfig.host !== 'string') {
+        this.addError('Proxy host is required when proxy is enabled');
+        return this.getResult();
+      }
+
+      const hostValidation = this.validateHostname(proxyConfig.host);
+      if (!hostValidation.isValid) {
+        this.errors.push(...hostValidation.errors);
+        return this.getResult();
+      }
+
+      if (!proxyConfig.port) {
+        this.addError('Proxy port is required when proxy is enabled');
+        return this.getResult();
+      }
+
+      const portValidation = this.validatePort(proxyConfig.port);
+      if (!portValidation.isValid) {
+        this.errors.push(...portValidation.errors);
+        return this.getResult();
+      }
+    }
+
+    return this.getResult();
+  }
+
+  // Validate task JSON for API endpoints
+  validateTaskJSON(taskData) {
+    this.reset();
+    
+    if (!taskData || typeof taskData !== 'object') {
+      this.addError('Task data must be a valid JSON object');
+      return this.getResult();
+    }
+
+    // Required fields
+    if (!taskData.type || typeof taskData.type !== 'string') {
+      this.addError('Task must have a "type" field');
+      return this.getResult();
+    }
+
+    // Validate task type
+    const validTaskTypes = ['mine', 'collect', 'craft', 'build', 'move', 'attack', 'defend'];
+    if (!validTaskTypes.includes(taskData.type.toLowerCase())) {
+      this.addWarning(`Unknown task type "${taskData.type}"`);
+    }
+
+    // Validate priority if provided
+    if (taskData.priority !== undefined) {
+      const priority = parseInt(taskData.priority);
+      if (isNaN(priority) || priority < 1 || priority > 10) {
+        this.addError('Task priority must be a number between 1 and 10');
+        return this.getResult();
+      }
+    }
+
+    // Validate coordinates if provided
+    if (taskData.coordinates) {
+      const coordValidation = this.validateCoordinates(taskData.coordinates);
+      if (!coordValidation.isValid) {
+        this.errors.push(...coordValidation.errors);
+        return this.getResult();
+      }
+    }
+
+    return this.getResult();
+  }
+
+  // Validate coordinates
+  validateCoordinates(coords) {
+    this.reset();
+    
+    if (!coords || typeof coords !== 'object') {
+      this.addError('Coordinates must be an object');
+      return this.getResult();
+    }
+
+    if (coords.x === undefined || coords.y === undefined || coords.z === undefined) {
+      this.addError('Coordinates must include x, y, and z values');
+      return this.getResult();
+    }
+
+    for (const [axis, value] of Object.entries({ x: coords.x, y: coords.y, z: coords.z })) {
+      if (typeof value !== 'number' || isNaN(value)) {
+        this.addError(`Coordinate ${axis} must be a valid number`);
+        return this.getResult();
+      }
+      
+      // Minecraft coordinate limits
+      if (Math.abs(value) > 30000000) {
+        this.addWarning(`Coordinate ${axis} (${value}) exceeds Minecraft world limits`);
+      }
+    }
+
+    return this.getResult();
+  }
+
+  // Sanitize string input
+  sanitizeString(input, maxLength = 1000) {
+    if (!input || typeof input !== 'string') {
+      return '';
+    }
+
+    return input
+      .trim()
+      .replace(/[<>]/g, '') // Remove potential HTML
+      .substring(0, maxLength);
+  }
+
+  // Sanitize username (more restrictive)
+  sanitizeUsername(username) {
+    if (!username || typeof username !== 'string') {
+      return '';
+    }
+
+    return username
+      .trim()
+      .replace(/[^a-zA-Z0-9_]/g, '') // Only allowed chars
+      .substring(0, 16);
+  }
+}
+
+// Global validator instance
+const validator = new InputValidator();
+
+// Helper functions for common validation tasks
+function validateAndSanitizeInput(input, type, options = {}) {
+  switch (type) {
+    case 'server':
+      const serverResult = validator.validateServerAddress(input);
+      if (serverResult.isValid) {
+        return { valid: true, sanitized: validator.sanitizeString(input) };
+      }
+      return { valid: false, errors: serverResult.errors };
+
+    case 'username':
+      const userResult = validator.validateUsername(input);
+      if (userResult.isValid) {
+        return { valid: true, sanitized: validator.sanitizeUsername(input) };
+      }
+      return { valid: false, errors: userResult.errors };
+
+    case 'port':
+      const portResult = validator.validatePort(input);
+      return { valid: portResult.isValid, errors: portResult.errors };
+
+    case 'botCount':
+      const countResult = validator.validateBotCount(input, options.min, options.max);
+      return { valid: countResult.isValid, errors: countResult.errors };
+
+    case 'trustLevel':
+      const trustResult = validator.validateTrustLevel(input);
+      return { valid: trustResult.isValid, errors: trustResult.errors };
+
+    case 'taskJSON':
+      const taskResult = validator.validateTaskJSON(input);
+      return { valid: taskResult.isValid, errors: taskResult.errors };
+
+    default:
+      return { valid: false, errors: ['Unknown validation type'] };
+  }
+}
+
 // === ENHANCED NEURAL BRAIN SYSTEM WITH MULTIPLE FALLBACKS ===
 // Supports ml5.js, brain.js, synaptic, tensorflow with graceful fallbacks
 
@@ -15569,25 +15982,45 @@ class ConversationAI {
   async handleMessage(username, message) {
       console.log(`[CHAT] ${username}: ${message}`);
 
+      // Validate username using centralized validator
+      const userValidation = validateAndSanitizeInput(username, 'username');
+      if (!userValidation.valid) {
+        console.log(`[CHAT] ⚠️ Invalid username "${username}": ${userValidation.errors.join(', ')}`);
+        return; // Ignore messages from invalid usernames
+      }
+
+      // Sanitize message to prevent potential issues
+      const sanitizedMessage = validator.sanitizeString(message, 500); // Limit message length
+      if (sanitizedMessage !== message) {
+        console.log(`[CHAT] ⚠️ Message sanitized from "${message}" to "${sanitizedMessage}"`);
+      }
+
       // Log message to interceptor
       if (globalMessageInterceptor) {
-        globalMessageInterceptor.logMessage(username, message, 'chat');
+        globalMessageInterceptor.logMessage(userValidation.sanitized, sanitizedMessage, 'chat');
       }
 
       // Handle /msg relay for trusted+ users
-      if (message.startsWith('/msg ') || message.startsWith('/w ') || message.startsWith('/tell ')) {
-        await this.handlePrivateMessage(username, message);
+      if (sanitizedMessage.startsWith('/msg ') || sanitizedMessage.startsWith('/w ') || sanitizedMessage.startsWith('/tell ')) {
+        await this.handlePrivateMessage(userValidation.sanitized, sanitizedMessage);
         return;
       }
 
       // Handle group commands (!! prefix)
-      if (message.startsWith('!!')) {
-        console.log(`[COMMAND] Group command detected: ${message}`);
-        if (!this.isWhitelisted(username)) {
+      if (sanitizedMessage.startsWith('!!')) {
+        console.log(`[COMMAND] Group command detected: ${sanitizedMessage}`);
+        if (!this.isWhitelisted(userValidation.sanitized)) {
           this.bot.chat("Sorry, only whitelisted players can give me commands!");
           return;
         }
-        const cleanCommand = message.substring(2).trim();
+        const cleanCommand = sanitizedMessage.substring(2).trim();
+        
+        // Validate command length to prevent abuse
+        if (cleanCommand.length > 100) {
+          this.bot.chat("Command too long! Please keep it under 100 characters.");
+          return;
+        }
+        
         if (globalSwarmCoordinator) {
           console.log(`[COMMAND] Broadcasting group command: ${cleanCommand}`);
           globalSwarmCoordinator.broadcastCommand(cleanCommand);
@@ -27081,15 +27514,27 @@ async function launchBot(username, role = 'fighter') {
     throw new Error('Server not configured');
   }
   
+  // Validate username using centralized validator
+  const userValidation = validateAndSanitizeInput(username, 'username');
+  if (!userValidation.valid) {
+    console.log(`[SPAWNER] ❌ Invalid username "${username}":`);
+    userValidation.errors.forEach(error => console.log(`[SPAWNER]   - ${error}`));
+    throw new Error(`Invalid username: ${userValidation.errors.join(', ')}`);
+  }
+  
+  // Use sanitized username
+  const sanitizedUsername = userValidation.sanitized;
+  console.log(`[SPAWNER] ✅ Username validated: ${sanitizedUsername}`);
+  
   if (!globalBotSpawner) {
     globalBotSpawner = new BotSpawner();
   }
   
   let bot;
   try {
-    bot = await globalBotSpawner.spawnBot(config.server, { username, role });
+    bot = await globalBotSpawner.spawnBot(config.server, { username: sanitizedUsername, role });
   } catch (err) {
-    console.log(`[SPAWNER] Failed to initialize bot ${username}: ${err.message}`);
+    console.log(`[SPAWNER] Failed to initialize bot ${sanitizedUsername}: ${err.message}`);
     throw err;
   }
   
@@ -28643,10 +29088,22 @@ async function launchSwarm() {
           req.on('end', () => {
             try {
               const task = JSON.parse(body);
+              
+              // Validate task using centralized validator
+              const taskValidation = validateAndSanitizeInput(task, 'taskJSON');
+              if (!taskValidation.valid) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ 
+                  error: 'Invalid task data', 
+                  details: taskValidation.errors 
+                }));
+                return;
+              }
+              
               if (globalSupplyChainManager) {
                 globalSupplyChainManager.taskQueue.addTask(task);
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: true, message: 'Task added to queue' }));
+                res.end(JSON.stringify({ success: true, message: 'Task validated and added to queue' }));
               } else {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Supply chain manager not initialized' }));
@@ -28721,10 +29178,30 @@ async function launchSwarm() {
   
   rl.question('Server IP:PORT: ', (server) => {
     const cfg = global.config || config;
-    cfg.server = server.trim();
     
+    // Validate server address using centralized validator
+    const serverValidation = validateAndSanitizeInput(server, 'server');
+    if (!serverValidation.valid) {
+      console.log('❌ Invalid server address:');
+      serverValidation.errors.forEach(error => console.log(`   - ${error}`));
+      rl.close();
+      return;
+    }
+    
+    cfg.server = serverValidation.sanitized;
+    console.log(`✅ Server address validated: ${cfg.server}`);
+
     rl.question('Number of worker bots to launch (1-5): ', (count) => {
-      const botCount = Math.min(5, Math.max(1, parseInt(count) || 2));
+      // Validate bot count using centralized validator
+      const countValidation = validateAndSanitizeInput(count, 'botCount', { min: 1, max: 5 });
+      if (!countValidation.valid) {
+        console.log('❌ Invalid bot count:');
+        countValidation.errors.forEach(error => console.log(`   - ${error}`));
+        rl.close();
+        return;
+      }
+      
+      const botCount = parseInt(count.trim());
       
       // Save configuration before launching bots
       if (saveConfiguration()) {
@@ -29409,33 +29886,39 @@ function validateConfig(configToValidate) {
   return true;
 }
 
-// Basic credential validation for setup wizard
+// Basic credential validation for setup wizard - now using centralized validator
 function validateBasicCredentials(username, password, authType) {
-  if (!username || username.length < 3) {
-    return { valid: false, error: 'Username must be at least 3 characters' };
+  const userValidation = validateAndSanitizeInput(username, 'username');
+  if (!userValidation.valid) {
+    return { valid: false, error: userValidation.errors.join(', ') };
   }
-  
+
   if (!password || password.length < 6) {
     return { valid: false, error: 'Password must be at least 6 characters' };
   }
-  
+
   if (!['microsoft', 'mojang'].includes(authType)) {
     return { valid: false, error: 'Auth type must be microsoft or mojang' };
   }
-  
+
   return { valid: true, error: null };
 }
 
-// Basic proxy validation for setup wizard
+// Basic proxy validation for setup wizard - now using centralized validator
 function validateBasicProxy(host, port) {
-  if (!host || host.trim().length === 0) {
-    return { valid: false, error: 'Proxy host is required' };
+  const proxyConfig = {
+    enabled: true,
+    host: host.trim(),
+    port: port.trim(),
+    username: '',
+    password: ''
+  };
+
+  const proxyValidation = validator.validateProxyConfig(proxyConfig);
+  if (!proxyValidation.isValid) {
+    return { valid: false, error: proxyValidation.errors.join(', ') };
   }
-  
-  if (!port || isNaN(port.trim()) || parseInt(port.trim()) <= 0 || parseInt(port.trim()) > 65535) {
-    return { valid: false, error: 'Valid port number (1-65535) is required' };
-  }
-  
+
   return { valid: true, error: null };
 }
 
@@ -29578,16 +30061,23 @@ function runSetupWizard() {
         const cfg = global.config || config;
         if (cfg.localAccount) {
           cfg.localAccount.authType = authType.trim() || 'microsoft';
-          
-          // Basic validation
-          if (cfg.localAccount.username.length < 3) {
-            console.log('⚠️ Username should be at least 3 characters');
+
+          // Validate username using centralized validator
+          const userValidation = validateAndSanitizeInput(cfg.localAccount.username, 'username');
+          if (!userValidation.valid) {
+            console.log('❌ Invalid username:');
+            userValidation.errors.forEach(error => console.log(`   - ${error}`));
+          } else {
+            console.log('✅ Username validated');
+            cfg.localAccount.username = userValidation.sanitized;
           }
-          if (cfg.localAccount.password.length < 6) {
+
+          // Validate password length
+          if (cfg.localAccount.password && cfg.localAccount.password.length < 6) {
             console.log('⚠️ Password should be at least 6 characters');
           }
         }
-        
+
         console.log('🔍 Note: Full credential validation will occur during server connection');
         console.log('✅ Account configuration saved!');
         
@@ -29605,23 +30095,28 @@ function runSetupWizard() {
                   rl.question('Proxy Password (optional, press Enter to skip): ', (proxyPass) => {
                     const cfg = global.config || config;
                     
-                    // Basic validation
-                    if (!host.trim()) {
-                      console.log('⚠️ Proxy host is required');
-                      cfg.proxy = { enabled: false, host: '', port: '', username: '', password: '' };
-                    } else if (!port.trim() || isNaN(port.trim())) {
-                      console.log('⚠️ Valid proxy port is required');
+                    // Validate proxy configuration using centralized validator
+                    const proxyConfig = {
+                      enabled: true,
+                      host: host.trim(),
+                      port: port.trim(),
+                      username: proxyUser.trim(),
+                      password: proxyPass.trim()
+                    };
+                    
+                    const proxyValidation = validator.validateProxyConfig(proxyConfig);
+                    if (!proxyValidation.isValid) {
+                      console.log('❌ Invalid proxy configuration:');
+                      proxyValidation.errors.forEach(error => console.log(`   - ${error}`));
                       cfg.proxy = { enabled: false, host: '', port: '', username: '', password: '' };
                     } else {
-                      cfg.proxy = { 
-                        enabled: true,
-                        host: host.trim(),
-                        port: port.trim(),
-                        username: proxyUser.trim(),
-                        password: proxyPass.trim()
-                      };
+                      cfg.proxy = proxyConfig;
+                      console.log('✅ Proxy configuration validated and saved!');
+                      if (proxyValidation.warnings.length > 0) {
+                        console.log('⚠️ Warnings:');
+                        proxyValidation.warnings.forEach(warning => console.log(`   - ${warning}`));
+                      }
                       console.log('🔍 Note: Proxy connection will be tested during server connection');
-                      console.log('✅ Proxy configuration saved!');
                     }
                     
                     // Save configuration and continue
