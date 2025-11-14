@@ -712,15 +712,80 @@ class NeuralBrainManager {
     }
   }
   
+  /**
+   * Normalize neural network output to a consistent format
+   * @param {*} rawOutput - Raw output from any backend
+   * @param {string} backend - Backend type (ml5, brain.js, synaptic, tensorflow, fallback)
+   * @param {string} modelName - Model name (combat, placement, conversation, etc)
+   * @returns {Object} Normalized output with values array, confidence, and metadata
+   */
+  normalizeOutput(rawOutput, backend, modelName) {
+    let values = [];
+    
+    // Convert various output types to plain array
+    if (rawOutput === null || rawOutput === undefined) {
+      values = [];
+    } else if (Array.isArray(rawOutput)) {
+      values = Array.from(rawOutput);
+    } else if (typeof rawOutput === 'object') {
+      // Handle ml5 and brain.js object outputs
+      if (rawOutput.data && Array.isArray(rawOutput.data)) {
+        values = Array.from(rawOutput.data);
+      } else if (rawOutput.values && Array.isArray(rawOutput.values)) {
+        values = Array.from(rawOutput.values);
+      } else if (rawOutput.label !== undefined) {
+        // ml5 classification output
+        values = [rawOutput.confidence || 0];
+      } else if (ArrayBuffer.isView(rawOutput)) {
+        // TypedArray (Float32Array, etc) from TensorFlow
+        values = Array.from(rawOutput);
+      } else {
+        // Generic object - try to extract numeric values
+        const objValues = Object.values(rawOutput);
+        if (objValues.length > 0 && objValues.every(v => typeof v === 'number')) {
+          values = objValues;
+        } else {
+          values = [];
+        }
+      }
+    } else if (ArrayBuffer.isView(rawOutput)) {
+      // TypedArray directly
+      values = Array.from(rawOutput);
+    } else if (typeof rawOutput === 'number') {
+      values = [rawOutput];
+    } else {
+      values = [];
+    }
+    
+    // Calculate overall confidence from values
+    // For classification: max probability
+    // For regression: inverse of variance or just the mean
+    let confidence = 0;
+    if (values.length > 0) {
+      const allNumeric = values.every(v => typeof v === 'number' && !isNaN(v));
+      if (allNumeric) {
+        confidence = Math.max(...values);
+      }
+    }
+    
+    return {
+      values: values,
+      confidence: confidence,
+      backend: backend,
+      modelName: modelName
+    };
+  }
+  
   async predict(modelName, input, fallbackOutput = null) {
     if (this.type === 'fallback') {
-      return this.fallbackPrediction(modelName, input, fallbackOutput);
+      const fallbackResult = this.fallbackPrediction(modelName, input, fallbackOutput);
+      return this.normalizeOutput(fallbackResult, 'fallback', modelName);
     }
     
     try {
       const model = this.models[modelName];
       if (!model) {
-        return fallbackOutput !== null ? fallbackOutput : null;
+        return this.normalizeOutput(fallbackOutput, this.type, modelName);
       }
       
       // Handle ml5 lazy initialization
@@ -728,31 +793,37 @@ class NeuralBrainManager {
         await this.initializeML5Model(modelName);
       }
       
+      let rawOutput = null;
+      
       switch (this.type) {
         case 'ml5':
-          return await model.network.predict(input);
+          rawOutput = await model.network.predict(input);
+          return this.normalizeOutput(rawOutput, 'ml5', modelName);
           
         case 'brain.js':
         case 'brainjs-lstm':
-          return model.network.run(input);
+          rawOutput = model.network.run(input);
+          return this.normalizeOutput(rawOutput, 'brain.js', modelName);
           
         case 'synaptic':
-          return model.network.activate(input);
+          rawOutput = model.network.activate(input);
+          return this.normalizeOutput(rawOutput, 'synaptic', modelName);
           
         case 'tensorflow':
           const tensor = this.libraries.tensorflow.tensor2d([input]);
           const result = model.network.predict(tensor);
-          const output = result.dataSync();
+          rawOutput = result.dataSync();
+          // Dispose of TensorFlow resources promptly
           result.dispose();
           tensor.dispose();
-          return output;
+          return this.normalizeOutput(rawOutput, 'tensorflow', modelName);
           
         default:
-          return fallbackOutput !== null ? fallbackOutput : null;
+          return this.normalizeOutput(fallbackOutput, this.type, modelName);
       }
     } catch (error) {
       console.warn(`[NEURAL] Prediction failed on ${modelName}: ${error.message}`);
-      return fallbackOutput !== null ? fallbackOutput : null;
+      return this.normalizeOutput(fallbackOutput, this.type, modelName);
     }
   }
   
@@ -11585,7 +11656,9 @@ class CrystalPvP {
     // Get strategy from neural network
     try {
       const output = await safeNeuralPredict(this.neuralNet, input, 0.5);
-      const strategyScore = Array.isArray(output) ? output[0] : output;
+      // Use normalized output format - check if it's the new format or legacy array
+      const values = (output && Array.isArray(output.values)) ? output.values : (Array.isArray(output) ? output : [output]);
+      const strategyScore = values.length > 0 ? values[0] : 0.5;
       
       // Determine strategy
       if (strategyScore > 0.7) {
@@ -18566,8 +18639,10 @@ class DialogueRL {
         'noop'
       ];
       
-      // Ensure actionProbabilities is iterable
-      const probs = Array.isArray(actionProbabilities) ? actionProbabilities : [actionProbabilities];
+      // Use normalized output format - check if it's the new format or legacy array
+      const probs = (actionProbabilities && Array.isArray(actionProbabilities.values)) 
+        ? actionProbabilities.values 
+        : (Array.isArray(actionProbabilities) ? actionProbabilities : [actionProbabilities]);
       
       // Find best action
       let bestAction = 'fall_back_parser';
@@ -19028,7 +19103,10 @@ class MovementRL {
          'pause_scan'
        ];
 
-       const probs = Array.isArray(actionProbabilities) ? actionProbabilities : [actionProbabilities];
+       // Use normalized output format - check if it's the new format or legacy array
+       const probs = (actionProbabilities && Array.isArray(actionProbabilities.values)) 
+         ? actionProbabilities.values 
+         : (Array.isArray(actionProbabilities) ? actionProbabilities : [actionProbabilities]);
 
        let bestAction = 'standard_pathfinder';
        let bestConfidence = 0;
