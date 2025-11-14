@@ -1958,24 +1958,206 @@ function updateGlobalAnalytics() {
 }
 
 // === WEBSOCKET SAFETY WRAPPER (Issue #9) ===
-function safeSendWebSocket(wsClient, message) {
+// Message queue infrastructure
+const wsMessageQueues = new WeakMap();
+const wsTimeouts = new WeakMap();
+const wsOpenListeners = new WeakMap();
+
+// WebSocket readyState constants (for reference)
+const WS_STATES = {
+  CONNECTING: 0,
+  OPEN: 1,
+  CLOSING: 2,
+  CLOSED: 3
+};
+
+/**
+ * Enhanced WebSocket send with queuing, timeout, and descriptive error handling
+ * @param {WebSocket} wsClient - WebSocket client instance
+ * @param {Object} message - Message to send
+ * @param {Object} options - Configuration options
+ * @param {boolean} options.queue - Queue message if not OPEN (default: true)
+ * @param {number} options.timeout - Timeout in ms for stalled connections (default: 5000)
+ * @returns {Object} {success: boolean, reason: string}
+ */
+function safeSendWebSocket(wsClient, message, options = {}) {
+  const { queue = true, timeout = 5000 } = options;
+  
+  // Validate inputs
   if (!wsClient) {
-    console.log('[WS] Client not initialized');
-    return false;
+    const reason = 'WebSocket client not initialized';
+    console.log(`[WS] ${reason}`);
+    return { success: false, reason };
   }
   
-  if (wsClient.readyState !== WebSocket.OPEN) {
-    console.log(`[WS] Cannot send - state: ${wsClient.readyState}`);
-    return false;
+  if (!message) {
+    const reason = 'Message is empty or null';
+    console.log(`[WS] ${reason}`);
+    return { success: false, reason };
   }
   
-  try {
-    wsClient.send(JSON.stringify(message));
-    return true;
-  } catch (err) {
-    console.log(`[WS] Send failed: ${err.message}`);
-    return false;
+  const readyState = wsClient.readyState;
+  
+  // Try to send immediately if OPEN
+  if (readyState === WS_STATES.OPEN || readyState === 1) {
+    try {
+      wsClient.send(JSON.stringify(message));
+      console.log('[WS] Message sent successfully');
+      return { success: true, reason: 'Message sent successfully' };
+    } catch (err) {
+      const reason = `Send failed: ${err.message}`;
+      console.log(`[WS] ${reason}`);
+      return { success: false, reason };
+    }
   }
+  
+  // Handle non-OPEN states
+  switch (readyState) {
+    case WS_STATES.CONNECTING: {
+      if (!queue) {
+        const reason = 'WebSocket is CONNECTING and queuing is disabled';
+        console.log(`[WS] ${reason}`);
+        return { success: false, reason };
+      }
+      
+      // Queue the message and wait for OPEN
+      return queueMessageUntilOpen(wsClient, message, timeout);
+    }
+    
+    case WS_STATES.CLOSING: {
+      const reason = 'WebSocket is CLOSING - cannot send message';
+      console.log(`[WS] ${reason}`);
+      return { success: false, reason };
+    }
+    
+    case WS_STATES.CLOSED: {
+      const reason = 'WebSocket is CLOSED - cannot send message';
+      console.log(`[WS] ${reason}`);
+      return { success: false, reason };
+    }
+    
+    default: {
+      const reason = `Unknown WebSocket state: ${readyState}`;
+      console.log(`[WS] ${reason}`);
+      return { success: false, reason };
+    }
+  }
+}
+
+// Pending promises for queued messages
+const wsPendingPromises = new WeakMap();
+
+/**
+ * Queue a message until WebSocket opens, with timeout protection
+ * @param {WebSocket} wsClient - WebSocket client instance
+ * @param {Object} message - Message to queue
+ * @param {number} timeout - Timeout in ms
+ * @returns {Object} {success: boolean, reason: string}
+ */
+function queueMessageUntilOpen(wsClient, message, timeout) {
+  return new Promise((resolve) => {
+    // Initialize queue for this WebSocket if needed
+    if (!wsMessageQueues.has(wsClient)) {
+      wsMessageQueues.set(wsClient, []);
+    }
+    
+    // Initialize pending promises array
+    if (!wsPendingPromises.has(wsClient)) {
+      wsPendingPromises.set(wsClient, []);
+    }
+    
+    const queue = wsMessageQueues.get(wsClient);
+    queue.push(message);
+    console.log(`[WS] Message queued (queue size: ${queue.length})`);
+    
+    // Store the resolve function so it can be called when messages flush
+    const pendingPromises = wsPendingPromises.get(wsClient);
+    pendingPromises.push(resolve);
+    
+    // Check if this is the first message being queued (no existing timeout)
+    const hasExistingTimeout = wsTimeouts.has(wsClient);
+    
+    if (!hasExistingTimeout) {
+      // This is the first message - set timeout and register listener
+      
+      // Set timeout for stalled connection
+      const timeoutHandle = setTimeout(() => {
+        // Clean up listener
+        const listener = wsOpenListeners.get(wsClient);
+        if (listener) {
+          wsClient.removeListener('open', listener);
+          wsOpenListeners.delete(wsClient);
+        }
+        wsTimeouts.delete(wsClient);
+        
+        // Resolve all pending promises with timeout error
+        const allPending = wsPendingPromises.get(wsClient) || [];
+        wsPendingPromises.delete(wsClient);
+        wsMessageQueues.delete(wsClient);
+        
+        const reason = `Timeout waiting for WebSocket to open (${timeout}ms)`;
+        console.log(`[WS] ${reason}`);
+        for (const pendingResolve of allPending) {
+          pendingResolve({ success: false, reason });
+        }
+      }, timeout);
+      
+      wsTimeouts.set(wsClient, timeoutHandle);
+      
+      // Register one-time open listener to flush queued messages
+      const openListener = () => {
+        // Clean up the timeout
+        const existingTimeout = wsTimeouts.get(wsClient);
+        if (existingTimeout) {
+          clearTimeout(existingTimeout);
+          wsTimeouts.delete(wsClient);
+        }
+        
+        // Remove listener reference
+        wsOpenListeners.delete(wsClient);
+        
+        // Flush queued messages
+        const messagesToSend = wsMessageQueues.get(wsClient) || [];
+        wsMessageQueues.delete(wsClient);
+        
+        const allPending = wsPendingPromises.get(wsClient) || [];
+        wsPendingPromises.delete(wsClient);
+        
+        let successCount = 0;
+        const failures = [];
+        
+        for (const queuedMessage of messagesToSend) {
+          try {
+            wsClient.send(JSON.stringify(queuedMessage));
+            successCount++;
+          } catch (err) {
+            failures.push(err.message);
+          }
+        }
+        
+        const totalMessages = messagesToSend.length;
+        let successStatus = true;
+        let reason = '';
+        
+        if (failures.length === 0) {
+          reason = `Flushed ${totalMessages} queued message${totalMessages !== 1 ? 's' : ''}`;
+          console.log(`[WS] ${reason}`);
+        } else {
+          successStatus = successCount === totalMessages;
+          reason = `Flushed ${successCount}/${totalMessages} messages (${failures.length} failed)`;
+          console.log(`[WS] ${reason}`);
+        }
+        
+        // Resolve all pending promises with the same result
+        for (const pendingResolve of allPending) {
+          pendingResolve({ success: successStatus, reason });
+        }
+      };
+      
+      wsOpenListeners.set(wsClient, openListener);
+      wsClient.once('open', openListener);
+    }
+  });
 }
 
 // === SAFE PATHFINDING HELPER (Issue #10) ===
