@@ -2756,10 +2756,11 @@ class EquipmentManager {
     this.lastEquipmentCheck = 0;
     this.equipmentCheckInterval = 5000; // Check every 5 seconds
     
-    // Track last equip attempts to prevent infinite loops
-    this.lastEquipAttempts = new Map(); // item.name -> { timestamp, count }
-    this.equipDebounceTime = 2000; // 2 second debounce between equips of same item
-    this.maxEquipAttemptsPerItem = 2; // Max 2 attempts to equip an item
+    // Track last equip attempts to prevent infinite loops - PER-SLOT instead of per-item
+    this.slotDebounceInfo = new Map(); // slot -> { timestamp, processing }
+    this.slotEquipQueues = new Map(); // slot -> Array<{item, timestamp, priority}>
+    this.equipDebounceTime = 1000; // 1 second debounce between equips per slot
+    this.queueProcessingInterval = 500; // Process queues every 500ms
     
     // Setup inventory listener for auto-equipping armor
     this.setupArmorEquipping();
@@ -2784,41 +2785,128 @@ class EquipmentManager {
       this.bot.inventory.on('updateSlot', (oldItem, newItem) => {
         if (newItem && this.isArmorPiece(newItem.name)) {
           console.log(`[EQUIPMENT] Armor picked up: ${newItem.name}`);
-          // Check if we should attempt to equip this item
-          if (this.shouldAttemptEquip(newItem.name)) {
-            this.autoEquipArmor(newItem);
-          }
+          // Queue the item for equip evaluation
+          this.queueArmorForEquip(newItem);
         }
       });
     }
     
-    console.log('[EQUIPMENT] Auto-armor equipping enabled');
+    // Start queue processing
+    this.startQueueProcessor();
+    
+    console.log('[EQUIPMENT] Auto-armor equipping enabled with per-slot queues');
+  }
+  
+  queueArmorForEquip(item) {
+    const slot = this.getArmorSlot(item.name);
+    if (!slot) {
+      console.log(`[EQUIPMENT] Unknown armor type: ${item.name}`);
+      return;
+    }
+    
+    const priority = this.calculateArmorValue(item);
+    const timestamp = Date.now();
+    
+    // Initialize queue for this slot if it doesn't exist
+    if (!this.slotEquipQueues.has(slot)) {
+      this.slotEquipQueues.set(slot, []);
+    }
+    
+    const queue = this.slotEquipQueues.get(slot);
+    
+    // Check if this item is already queued
+    const existingIndex = queue.findIndex(queued => queued.item.name === item.name);
+    if (existingIndex !== -1) {
+      // Update existing entry with new timestamp and priority
+      queue[existingIndex].timestamp = timestamp;
+      queue[existingIndex].priority = priority;
+      console.log(`[EQUIPMENT] Updated queue entry for ${item.name} in ${slot} slot (priority: ${priority})`);
+    } else {
+      // Add new entry
+      queue.push({ item, timestamp, priority });
+      console.log(`[EQUIPMENT] Queued ${item.name} for ${slot} slot (priority: ${priority})`);
+    }
+    
+    // Sort queue by priority (highest first)
+    queue.sort((a, b) => b.priority - a.priority);
+  }
+  
+  startQueueProcessor() {
+    setInterval(() => {
+      this.processEquipQueues();
+    }, this.queueProcessingInterval);
+  }
+  
+  async processEquipQueues() {
+    const now = Date.now();
+    
+    for (const [slot, queue] of this.slotEquipQueues.entries()) {
+      if (queue.length === 0) continue;
+      
+      const debounceInfo = this.slotDebounceInfo.get(slot);
+      const isDebounced = debounceInfo && (now - debounceInfo.timestamp < this.equipDebounceTime);
+      const isProcessing = debounceInfo && debounceInfo.processing;
+      
+      // Skip if we're currently processing
+      if (isProcessing) continue;
+      
+      // Get the highest priority item
+      const nextEquip = queue[0];
+      if (!nextEquip) continue;
+      
+      // Check if this item is still better than what's currently equipped
+      const slotId = this.getEquipmentSlotId(slot);
+      const currentlyEquipped = this.bot.entity && this.bot.entity.equipment && this.bot.entity.equipment[slotId];
+      const currentValue = currentlyEquipped ? this.calculateArmorValue(currentlyEquipped) : 0;
+      
+      if (nextEquip.priority > currentValue) {
+        // If we're in debounce window but a higher priority item is available, allow it
+        if (isDebounced && debounceInfo) {
+          console.log(`[EQUIPMENT] Overriding debounce for higher priority item: ${nextEquip.item.name} (priority: ${nextEquip.priority}) vs current (priority: ${currentValue})`);
+        }
+        
+        // Mark as processing and attempt to equip
+        this.slotDebounceInfo.set(slot, { timestamp: now, processing: true });
+        
+        try {
+          console.log(`[EQUIPMENT] Processing queue: equipping ${nextEquip.item.name} to ${slot} slot`);
+          await this.autoEquipArmor(nextEquip.item);
+          
+          // Remove from queue after successful equip
+          queue.shift();
+          console.log(`[EQUIPMENT] Successfully equipped ${nextEquip.item.name}, removed from queue`);
+        } catch (error) {
+          console.error(`[EQUIPMENT] Failed to equip ${nextEquip.item.name}:`, error.message);
+          // Remove failed item from queue to prevent endless retries
+          queue.shift();
+        } finally {
+          // Clear processing flag and set debounce timestamp
+          this.slotDebounceInfo.set(slot, { timestamp: Date.now(), processing: false });
+        }
+      } else {
+        // Item is not better than current equipment, remove from queue
+        queue.shift();
+        console.log(`[EQUIPMENT] ${nextEquip.item.name} is not better than current equipment, removed from queue`);
+      }
+    }
   }
   
   shouldAttemptEquip(itemName) {
+    // This method is kept for backward compatibility but now delegates to slot-based system
+    const slot = this.getArmorSlot(itemName);
+    if (!slot) return false;
+    
     const now = Date.now();
-    const lastAttempt = this.lastEquipAttempts.get(itemName);
+    const debounceInfo = this.slotDebounceInfo.get(slot);
     
-    // If no previous attempts, allow equip
-    if (!lastAttempt) {
-      this.lastEquipAttempts.set(itemName, { timestamp: now, count: 1 });
+    // If no previous attempts for this slot, allow equip
+    if (!debounceInfo) return true;
+    
+    // If beyond debounce time and not processing, allow equip
+    if (!debounceInfo.processing && (now - debounceInfo.timestamp > this.equipDebounceTime)) {
       return true;
     }
     
-    // If beyond debounce time, reset attempts
-    if (now - lastAttempt.timestamp > this.equipDebounceTime) {
-      this.lastEquipAttempts.set(itemName, { timestamp: now, count: 1 });
-      return true;
-    }
-    
-    // If within debounce time, check attempt count
-    if (lastAttempt.count < this.maxEquipAttemptsPerItem) {
-      lastAttempt.count++;
-      lastAttempt.timestamp = now;
-      return true;
-    }
-    
-    // Max attempts reached within debounce time
     return false;
   }
   
@@ -2894,25 +2982,9 @@ class EquipmentManager {
       
       if (armorItems.length === 0) return;
       
-      // Only equip items that are not already equipped
+      // Queue all armor items for evaluation
       for (const armor of armorItems) {
-        const slot = this.getArmorSlot(armor.name);
-        if (slot) {
-          const slotId = this.getEquipmentSlotId(slot);
-          const currentlyEquipped = this.bot.entity.equipment[slotId];
-          
-          // Skip if already equipped
-          if (currentlyEquipped && currentlyEquipped.name === armor.name) {
-            continue;
-          }
-          
-          // Only equip if we should attempt it (respects debounce)
-          if (this.shouldAttemptEquip(armor.name)) {
-            await this.autoEquipArmor(armor);
-            // Small delay between equips to avoid issues
-            await new Promise(resolve => setTimeout(resolve, 100));
-          }
-        }
+        this.queueArmorForEquip(armor);
       }
     } catch (err) {
       console.log(`[EQUIPMENT] Failed to check/equip armor: ${err.message}`);
