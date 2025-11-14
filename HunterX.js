@@ -31114,7 +31114,12 @@ async function initializeHunterX() {
   initializeGlobalConfigDependencies();
   
   // Start the bot cleanup sweep system
-  startBotSweep();
+  if (typeof startBotSweep === 'function') {
+    startBotSweep();
+  } else {
+    console.error('[INIT] ERROR: startBotSweep function is not defined!');
+    console.error('[INIT] Bot cleanup sweep system will not be available.');
+  }
   
   // Load neural models after config is available
   loadNeuralModels();
