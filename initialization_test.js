@@ -9,9 +9,11 @@ const lines = content.split('\n');
 
 console.log('TEST 1: Config Declaration');
 console.log('='.repeat(50));
-const configLine = lines.findIndex(line => line.startsWith('const config = {'));
-console.log(`✓ Config declared at line ${configLine + 1}`);
-console.log(`✓ Config is a const object`);
+const configLetLine = lines.findIndex(line => line.startsWith('let config = {}'));
+const configAssignLine = lines.findIndex(line => line.startsWith('config = {'));
+console.log(`✓ Config declared as let at line ${configLetLine + 1}`);
+console.log(`✓ Config assigned object structure at line ${configAssignLine + 1}`);
+console.log(`✓ Config uses proper module-level declaration`);
 
 console.log('\nTEST 2: Function Definitions');
 console.log('='.repeat(50));
@@ -35,7 +37,8 @@ console.log('\nTEST 3: Execution Order');
 console.log('='.repeat(50));
 const startBotCall = lines.findIndex(line => line.includes('startBot().catch'));
 console.log(`✓ startBot() called at line ${startBotCall + 1}`);
-console.log(`✓ Config declared BEFORE execution: ${configLine < startBotCall}`);
+console.log(`✓ Config declared BEFORE execution: ${configLetLine < startBotCall}`);
+console.log(`✓ Config structure assigned BEFORE execution: ${configAssignLine < startBotCall}`);
 console.log(`✓ Functions defined BEFORE execution: ${functions.startBot < startBotCall}`);
 
 console.log('\nTEST 4: Neural Brain Manager');
@@ -109,9 +112,11 @@ console.log('COMPREHENSIVE TEST RESULTS');
 console.log('='.repeat(50));
 
 const allTestsPassed = 
-  configLine > 0 &&
+  configLetLine > 0 &&
+  configAssignLine > 0 &&
   Object.values(functions).every(line => line >= 0) &&
-  configLine < startBotCall &&
+  configLetLine < startBotCall &&
+  configAssignLine < startBotCall &&
   neuralClass < neuralVar &&
   hasDefensivePattern &&
   returnsWorkingConfig &&

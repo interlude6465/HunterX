@@ -2263,21 +2263,81 @@ async function safeNeuralLoad(networkName, filePath = null) {
   }
 }
 
-// Load whitelist with auto-migration from legacy format
+// Load whitelist with auto-migration from legacy format and validation
 if (fs.existsSync('./data/whitelist.json')) {
   const whitelistData = safeReadJson('./data/whitelist.json', []);
   
+  // Normalize null/undefined/object maps to empty array
+  let normalizedData = [];
   if (whitelistData) {
-    // Migration: Check if old format (string array) and upgrade
-    if (whitelistData.length > 0 && typeof whitelistData[0] === 'string') {
-      console.log('[WHITELIST] Migrating from legacy format...');
-      config.whitelist = whitelistData.map(name => ({ name, level: 'trusted' }));
-      safeWriteJson('./data/whitelist.json', config.whitelist);
-      console.log(`[WHITELIST] ✅ Migrated ${config.whitelist.length} players to new format`);
-    } else {
-      config.whitelist = whitelistData;
-      console.log(`[WHITELIST] Loaded ${config.whitelist.length} trusted players`);
+    if (Array.isArray(whitelistData)) {
+      normalizedData = whitelistData;
+    } else if (typeof whitelistData === 'object' && whitelistData !== null) {
+      // Convert object map to array format
+      console.log('[WHITELIST] Converting object map to array format...');
+      normalizedData = Object.entries(whitelistData).map(([name, level]) => ({
+        name: String(name),
+        level: typeof level === 'string' ? level : 'trusted'
+      }));
     }
+  }
+  
+  if (normalizedData.length > 0) {
+    let migrationOccurred = false;
+    let validWhitelist = [];
+    
+    // Validate and sanitize each entry
+    for (const entry of normalizedData) {
+      if (typeof entry === 'string') {
+        // Legacy format: string array - migrate to new format
+        migrationOccurred = true;
+        validWhitelist.push({ name: entry.trim(), level: 'trusted' });
+      } else if (typeof entry === 'object' && entry !== null) {
+        // New format: validate structure
+        const name = typeof entry.name === 'string' ? entry.name.trim() : null;
+        const level = typeof entry.level === 'string' ? entry.level : 'trusted';
+        
+        if (name && name.length > 0) {
+          // Valid entry - ensure proper structure
+          validWhitelist.push({ name, level });
+        } else {
+          // Malformed entry - downgrade/skip
+          console.warn(`[WHITELIST] Skipping malformed entry: ${JSON.stringify(entry)}`);
+          migrationOccurred = true;
+        }
+      } else {
+        // Invalid entry type - skip
+        console.warn(`[WHITELIST] Skipping invalid entry type: ${typeof entry}`);
+        migrationOccurred = true;
+      }
+    }
+    
+    // Remove duplicates (case-insensitive)
+    const uniqueWhitelist = [];
+    const seenNames = new Set();
+    for (const entry of validWhitelist) {
+      const lowerName = entry.name.toLowerCase();
+      if (!seenNames.has(lowerName)) {
+        seenNames.add(lowerName);
+        uniqueWhitelist.push(entry);
+      } else {
+        migrationOccurred = true;
+      }
+    }
+    
+    config.whitelist = uniqueWhitelist;
+    
+    // Only rewrite file if migration occurred
+    if (migrationOccurred) {
+      console.log('[WHITELIST] Migration/sanitization occurred, updating file...');
+      safeWriteJson('./data/whitelist.json', config.whitelist);
+      console.log(`[WHITELIST] ✅ Processed ${config.whitelist.length} valid players (migration performed)`);
+    } else {
+      console.log(`[WHITELIST] Loaded ${config.whitelist.length} trusted players (no migration needed)`);
+    }
+  } else {
+    config.whitelist = [];
+    console.log('[WHITELIST] No whitelist data found, starting with empty list');
   }
 }
 
