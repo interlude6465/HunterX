@@ -1092,6 +1092,152 @@ class NeuralBrainManager {
       available: this.initialized
     };
   }
+  
+  createNetwork(modelName, inputSize, outputSize) {
+    try {
+      // Check if this network type already exists
+      if (this.models[modelName]) {
+        console.log(`[NEURAL] Network '${modelName}' already exists`);
+        return this.models[modelName];
+      }
+      
+      console.log(`[NEURAL] Creating network '${modelName}' (inputs: ${inputSize}, outputs: ${outputSize})`);
+      
+      let newNetwork = null;
+      
+      switch (this.type) {
+        case 'ml5':
+          newNetwork = {
+            network: null,
+            type: 'regression',
+            initialized: false,
+            inputSize,
+            outputSize
+          };
+          break;
+          
+        case 'brain.js':
+          if (this.libraries.brain && this.libraries.brain.NeuralNetwork) {
+            newNetwork = {
+              network: new this.libraries.brain.NeuralNetwork({
+                hiddenLayers: [Math.max(64, Math.round((inputSize + outputSize) / 2))]
+              }),
+              type: 'brainjs',
+              inputSize,
+              outputSize
+            };
+          }
+          break;
+          
+        case 'synaptic':
+          if (this.libraries.synaptic) {
+            const { Layer, Network } = this.libraries.synaptic;
+            const createNetwork = (inSize, outSize) => {
+              const inputLayer = new Layer(inSize);
+              const hiddenLayer = new Layer(Math.max(32, Math.round((inSize + outSize) / 2)));
+              const outputLayer = new Layer(outSize);
+              
+              inputLayer.project(hiddenLayer);
+              hiddenLayer.project(outputLayer);
+              
+              return new Network({
+                input: inputLayer,
+                hidden: [hiddenLayer],
+                output: outputLayer
+              });
+            };
+            
+            newNetwork = {
+              network: createNetwork(inputSize, outputSize),
+              type: 'synaptic',
+              inputSize,
+              outputSize
+            };
+          }
+          break;
+          
+        case 'tensorflow':
+          if (this.libraries.tensorflow) {
+            const tf = this.libraries.tensorflow;
+            const model = tf.sequential({
+              layers: [
+                tf.layers.dense({
+                  inputShape: [inputSize],
+                  units: Math.max(64, Math.round((inputSize + outputSize) / 2)),
+                  activation: 'relu'
+                }),
+                tf.layers.dense({
+                  units: Math.max(32, Math.round((inputSize + outputSize) / 4)),
+                  activation: 'relu'
+                }),
+                tf.layers.dense({
+                  units: outputSize,
+                  activation: 'softmax'
+                })
+              ]
+            });
+            
+            model.compile({
+              optimizer: 'adam',
+              loss: 'categoricalCrossentropy',
+              metrics: ['accuracy']
+            });
+            
+            newNetwork = {
+              network: model,
+              type: 'tensorflow',
+              inputSize,
+              outputSize
+            };
+          }
+          break;
+          
+        case 'fallback':
+        default:
+          newNetwork = {
+            network: null,
+            type: 'fallback',
+            inputSize,
+            outputSize,
+            predict: (input) => {
+              // Simple fallback: output equal probabilities
+              return Array(outputSize).fill(1 / outputSize);
+            }
+          };
+          break;
+      }
+      
+      if (newNetwork) {
+        this.models[modelName] = newNetwork;
+        console.log(`[NEURAL] ✓ Network '${modelName}' created successfully (type: ${this.type})`);
+        return newNetwork;
+      } else {
+        console.warn(`[NEURAL] Failed to create network '${modelName}' with type '${this.type}'`);
+        // Return a fallback network
+        const fallbackNet = {
+          network: null,
+          type: 'fallback',
+          inputSize,
+          outputSize,
+          predict: (input) => Array(outputSize).fill(1 / outputSize)
+        };
+        this.models[modelName] = fallbackNet;
+        return fallbackNet;
+      }
+    } catch (error) {
+      console.error(`[NEURAL] Error creating network '${modelName}': ${error.message}`);
+      // Return a fallback network
+      const fallbackNet = {
+        network: null,
+        type: 'fallback',
+        inputSize,
+        outputSize,
+        predict: (input) => Array(outputSize).fill(1 / outputSize)
+      };
+      this.models[modelName] = fallbackNet;
+      return fallbackNet;
+    }
+  }
 }
 
 // Global neural brain manager instance
@@ -18946,13 +19092,13 @@ class DialogueRL {
   initializeModel() {
     try {
       // Initialize dialogue neural network if available
-      if (this.enabled && config.neural && config.neural.manager) {
-        // Network for dialogue action selection: 
+      if (this.enabled && config.neural && config.neural.manager && typeof config.neural.manager.createNetwork === 'function') {
+        // Network for dialogue action selection:
         // Input: [trustLevel, confidence, intentVector (5d), successRate, recentSuccess]
         // Output: 7 possible actions
         const inputSize = 13; // 1 trust + 1 confidence + 5 intent + 1 success rate + 5 recent history
         const outputSize = 7; // 7 possible actions
-        
+
         if (!config.neural.dialogue) {
           config.neural.dialogue = config.neural.manager.createNetwork('dialogue', inputSize, outputSize);
         }
@@ -19346,7 +19492,7 @@ class MovementRL {
 
       initializeModel() {
       try {
-       if (this.enabled && config.neural && config.neural.manager) {
+       if (this.enabled && config.neural && config.neural.manager && typeof config.neural.manager.createNetwork === 'function') {
          // Network for movement action selection
          // Input: [terrain (1), dimension (1), distance (1), elevation (1), hazard (1), equipment (1), dim_scalar (1)]
          // Output: 7 possible movement actions
@@ -30315,6 +30461,21 @@ function ensureConfigStructure(targetConfig) {
       combat: null, placement: null, dupe: null, conversation: null,
       dialogue: null, movement: null, available: false, type: 'fallback', manager: null
     };
+  }
+  
+  // Initialize neural manager if not already initialized
+  if (!cfg.neural.manager || typeof cfg.neural.manager !== 'object') {
+    try {
+      cfg.neural.manager = new NeuralBrainManager();
+      cfg.neural.available = cfg.neural.manager.initialized;
+      cfg.neural.type = cfg.neural.manager.type;
+      console.log(`[CONFIG] Neural manager initialized (available: ${cfg.neural.available}, type: ${cfg.neural.type})`);
+    } catch (error) {
+      console.warn(`[CONFIG] Failed to initialize neural manager: ${error.message}`);
+      cfg.neural.available = false;
+      cfg.neural.type = 'fallback';
+      cfg.neural.manager = null;
+    }
   }
   
   if (!cfg.combat) {
