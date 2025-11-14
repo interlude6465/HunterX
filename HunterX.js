@@ -10861,10 +10861,23 @@ class CombatAI {
     this.combatCheck = null;
     this.hostileMobDetector = new HostileMobDetector();
     this.toolSelector = new ToolSelector(bot);
+    // Error throttling to prevent spam
+    this.lastErrorTime = 0;
+    this.errorCooldown = 5000; // 5 seconds
   }
   
   setCombatLogger(logger) {
     this.combatLogger = logger;
+  }
+  
+  // Error throttling to prevent spam
+  shouldLogError(message) {
+    const now = Date.now();
+    if (now - this.lastErrorTime > this.errorCooldown) {
+      this.lastErrorTime = now;
+      return true;
+    }
+    return false;
   }
   
   hasCrystalResources() {
@@ -10883,25 +10896,56 @@ class CombatAI {
   async executeSmartCombat(attacker) {
     // Smart weapon switching logic
     try {
+      // Validate bot instance
+      if (!this.bot || !this.bot.inventory) {
+        if (this.shouldLogError('Bot or inventory not available')) {
+          console.log('[COMBAT] Bot or inventory not available for combat');
+        }
+        return;
+      }
+      
       const weapon = this.getBestWeapon();
-      if (weapon && this.bot.inventory.slots[weapon.slot]) {
+      
+      // Comprehensive weapon validation
+      if (weapon && 
+          typeof weapon === 'object' && 
+          weapon !== null && 
+          typeof weapon.slot === 'number' && 
+          typeof weapon.name === 'string' &&
+          this.bot.inventory.slots[weapon.slot]) {
         await this.bot.equip(weapon.slot, 'hand');
         console.log(`[COMBAT] Equipped ${weapon.name} for combat`);
+      } else if (weapon === null || weapon === undefined) {
+        // No weapons available - this is not an error, just log occasionally
+        if (this.shouldLogError('No weapons available')) {
+          console.log('[COMBAT] No weapons available for combat');
+        }
+      } else {
+        // Invalid weapon object - this is an error
+        if (this.shouldLogError('Invalid weapon object')) {
+          console.log('[COMBAT] Invalid weapon object in equip (weapon is null or typeof weapon is not object)');
+        }
       }
       
       // Attack with best weapon
-      if (this.bot.pvp && attacker) {
+      if (this.bot.pvp && attacker && typeof attacker === 'object') {
         this.bot.pvp.attack(attacker);
       }
     } catch (err) {
-      console.log(`[COMBAT] executeSmartCombat failed: ${err.message}`);
+      // Throttle error logging to prevent spam
+      if (this.shouldLogError(err.message)) {
+        console.log(`[COMBAT] executeSmartCombat failed: ${err.message}`);
+      }
     }
   }
   
   async executeOptimalAttack(attacker) {
     // Optimal attack logic
     try {
-      if (!attacker || !this.bot.pvp) return;
+      // Defensive checks for bot, attacker, and required components
+      if (!attacker || typeof attacker !== 'object' || !this.bot || !this.bot.pvp || !this.bot.entity) {
+        return;
+      }
       
       // Position for optimal attack
       const distance = this.bot.entity.position.distanceTo(attacker.position);
@@ -10913,18 +10957,34 @@ class CombatAI {
       // Attack
       this.bot.pvp.attack(attacker);
     } catch (err) {
-      console.log(`[COMBAT] executeOptimalAttack failed: ${err.message}`);
+      // Throttle error logging to prevent spam
+      if (this.shouldLogError(err.message)) {
+        console.log(`[COMBAT] executeOptimalAttack failed: ${err.message}`);
+      }
     }
   }
   
   getBestWeapon() {
+    // Defensive check for bot and inventory
+    if (!this.bot || !this.bot.inventory || !this.bot.inventory.items) {
+      return null;
+    }
+    
     const weapons = this.bot.inventory.items().filter(item => 
-      item.name.includes('sword') || 
-      item.name.includes('axe') || 
-      item.name.includes('bow') ||
-      item.name.includes('crossbow') ||
-      item.name.includes('trident')
+      item && 
+      typeof item === 'object' &&
+      item.name && 
+      typeof item.name === 'string' &&
+      (item.name.includes('sword') || 
+       item.name.includes('axe') || 
+       item.name.includes('bow') ||
+       item.name.includes('crossbow') ||
+       item.name.includes('trident'))
     );
+    
+    if (weapons.length === 0) {
+      return null;
+    }
     
     // Sort by damage/desirability
     const weaponPriority = {
@@ -10942,9 +11002,20 @@ class CombatAI {
       'trident': 9
     };
     
-    return weapons.sort((a, b) => 
+    const bestWeapon = weapons.sort((a, b) => 
       (weaponPriority[b.name] || 0) - (weaponPriority[a.name] || 0)
     )[0];
+    
+    // Additional validation of the returned weapon
+    if (bestWeapon && 
+        typeof bestWeapon === 'object' && 
+        bestWeapon !== null && 
+        typeof bestWeapon.slot === 'number' && 
+        typeof bestWeapon.name === 'string') {
+      return bestWeapon;
+    }
+    
+    return null;
   }
   
   abortCombat(reason = 'aborted') {
@@ -11106,17 +11177,18 @@ class CombatAI {
        this.isCurrentlyFighting = true;
 
        // Enhanced tactical combat loop
-      const combatLoop = setInterval(async () => {
-        if (!this.isCurrentlyFighting || this.bot.health <= 0) {
+       const combatLoop = setInterval(async () => {
+        // Defensive checks for bot and combat state
+        if (!this.isCurrentlyFighting || !this.bot || this.bot.health <= 0) {
           clearInterval(combatLoop);
           this.inCombat = false;
           this.isCurrentlyFighting = false;
           console.log('[COMBAT] Combat ended');
           return;
         }
-        
-        // Check if target is still valid
-        if (!attacker || attacker.health <= 0) {
+
+        // Check if target is still valid with defensive checks
+        if (!attacker || typeof attacker !== 'object' || !attacker.health || attacker.health <= 0) {
           console.log(`[COMBAT] Target defeated`);
           clearInterval(combatLoop);
           this.inCombat = false;
@@ -11172,7 +11244,10 @@ class CombatAI {
       this.combatCheck = combatLoop;
       
     } catch (err) {
-      console.log(`[COMBAT] handleCombat failed: ${err.message}`);
+      // Throttle error logging to prevent spam
+      if (this.shouldLogError(err.message)) {
+        console.log(`[COMBAT] handleCombat failed: ${err.message}`);
+      }
       this.inCombat = false;
       this.isCurrentlyFighting = false;
       return;
@@ -15623,7 +15698,7 @@ class AutoMiner {
       }
       
       // Safety check
-      if (this.bot.health < 10) {
+      if (this.bot && this.bot.health < 10) {
         await this.heal();
       }
     }
@@ -31250,7 +31325,7 @@ class TrapDetector {
                 // Silently continue if bedrock check fails
             }
             
-            this.lastHealth = this.bot.health;
+            this.lastHealth = this.bot && this.bot.health || this.lastHealth;
             return dangers;
         } catch (error) {
             // If the entire detectTrap method fails, return empty array
@@ -31648,16 +31723,16 @@ class DangerMonitor {
       }
       
       // Track health
-      if (this.bot.health < this.lastHealth) {
+      if (this.bot && this.bot.health < this.lastHealth) {
         console.log(`[DANGER] Health lost: ${this.lastHealth} → ${this.bot.health}`);
-        
+
         // If critical, emergency actions
         if (this.bot.health < 6) {
           await this.emergencyHealing();
         }
       }
-      
-      this.lastHealth = this.bot.health;
+
+      this.lastHealth = this.bot && this.bot.health || this.lastHealth;
       
     }, 500, 'danger-monitor');
   }
