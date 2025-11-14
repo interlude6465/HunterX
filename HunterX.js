@@ -1178,6 +1178,17 @@ function safeWriteFile(filePath, data) {
   }
 }
 
+function safeBotQuit(botInstance, message = 'Bot shutting down') {
+  try {
+    if (botInstance) {
+      console.log(`[SAFE_QUIT] ${message}`);
+      botInstance.quit();
+    }
+  } catch (error) {
+    console.error('[SAFE_QUIT_ERROR]', error.message);
+  }
+}
+
 function safeReadFile(filePath, defaultValue = null) {
   try {
     return fs.readFileSync(filePath, 'utf8');
