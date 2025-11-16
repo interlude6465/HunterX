@@ -12119,8 +12119,16 @@ class CombatAI {
         
       case 'approach':
         console.log('[COMBAT] 🏃 Closing distance');
-        this.bot.pathfinder.goto(new goals.GoalNear(target.position, 3)).catch(() => {});
-        await sleep(500);
+        if (this.bot && this.bot.pathfinder) {
+          try {
+            await this.bot.pathfinder.goto(new goals.GoalNear(target.position, 3));
+          } catch (err) {
+            console.log(`[COMBAT] Pathfinding error: ${err.message}`);
+          }
+        } else {
+          console.log('[COMBAT] ⚠️ Pathfinder not available, using fallback movement');
+        }
+        await sleep(1000);
         return await this.executeOptimalAttack(target);
         
       default:
@@ -12201,7 +12209,15 @@ class CombatAI {
 
   async approachTarget(target) {
     const goal = new goals.GoalNear(new Vec3(target.position.x, target.position.y, target.position.z), 3);
-    this.bot.pathfinder.goto(goal).catch(() => {});
+    if (this.bot && this.bot.pathfinder) {
+      try {
+        await this.bot.pathfinder.goto(goal);
+      } catch (err) {
+        console.log(`[COMBAT] approachTarget pathfinding error: ${err.message}`);
+      }
+    } else {
+      console.log('[COMBAT] ⚠️ Pathfinder not available for approachTarget');
+    }
     await sleep(500);
   }
 
