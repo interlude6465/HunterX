@@ -2493,6 +2493,97 @@ const CONVERSATION_INTENTS = {
   UNKNOWN: 'unknown'
 };
 
+// Canonical command catalog used by the ConversationAI command parser.
+// Each entry defines recognized trigger phrases, minimum trust level, and whether
+// the command may be executed in swarm/broadcast mode. Keeping this catalog in a
+// single location ensures consistent parsing for both ! (single bot) and !!
+// (swarm) prefixes.
+const COMMAND_DEFINITIONS = [
+  // Emergency & Assistance
+  { key: 'help', triggers: ['help', 'help at'], minTrust: 'guest', allowSwarm: true, description: 'Request backup at coordinates' },
+  { key: 'need_help', triggers: ['need help'], minTrust: 'guest', allowSwarm: true, description: 'Send all bots to requester location' },
+  { key: 'swarm_status', triggers: ['swarm status', 'swarm info', 'swarm stats'], minTrust: 'trusted', allowSwarm: true, description: 'Show active swarm information' },
+  { key: 'spawn_bots', triggers: ['spawn', 'spawn bot', 'spawn bots'], minTrust: 'admin', allowSwarm: true, description: 'Spawn additional bots' },
+  { key: 'stop_action', triggers: ['stop'], minTrust: 'trusted', allowSwarm: true, description: 'Stop current action' },
+
+  // Navigation
+  { key: 'goto', triggers: ['goto', 'go to'], minTrust: 'trusted', allowSwarm: true, description: 'Navigate to coordinates' },
+  { key: 'follow', triggers: ['follow'], minTrust: 'guest', allowSwarm: true, description: 'Follow specified player' },
+  { key: 'go_home', triggers: ['go home', 'head home'], minTrust: 'guest', allowSwarm: true, description: 'Return to home base' },
+  { key: 'set_home_here', triggers: ['set home here'], minTrust: 'trusted', allowSwarm: true, description: 'Set home base to current location' },
+  { key: 'set_home', triggers: ['set home'], minTrust: 'trusted', allowSwarm: true, description: 'Set home base to specific coordinates' },
+  { key: 'travel_to', triggers: ['travel to'], minTrust: 'trusted', allowSwarm: true, description: 'Travel to named location or coordinates' },
+  { key: 'find_highway', triggers: ['find highway'], minTrust: 'trusted', allowSwarm: true, description: 'Locate nearest highway' },
+
+  // Combat
+  { key: 'attack', triggers: ['attack'], minTrust: 'trusted', allowSwarm: true, description: 'Attack target player' },
+  { key: 'coordinated_attack', triggers: ['coordinated attack'], minTrust: 'trusted', allowSwarm: true, description: 'Initiate coordinated attack' },
+  { key: 'retreat', triggers: ['retreat', 'fall back'], minTrust: 'trusted', allowSwarm: true, description: 'Retreat from combat' },
+  { key: 'start_guard', triggers: ['start guard'], minTrust: 'trusted', allowSwarm: true, description: 'Begin guard duty' },
+  { key: 'defense_status', triggers: ['defense status'], minTrust: 'trusted', allowSwarm: true, description: 'Show defense status' },
+
+  // Gathering
+  { key: 'mine', triggers: ['mine'], minTrust: 'guest', allowSwarm: true, description: 'Mine specified resource' },
+  { key: 'collect', triggers: ['collect'], minTrust: 'guest', allowSwarm: true, description: 'Collect specified item' },
+  { key: 'find_item', triggers: ['find'], minTrust: 'guest', allowSwarm: true, description: 'Find specified item' },
+  { key: 'hunt', triggers: ['hunt'], minTrust: 'guest', allowSwarm: true, description: 'Hunt specified mob' },
+  { key: 'fish', triggers: ['fish for'], minTrust: 'guest', allowSwarm: true, description: 'Fish for specified fish' },
+  { key: 'farm', triggers: ['farm'], minTrust: 'guest', allowSwarm: true, description: 'Farm specified crop' },
+
+  // Discovery
+  { key: 'stash', triggers: ['stash'], minTrust: 'trusted', allowSwarm: true, description: 'Scan for hidden stashes' },
+  { key: 'dupe', triggers: ['dupe'], minTrust: 'admin', allowSwarm: true, description: 'Execute duplication routine' },
+  { key: 'scanner_status', triggers: ['scanner status'], minTrust: 'trusted', allowSwarm: true, description: 'Show scanner status' },
+  { key: 'scanner_report', triggers: ['scanner report'], minTrust: 'trusted', allowSwarm: true, description: 'Show scanner report' },
+
+  // Base & Storage
+  { key: 'home_status', triggers: ['home status', 'home info'], minTrust: 'guest', allowSwarm: true, description: 'Show home base summary' },
+  { key: 'deposit', triggers: ['deposit'], minTrust: 'guest', allowSwarm: true, description: 'Deposit valuables' },
+  { key: 'store_valuables', triggers: ['store valuables'], minTrust: 'guest', allowSwarm: true, description: 'Store valuables for safekeeping' },
+
+  // Maintenance
+  { key: 'maintenance_status', triggers: ['maintenance status'], minTrust: 'trusted', allowSwarm: true, description: 'Show maintenance status' },
+  { key: 'repair_status', triggers: ['repair status'], minTrust: 'trusted', allowSwarm: true, description: 'Show repair status' },
+  { key: 'start_maintenance', triggers: ['start maintenance'], minTrust: 'trusted', allowSwarm: true, description: 'Start maintenance cycle' },
+  { key: 'stop_maintenance', triggers: ['stop maintenance'], minTrust: 'trusted', allowSwarm: true, description: 'Stop maintenance cycle' },
+  { key: 'repair_armor', triggers: ['repair armor', 'fix armor'], minTrust: 'trusted', allowSwarm: true, description: 'Repair armor' },
+  { key: 'swap_elytra', triggers: ['swap elytra', 'fix elytra'], minTrust: 'trusted', allowSwarm: true, description: 'Swap or repair elytra' },
+  { key: 'check_elytra', triggers: ['check elytra'], minTrust: 'trusted', allowSwarm: true, description: 'Check elytra durability' },
+  { key: 'set_xp_farm_here', triggers: ['set xp farm here'], minTrust: 'trusted', allowSwarm: true, description: 'Set XP farm at current location' },
+  { key: 'set_xp_farm', triggers: ['set xp farm'], minTrust: 'trusted', allowSwarm: true, description: 'Set XP farm coordinates' },
+
+  // Building
+  { key: 'start_build', triggers: ['start build'], minTrust: 'trusted', allowSwarm: true, description: 'Start a build project' },
+  { key: 'build_schematic', triggers: ['build schematic'], minTrust: 'trusted', allowSwarm: true, description: 'Construct a schematic' },
+  { key: 'build_status', triggers: ['build status', 'build progress'], minTrust: 'guest', allowSwarm: true, description: 'Show build progress' },
+
+  // Analytics
+  { key: 'stats', triggers: ['stats', 'performance', 'analytics'], minTrust: 'guest', allowSwarm: true, description: 'Show performance statistics' },
+
+  // Trust & Permissions
+  { key: 'trust_level', triggers: ['trust level'], minTrust: 'guest', allowSwarm: true, description: 'Check player trust level' },
+  { key: 'check_trust', triggers: ['check trust'], minTrust: 'guest', allowSwarm: true, description: 'Check player trust level' },
+  { key: 'list_whitelist', triggers: ['list whitelist'], minTrust: 'trusted', allowSwarm: true, description: 'List whitelist entries' },
+  { key: 'show_whitelist', triggers: ['show whitelist'], minTrust: 'trusted', allowSwarm: true, description: 'Show whitelist entries' },
+  { key: 'set_trust', triggers: ['set trust'], minTrust: 'admin', allowSwarm: true, description: 'Set player trust level' },
+  { key: 'set_level', triggers: ['set level'], minTrust: 'admin', allowSwarm: true, description: 'Set player trust level' },
+  { key: 'remove_trust', triggers: ['remove trust'], minTrust: 'admin', allowSwarm: true, description: 'Remove player trust' },
+  { key: 'remove_whitelist', triggers: ['remove whitelist'], minTrust: 'admin', allowSwarm: true, description: 'Remove player from whitelist' }
+];
+
+const COMMAND_TRIGGER_ENTRIES = COMMAND_DEFINITIONS
+  .flatMap(def => def.triggers.map(trigger => ({
+    trigger,
+    triggerLower: trigger.toLowerCase(),
+    definition: def
+  })))
+  .sort((a, b) => b.triggerLower.length - a.triggerLower.length);
+
+const COMMAND_DEFINITION_LOOKUP = COMMAND_DEFINITIONS.reduce((acc, def) => {
+  acc[def.key] = def;
+  return acc;
+}, {});
+
 // Minecraft knowledge base for factual queries
 const MINECRAFT_KNOWLEDGE = {
   facts: [
@@ -5656,16 +5747,52 @@ class SwarmCoordinator {
     });
   }
 
-  broadcastCommand(command) {
-    console.log(`[SWARM] Broadcasting command to all bots: ${command}`);
+  broadcastCommand(command, args = [], options = {}) {
+    let payload;
+
+    if (typeof command === 'object' && command !== null) {
+      payload = { ...command };
+    } else {
+      payload = {
+        raw: typeof command === 'string' ? command : '',
+        args: Array.isArray(args) ? args : [],
+        commandKey: options.commandKey || null,
+        commandTrigger: options.commandTrigger || null,
+        prefix: options.prefix || '!!',
+        username: options.username || null,
+        trustLevel: options.trustLevel || null,
+        originalMessage: options.originalMessage || null,
+        allowSwarm: options.allowSwarm,
+        description: options.description
+      };
+    }
+
+    payload.args = Array.isArray(payload.args) ? payload.args : [];
+    payload.prefix = payload.prefix || '!!';
+
+    if (!payload.raw && typeof payload.localCommand === 'string') {
+      payload.raw = payload.localCommand.startsWith('!') ? payload.localCommand.slice(1) : payload.localCommand;
+    }
+
+    if (!payload.localCommand) {
+      const base = payload.raw || (payload.commandKey ? [payload.commandKey, ...payload.args].join(' ').trim() : '');
+      if (base) {
+        payload.localCommand = base.startsWith('!') ? base : `!${base}`;
+      }
+    }
+
+    if (!payload.command) {
+      payload.command = payload.localCommand || payload.raw || '';
+    }
+
+    payload.type = 'COMMAND';
+    payload.timestamp = Date.now();
+
+    console.log(`[SWARM] Broadcasting command to all bots: ${payload.command}`);
 
     for (const [botId, botInfo] of this.bots) {
       if (botInfo.ws.readyState === WebSocket.OPEN) {
-        botInfo.ws.send(JSON.stringify({
-          type: 'COMMAND',
-          command: command,
-          timestamp: Date.now()
-        }));
+        botInfo.ws.send(JSON.stringify(payload));
       }
     }
   }
@@ -16416,6 +16543,35 @@ class ConversationAI {
     return normalized;
   }
   
+  parsePrefixedCommand(commandText) {
+    if (!commandText) return null;
+    const trimmed = commandText.trim();
+    if (!trimmed) return null;
+    const lower = trimmed.toLowerCase();
+    const match = COMMAND_TRIGGER_ENTRIES.find(entry =>
+      lower === entry.triggerLower || lower.startsWith(`${entry.triggerLower} `)
+    );
+    if (!match) {
+      return null;
+    }
+    const triggerLength = match.triggerLower.length;
+    const argString = trimmed.slice(triggerLength).trim();
+    const args = argString ? argString.split(/\s+/) : [];
+    return {
+      key: match.definition.key,
+      trigger: match.triggerLower,
+      args,
+      argString,
+      raw: trimmed,
+      definition: match.definition
+    };
+  }
+  
+  formatTrustLevel(level) {
+    if (!level) return '';
+    return level.charAt(0).toUpperCase() + level.slice(1);
+  }
+  
   // Generate natural language response for non-commands
   generateResponse(username, message) {
     const lower = message.toLowerCase();
@@ -16989,27 +17145,77 @@ class ConversationAI {
         return;
       }
 
-      // Handle group commands (!! prefix)
+      // Handle group commands (!! prefix) - broadcast to swarm and execute locally
       if (sanitizedMessage.startsWith('!!')) {
         console.log(`[CMD_DEBUG][COMMAND] Group command detected: ${sanitizedMessage}`);
-        if (!this.isWhitelisted(userValidation.sanitized)) {
+        const caller = userValidation.sanitized;
+        if (!this.isWhitelisted(caller)) {
           this.bot.chat("Sorry, only whitelisted players can give me commands!");
           return;
         }
+
         const cleanCommand = sanitizedMessage.substring(2).trim();
-        
-        // Validate command length to prevent abuse
-        if (cleanCommand.length > 100) {
-          this.bot.chat("Command too long! Please keep it under 100 characters.");
+        if (!cleanCommand) {
+          this.bot.chat("Usage: !!command <arguments>");
           return;
         }
-        
-        if (globalSwarmCoordinator) {
-          console.log(`[CMD_DEBUG][COMMAND] Broadcasting group command: ${cleanCommand}`);
-          globalSwarmCoordinator.broadcastCommand(cleanCommand);
-          this.bot.chat(`📢 Broadcasting command to all bots: ${cleanCommand}`);
-        } else {
+
+        // Validate command length to prevent abuse
+        if (cleanCommand.length > 160) {
+          this.bot.chat("Command too long! Please keep it under 160 characters.");
+          return;
+        }
+
+        const parsedCommand = this.parsePrefixedCommand(cleanCommand);
+        if (!parsedCommand) {
+          this.bot.chat(`Unknown command: ${cleanCommand}`);
+          return;
+        }
+
+        if (parsedCommand.definition.allowSwarm === false) {
+          this.bot.chat("That command cannot be broadcast to the swarm.");
+          return;
+        }
+
+        const requiredTrust = parsedCommand.definition.minTrust || 'guest';
+        if (!this.hasTrustLevel(caller, requiredTrust)) {
+          this.bot.chat(`Insufficient trust level. Requires ${this.formatTrustLevel(requiredTrust)}+.`);
+          return;
+        }
+
+        if (!globalSwarmCoordinator) {
           this.bot.chat("Swarm coordinator not available for group commands!");
+          return;
+        }
+
+        const localCommand = `!${parsedCommand.raw.startsWith('!') ? parsedCommand.raw.slice(1) : parsedCommand.raw}`;
+        const payload = {
+          commandKey: parsedCommand.definition.key,
+          commandTrigger: parsedCommand.trigger,
+          raw: parsedCommand.raw,
+          args: parsedCommand.args,
+          prefix: '!!',
+          username: caller,
+          trustLevel: this.getTrustLevel(caller) || 'guest',
+          originalMessage: sanitizedMessage,
+          allowSwarm: parsedCommand.definition.allowSwarm,
+          description: parsedCommand.definition.description,
+          localCommand,
+          command: localCommand
+        };
+
+        console.log(`[CMD_DEBUG][COMMAND] Broadcasting group command payload:`, payload);
+        globalSwarmCoordinator.broadcastCommand(payload);
+        this.bot.chat(`📢 Broadcasting command to all bots: ${cleanCommand}`);
+
+        try {
+          await this.handleCommand(caller, localCommand, {
+            source: 'chat',
+            parsedCommand
+          });
+        } catch (err) {
+          console.error(`[CMD_DEBUG][COMMAND] Local execution failed for ${cleanCommand}: ${err.message}`);
+          this.bot.chat(`Command failed locally: ${err.message}`);
         }
         return;
       }
@@ -17250,7 +17456,26 @@ try {
         setOutcome(label);
         respond(false, msg);
       };
-    
+
+      const prefixUsed = lower.startsWith('!!') ? '!!' : (lower.startsWith('!') ? '!' : null);
+      let parsedCommandMeta = options.parsedCommand || null;
+      if (!parsedCommandMeta && prefixUsed && prefixUsed !== '!!') {
+        const rawPortion = message.slice(prefixUsed.length).trim();
+        parsedCommandMeta = this.parsePrefixedCommand(rawPortion);
+      }
+
+      if (this._activeCommandContext) {
+        this._activeCommandContext.parsedCommand = parsedCommandMeta || null;
+      }
+
+      if (parsedCommandMeta && parsedCommandMeta.definition && parsedCommandMeta.definition.minTrust) {
+        const required = parsedCommandMeta.definition.minTrust;
+        if (!this.hasTrustLevel(username, required, { bypassTrust })) {
+          denyCommand(`Insufficient trust level. Requires ${this.formatTrustLevel(required)}+.`, 'blocked_insufficient_trust');
+          return;
+        }
+      }
+
     // Status report command
     if (lower.includes('status report')) {
       console.log(`[CMD_DEBUG][COMMAND] Status report requested by ${username}`);
@@ -29408,6 +29633,12 @@ async function launchBot(username, role = 'fighter') {
 
   const schematicLoader = new SchematicLoader(bot);
   const intelligenceDB = new IntelligenceDatabase(bot);
+  
+  // Initialize global MessageInterceptor if not already set
+  if (!globalMessageInterceptor) {
+    globalMessageInterceptor = intelligenceDB.messageInterceptor;
+  }
+  
   let stashScanner = null;
   let dupeFramework = null;
   let lootOperation = null;
@@ -29923,6 +30154,51 @@ async function launchBot(username, role = 'fighter') {
                 bot.currentHelpOperation = null;
               }
               break;
+              
+            case 'COMMAND': {
+              const initiator = message.username || 'SWARM';
+              const localCommand = typeof message.localCommand === 'string'
+                ? message.localCommand
+                : (typeof message.command === 'string' ? message.command : '');
+
+              if (!localCommand) {
+                console.log('[SWARM] 📢 Received broadcast command with no payload');
+                break;
+              }
+
+              console.log(`[SWARM] 📢 Received broadcast command from ${initiator}: ${localCommand}`);
+
+              let parsedMeta = null;
+              if (message.commandKey && COMMAND_DEFINITION_LOOKUP[message.commandKey]) {
+                const def = COMMAND_DEFINITION_LOOKUP[message.commandKey];
+                const trigger = (message.commandTrigger || def.triggers?.[0] || '').toLowerCase();
+                const args = Array.isArray(message.args) ? message.args : [];
+                parsedMeta = {
+                  key: message.commandKey,
+                  trigger,
+                  args,
+                  argString: args.length ? args.join(' ') : '',
+                  raw: message.raw || localCommand.replace(/^!/, ''),
+                  definition: def
+                };
+              } else if (conversationAI && typeof conversationAI.parsePrefixedCommand === 'function') {
+                parsedMeta = conversationAI.parsePrefixedCommand(
+                  localCommand.startsWith('!') ? localCommand.slice(1) : localCommand
+                );
+              }
+
+              try {
+                await conversationAI.handleCommand(initiator, localCommand, {
+                  source: 'swarm',
+                  bypassTrust: true,
+                  parsedCommand: parsedMeta,
+                  swarmMetadata: message
+                });
+              } catch (err) {
+                console.log(`[SWARM] Error executing broadcast command "${localCommand}": ${err.message}`);
+              }
+              break;
+            }
               
             case 'HEARTBEAT':
               // Keep-alive ping, acknowledge silently
