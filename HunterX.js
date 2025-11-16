@@ -59,6 +59,10 @@ const Vec3 = require('vec3').Vec3;
 // so that all functions including loadConfiguration() can access it
 let config = {};
 
+// === MODULE-LEVEL GLOBAL OBJECTS ===
+// Optional global objects that may be initialized at runtime
+let globalMessageInterceptor = null;
+
 // === CENTRALIZED INPUT VALIDATION SYSTEM ===
 // Comprehensive validators for all user-provided inputs
 
