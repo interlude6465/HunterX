@@ -4312,21 +4312,36 @@ class EquipmentManager {
     const hotbarSlots = 9; // Slots 0-8
     
     // Clear hotbar temporarily by moving items to inventory
-    for (let i = 0; i < hotbarSlots; i++) {
-      const item = this.bot.inventory.slots[i];
-      if (item && item.name) {
-        try {
-          // Move to first available inventory slot
-          for (let j = 9; j < 36; j++) {
-            if (!this.bot.inventory.slots[j]) {
-              await this.bot.moveSlotItem(i, j);
-              break;
+    // Only move if there's available space to prevent item drops
+    let hasInventorySpace = false;
+    for (let j = 9; j < 36; j++) {
+      if (!this.bot.inventory.slots[j]) {
+        hasInventorySpace = true;
+        break;
+      }
+    }
+    
+    if (hasInventorySpace) {
+      for (let i = 0; i < hotbarSlots; i++) {
+        const item = this.bot.inventory.slots[i];
+        if (item && item.name) {
+          try {
+            // Move to first available inventory slot
+            for (let j = 9; j < 36; j++) {
+              if (!this.bot.inventory.slots[j]) {
+                await this.bot.moveSlotItem(i, j);
+                console.log(`[HOTBAR] Moved ${item.name} from hotbar slot ${i} to inventory slot ${j}`);
+                break;
+              }
             }
+          } catch (err) {
+            console.log(`[HOTBAR] Failed to move ${item.name} from hotbar: ${err.message}`);
           }
-        } catch (err) {
-          // Ignore movement errors
         }
       }
+    } else {
+      console.log('[HOTBAR] Inventory full, skipping hotbar reorganization to prevent item loss');
+      return; // Skip reorganization if no space available
     }
     
     // Organize hotbar with optimal layout
@@ -4340,6 +4355,13 @@ class EquipmentManager {
           if (inventoryItem) {
             const sourceSlot = this.getSlotForItem(inventoryItem);
             if (sourceSlot >= 9) {
+              // Ensure destination slot is clear to prevent item loss
+              const destinationItem = this.bot.inventory.slots[i];
+              if (destinationItem) {
+                console.log(`[HOTBAR] Destination slot ${i} is occupied with ${destinationItem.name}, skipping move to prevent loss`);
+                continue;
+              }
+              
               await this.bot.moveSlotItem(sourceSlot, i);
               console.log(`[HOTBAR] Moved ${layout[i]} to slot ${i + 1}`);
             }
