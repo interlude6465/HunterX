@@ -472,6 +472,47 @@ function validateAndSanitizeInput(input, type, options = {}) {
   }
 }
 
+const SYSTEM_COMMAND_USERS = new Set(['WebDashboard', 'CommandAPI']);
+
+function isSystemCommandUser(username) {
+  if (typeof username !== 'string') return false;
+  return SYSTEM_COMMAND_USERS.has(username.trim());
+}
+
+function normalizeUsernameForComparison(username) {
+  if (typeof username !== 'string') return '';
+  return username.trim().toLowerCase();
+}
+
+function findWhitelistEntry(username) {
+  if (!Array.isArray(config.whitelist)) {
+    return null;
+  }
+
+  const normalized = normalizeUsernameForComparison(username);
+  if (!normalized) return null;
+
+  return config.whitelist.find(entry => {
+    if (!entry || typeof entry.name !== 'string') return false;
+    return normalizeUsernameForComparison(entry.name) === normalized;
+  }) || null;
+}
+
+function isUsernameWhitelisted(username) {
+  return isSystemCommandUser(username) || !!findWhitelistEntry(username);
+}
+
+function getWhitelistLevel(username) {
+  if (isSystemCommandUser(username)) {
+    return 'owner';
+  }
+
+  const entry = findWhitelistEntry(username);
+  return entry && typeof entry.level === 'string'
+    ? entry.level
+    : null;
+}
+
 // === ENHANCED NEURAL BRAIN SYSTEM WITH MULTIPLE FALLBACKS ===
 // Supports ml5.js, brain.js, synaptic, tensorflow with graceful fallbacks
 
@@ -16207,7 +16248,7 @@ class ConversationAI {
       const pattern1 = new RegExp(`^${name}\\s*[,\\:：]\\s*`, 'i');
       if (pattern1.test(cleanedMessage)) {
         cleanedMessage = cleanedMessage.replace(pattern1, '');
-        console.log(`[CONVERSATION] Stripped bot name: "${name}" -> "${cleanedMessage}"`);
+        console.log(`[CMD_DEBUG][CHAT] Stripped bot name: "${name}" -> "${cleanedMessage}"`);
         return cleanedMessage.trim();
       }
       
@@ -16215,7 +16256,7 @@ class ConversationAI {
       const pattern2 = new RegExp(`^@${name}\\s+`, 'i');
       if (pattern2.test(cleanedMessage)) {
         cleanedMessage = cleanedMessage.replace(pattern2, '');
-        console.log(`[CONVERSATION] Stripped bot name with @: "@${name}" -> "${cleanedMessage}"`);
+        console.log(`[CMD_DEBUG][CHAT] Stripped bot name with @: "@${name}" -> "${cleanedMessage}"`);
         return cleanedMessage.trim();
       }
       
@@ -16223,7 +16264,7 @@ class ConversationAI {
       const pattern3 = new RegExp(`^${name}\\s+`, 'i');
       if (pattern3.test(cleanedMessage)) {
         cleanedMessage = cleanedMessage.replace(pattern3, '');
-        console.log(`[CONVERSATION] Stripped bot name (no punctuation): "${name}" -> "${cleanedMessage}"`);
+        console.log(`[CMD_DEBUG][CHAT] Stripped bot name (no punctuation): "${name}" -> "${cleanedMessage}"`);
         return cleanedMessage.trim();
       }
     }
@@ -16239,7 +16280,7 @@ class ConversationAI {
     // Remove extra whitespace
     normalized = normalized.replace(/\s+/g, ' ').trim();
     
-    console.log(`[CONVERSATION] Message normalized: "${message}" -> "${normalized}"`);
+    console.log(`[CMD_DEBUG][CHAT] Normalized message: "${message}" -> "${normalized}"`);
     return normalized;
   }
   
@@ -16700,24 +16741,35 @@ class ConversationAI {
   }
   
   isWhitelisted(username) {
-    return config.whitelist.some(entry => entry.name === username);
+    return isUsernameWhitelisted(username);
   }
-  
+
   getTrustLevel(username) {
-    const entry = config.whitelist.find(e => e.name === username);
-    return entry ? entry.level : null;
+    return getWhitelistLevel(username);
   }
-  
-  hasTrustLevel(username, minLevel) {
+
+  hasTrustLevel(username, minLevel, options = {}) {
+    if (!minLevel) {
+      return false;
+    }
+
+    if (options.bypassTrust || isSystemCommandUser(username)) {
+      return true;
+    }
+
     const userLevel = this.getTrustLevel(username);
     if (!userLevel) return false;
-    
-    const userIndex = this.trustLevels.indexOf(userLevel);
-    const minIndex = this.trustLevels.indexOf(minLevel);
-    
+
+    const userIndex = this.trustLevels.indexOf(userLevel.toLowerCase());
+    const minIndex = this.trustLevels.indexOf(minLevel.toLowerCase());
+
+    if (userIndex === -1 || minIndex === -1) {
+      return false;
+    }
+
     return userIndex >= minIndex;
   }
-  
+
   shouldRespond(username, message) {
     // Check for bot name mention with various formats
     const botNameVariations = [
@@ -16744,10 +16796,15 @@ class ConversationAI {
     }
     
     const isWhitelisted = this.isWhitelisted(username);
-    
-    return mentioned || isWhitelisted;
+    const shouldHandle = mentioned || isWhitelisted;
+
+    if (!shouldHandle) {
+      console.log(`[CMD_DEBUG][CHAT] Ignoring message from ${username}: no bot mention and user not trusted`);
+    }
+
+    return shouldHandle;
   }
-  
+
   // Classify message type for RL scenario tracking
   classifyMessageType(message) {
     const lower = message.toLowerCase();
@@ -16766,19 +16823,19 @@ class ConversationAI {
   }
 
   async handleMessage(username, message) {
-      console.log(`[CHAT] ${username}: ${message}`);
+      console.log(`[CMD_DEBUG][CHAT] Received raw message from ${username}: ${message}`);
 
       // Validate username using centralized validator
       const userValidation = validateAndSanitizeInput(username, 'username');
       if (!userValidation.valid) {
-        console.log(`[CHAT] ⚠️ Invalid username "${username}": ${userValidation.errors.join(', ')}`);
+        console.log(`[CMD_DEBUG][CHAT] ⚠️ Invalid username "${username}": ${userValidation.errors.join(', ')}`);
         return; // Ignore messages from invalid usernames
       }
 
       // Sanitize message to prevent potential issues
       const sanitizedMessage = validator.sanitizeString(message, 500); // Limit message length
       if (sanitizedMessage !== message) {
-        console.log(`[CHAT] ⚠️ Message sanitized from "${message}" to "${sanitizedMessage}"`);
+        console.log(`[CMD_DEBUG][CHAT] Sanitized message from "${message}" to "${sanitizedMessage}"`);
       }
 
       // Log message to interceptor
@@ -16794,7 +16851,7 @@ class ConversationAI {
 
       // Handle group commands (!! prefix)
       if (sanitizedMessage.startsWith('!!')) {
-        console.log(`[COMMAND] Group command detected: ${sanitizedMessage}`);
+        console.log(`[CMD_DEBUG][COMMAND] Group command detected: ${sanitizedMessage}`);
         if (!this.isWhitelisted(userValidation.sanitized)) {
           this.bot.chat("Sorry, only whitelisted players can give me commands!");
           return;
@@ -16808,7 +16865,7 @@ class ConversationAI {
         }
         
         if (globalSwarmCoordinator) {
-          console.log(`[COMMAND] Broadcasting group command: ${cleanCommand}`);
+          console.log(`[CMD_DEBUG][COMMAND] Broadcasting group command: ${cleanCommand}`);
           globalSwarmCoordinator.broadcastCommand(cleanCommand);
           this.bot.chat(`📢 Broadcasting command to all bots: ${cleanCommand}`);
         } else {
@@ -16828,7 +16885,7 @@ class ConversationAI {
 // === MERGED: Intent detection + RL tracking ===
 const intent = this.analyzeIntent(normalizedMessage);
 const messageType = this.classifyMessageType(normalizedMessage);
-console.log(`[CONVERSATION] Intent detected: ${intent} for message: "${normalizedMessage}"`);
+console.log(`[CMD_DEBUG][CHAT] Intent detected: ${intent} for message: "${normalizedMessage}"`);
 
 const startTime = Date.now();
 let response;
@@ -16836,10 +16893,9 @@ let response;
 try {
   switch (intent) {
     case CONVERSATION_INTENTS.COMMAND:
-      console.log(`[CHAT] Command detected: ${normalizedMessage}`);
-      console.log(`[CHAT] Calling handleCommand...`);
-      await this.handleCommand(username, normalizedMessage);
-      console.log(`[CHAT] Command execution complete`);
+      console.log(`[CMD_DEBUG][COMMAND] Detected command "${normalizedMessage}" from ${username}`);
+      await this.handleCommand(username, normalizedMessage, { source: 'chat' });
+      console.log(`[CMD_DEBUG][COMMAND] Execution complete for ${username}`);
       
       // Record outcome for RL training (from main)
       const responseTime = Date.now() - startTime;
@@ -17008,16 +17064,31 @@ try {
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
-  async handleCommand(username, message) {
-    console.log(`[COMMAND] Processing command from ${username}: ${message}`);
-    
-    if (!this.isWhitelisted(username)) {
-      this.bot.chat("Sorry, only whitelisted players can give me commands!");
-      return;
-    }
-    
-    const lower = message.toLowerCase();
-    config.dangerEscape = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
+  async handleCommand(username, message, options = {}) {
+    const source = options.source || 'chat';
+    const bypassTrust = options.bypassTrust || isSystemCommandUser(username);
+    const whitelistEntry = findWhitelistEntry(username);
+    const trustLevel = whitelistEntry ? (whitelistEntry.level || 'guest') : (bypassTrust ? 'owner' : null);
+    let outcome = 'no_action';
+
+    console.log(`[CMD_DEBUG][COMMAND] (${source}) Processing command from ${username}: ${message} | trust=${trustLevel || 'none'} | bypass=${bypassTrust}`);
+
+    try {
+      if (!bypassTrust && !whitelistEntry) {
+        outcome = 'blocked_not_whitelisted';
+        console.log(`[CMD_DEBUG][COMMAND] (${source}) Blocked command from ${username}: user not in whitelist`);
+        if (source === 'chat') {
+          this.bot.chat("Sorry, only whitelisted players can give me commands!");
+        }
+        return;
+      }
+
+      outcome = 'handled';
+
+      const lower = message.toLowerCase();
+      config.dangerEscape = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
+
+      const trustCheck = (level) => this.hasTrustLevel(username, level, { bypassTrust });
     
     // Status report command
     if (lower.includes('status report')) {
@@ -25714,6 +25785,7 @@ let globalProxyManager = null;
 let globalMovementFramework = null;
 let globalHomeDefense = null;
 let globalSchematicBuilder = null;
+let globalConversationAI = null;
 let globalSpawnEscapeTracker = new SpawnEscapeTracker();
 
 // === ENHANCED DASHBOARD WITH COMMAND INPUT ===
