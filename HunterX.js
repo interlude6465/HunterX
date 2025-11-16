@@ -18817,8 +18817,24 @@ try {
 
     // Default fallback for unrecognized commands
     this.bot.chat("I didn't understand that command. Try 'help' for options!");
-    }
-  
+    };
+
+    return commandExecutor()
+      .catch(err => {
+        error = err;
+        outcome = outcome && !outcome.startsWith('error') ? `error:${outcome}` : (outcome || 'error');
+        console.error(`[CMD_DEBUG][COMMAND] (${source}) Error processing command for ${username}: ${err.stack || err.message}`);
+        if (sendReply && source !== 'chat') {
+          sendReply({ success: false, message: err.message || 'Command failed' });
+        }
+        throw err;
+      })
+      .finally(() => {
+        this._activeCommandContext = null;
+        console.log(`[CMD_DEBUG][COMMAND] (${source}) Completed for ${username}: outcome=${outcome}${error ? ' (error)' : ''}`);
+      });
+  }
+
   async handleItemFinderCommand(username, message) {
     console.log(`[HUNTER] 🎯 Item request from ${username}: ${message}`);
     
@@ -18858,22 +18874,6 @@ try {
     
     // Start the hunt in background
     this.huntForItem(username, itemName, quantity, knowledge);
-  };
-
-    return commandExecutor()
-      .catch(err => {
-        error = err;
-        outcome = outcome && !outcome.startsWith('error') ? `error:${outcome}` : (outcome || 'error');
-        console.error(`[CMD_DEBUG][COMMAND] (${source}) Error processing command for ${username}: ${err.stack || err.message}`);
-        if (sendReply && source !== 'chat') {
-          sendReply({ success: false, message: err.message || 'Command failed' });
-        }
-        throw err;
-      })
-      .finally(() => {
-        this._activeCommandContext = null;
-        console.log(`[CMD_DEBUG][COMMAND] (${source}) Completed for ${username}: outcome=${outcome}${error ? ' (error)' : ''}`);
-      });
   }
   
   async huntForItem(requester, itemName, quantity, knowledge) {
