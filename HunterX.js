@@ -11008,8 +11008,8 @@ class CombatAI {
     this.hostileMobDetector = new HostileMobDetector();
     this.toolSelector = new ToolSelector(bot);
     // Error throttling to prevent spam
-    this.lastErrorTime = 0;
-    this.errorCooldown = 5000; // 5 seconds
+    this.errorCooldown = 1000; // 1 second per unique message
+    this.errorHistory = new Map();
   }
   
   setCombatLogger(logger) {
@@ -11017,10 +11017,12 @@ class CombatAI {
   }
   
   // Error throttling to prevent spam
-  shouldLogError(message) {
+  shouldLogError(message, cooldown = this.errorCooldown) {
+    const key = message || 'unknown-error';
     const now = Date.now();
-    if (now - this.lastErrorTime > this.errorCooldown) {
-      this.lastErrorTime = now;
+    const lastLogged = this.errorHistory.get(key) || 0;
+    if (now - lastLogged >= cooldown) {
+      this.errorHistory.set(key, now);
       return true;
     }
     return false;
@@ -11053,24 +11055,38 @@ class CombatAI {
       const weapon = this.getBestWeapon();
       
       // Comprehensive weapon validation
-      if (weapon && 
-          typeof weapon === 'object' && 
-          weapon !== null && 
-          typeof weapon.slot === 'number' && 
-          typeof weapon.name === 'string' &&
-          this.bot.inventory.slots[weapon.slot]) {
-        await this.bot.equip(weapon.slot, 'hand');
-        console.log(`[COMBAT] Equipped ${weapon.name} for combat`);
+      if (weapon && typeof weapon === 'object' && weapon !== null && typeof weapon.name === 'string') {
+        const hasSlot = Number.isInteger(weapon.slot);
+        const inventorySlots = this.bot.inventory && Array.isArray(this.bot.inventory.slots)
+          ? this.bot.inventory.slots
+          : [];
+        const slotItem = hasSlot ? inventorySlots[weapon.slot] : null;
+        const itemToEquip = slotItem && typeof slotItem === 'object' ? slotItem : weapon;
+
+        if (itemToEquip && typeof itemToEquip === 'object') {
+          await this.bot.equip(itemToEquip, 'hand');
+          console.log(`[COMBAT] Equipped ${itemToEquip.name || weapon.name} for combat`);
+        } else {
+          if (this.shouldLogError('Invalid weapon object')) {
+            console.log('[COMBAT] Invalid weapon object in equip (weapon is null or typeof weapon is not object)');
+          }
+          this.pauseCombat('Invalid weapon object in inventory');
+          return;
+        }
       } else if (weapon === null || weapon === undefined) {
         // No weapons available - this is not an error, just log occasionally
         if (this.shouldLogError('No weapons available')) {
           console.log('[COMBAT] No weapons available for combat');
         }
+        this.pauseCombat('No weapons available for combat');
+        return;
       } else {
         // Invalid weapon object - this is an error
         if (this.shouldLogError('Invalid weapon object')) {
           console.log('[COMBAT] Invalid weapon object in equip (weapon is null or typeof weapon is not object)');
         }
+        this.pauseCombat('Invalid weapon object detected');
+        return;
       }
       
       // Attack with best weapon
@@ -11164,6 +11180,24 @@ class CombatAI {
     return null;
   }
   
+  pauseCombat(reason = 'paused') {
+    if (this.combatCheck) {
+      clearInterval(this.combatCheck);
+      this.combatCheck = null;
+    }
+
+    if (this.inCombat || this.isCurrentlyFighting) {
+      console.log(`[COMBAT] Combat paused: ${reason}`);
+    }
+
+    this.inCombat = false;
+    this.isCurrentlyFighting = false;
+
+    if (this.combatLogger) {
+      this.combatLogger.stopMonitoring(reason);
+    }
+  }
+  
   abortCombat(reason = 'aborted') {
     if (this.combatCheck) {
       clearInterval(this.combatCheck);
@@ -11198,24 +11232,35 @@ class CombatAI {
   
   async evaluateAndEquipLoot() {
     try {
-      const items = this.bot.inventory.items();
-      const currentWeapon = this.bot.inventory.slots[this.bot.getEquipmentDestSlot('hand')];
+      if (!this.bot || !this.bot.inventory || typeof this.bot.inventory.items !== 'function') {
+        console.log('[COMBAT] Inventory unavailable for loot evaluation');
+        return;
+      }
+
+      const inventorySlots = Array.isArray(this.bot.inventory.slots) ? this.bot.inventory.slots : [];
+      const currentWeaponSlot = this.bot.getEquipmentDestSlot ? this.bot.getEquipmentDestSlot('hand') : null;
+      const currentWeapon = currentWeaponSlot !== null ? inventorySlots[currentWeaponSlot] : null;
       
       // Check for better weapons
       const betterWeapon = this.getBestWeapon();
       if (betterWeapon && betterWeapon !== currentWeapon) {
-        await this.bot.equip(betterWeapon.slot, 'hand');
-        console.log(`[COMBAT] Equipped better weapon: ${betterWeapon.name}`);
+        const weaponSlotItem = Number.isInteger(betterWeapon.slot) ? inventorySlots[betterWeapon.slot] : null;
+        const weaponToEquip = weaponSlotItem && typeof weaponSlotItem === 'object' ? weaponSlotItem : betterWeapon;
+        await this.bot.equip(weaponToEquip, 'hand');
+        console.log(`[COMBAT] Equipped better weapon: ${weaponToEquip.name || betterWeapon.name}`);
       }
       
       // Check for better armor
       const armorSlots = ['head', 'torso', 'legs', 'feet'];
       for (const slot of armorSlots) {
-        const currentArmor = this.bot.inventory.slots[this.bot.getEquipmentDestSlot(slot)];
+        const destSlot = this.bot.getEquipmentDestSlot ? this.bot.getEquipmentDestSlot(slot) : null;
+        const currentArmor = destSlot !== null ? inventorySlots[destSlot] : null;
         const betterArmor = this.getBestArmor(slot);
         if (betterArmor && betterArmor !== currentArmor) {
-          await this.bot.equip(betterArmor.slot, slot);
-          console.log(`[COMBAT] Equipped better ${slot} armor: ${betterArmor.name}`);
+          const armorSlotItem = Number.isInteger(betterArmor.slot) ? inventorySlots[betterArmor.slot] : null;
+          const armorToEquip = armorSlotItem && typeof armorSlotItem === 'object' ? armorSlotItem : betterArmor;
+          await this.bot.equip(armorToEquip, slot);
+          console.log(`[COMBAT] Equipped better ${slot} armor: ${armorToEquip.name || betterArmor.name}`);
         }
       }
     } catch (err) {
@@ -11318,72 +11363,78 @@ class CombatAI {
          // Use smart weapon switching for optimal attack
          console.log('[COMBAT] 🎯 Smart weapon switching enabled!');
          await this.executeSmartCombat(attacker);
+         if (!this.isCurrentlyFighting) {
+           return;
+         }
          await this.executeOptimalAttack(attacker);
        }
        this.isCurrentlyFighting = true;
 
        // Enhanced tactical combat loop
        const combatLoop = setInterval(async () => {
-        // Defensive checks for bot and combat state
-        if (!this.isCurrentlyFighting || !this.bot || this.bot.health <= 0) {
+        const bot = this.bot;
+        const botHealth = bot && typeof bot.health === 'number' ? bot.health : null;
+        const botEntity = bot && bot.entity && bot.entity.position ? bot.entity : null;
+
+        if (!this.isCurrentlyFighting || !bot || botHealth === null || botHealth <= 0) {
           clearInterval(combatLoop);
-          this.inCombat = false;
-          this.isCurrentlyFighting = false;
+          this.pauseCombat(botHealth === null ? 'Bot state unavailable' : 'Bot health depleted');
           console.log('[COMBAT] Combat ended');
           return;
         }
 
-        // Check if target is still valid with defensive checks
-        if (!attacker || typeof attacker !== 'object' || !attacker.health || attacker.health <= 0) {
-          console.log(`[COMBAT] Target defeated`);
+        const attackerHealth = attacker && typeof attacker.health === 'number' ? attacker.health : null;
+        if (!attacker || typeof attacker !== 'object' || attackerHealth === null || attackerHealth <= 0) {
+          console.log('[COMBAT] Target defeated');
           clearInterval(combatLoop);
-          this.inCombat = false;
-          this.isCurrentlyFighting = false;
-          
-          // Log combat performance
+          this.pauseCombat('Target defeated');
+
           if (crystalPvP) {
             const metrics = crystalPvP.getPerformanceMetrics();
             console.log(`[COMBAT] Crystal PvP Stats: ${metrics.crystalsPlaced} crystals, ${metrics.damageDealt.toFixed(1)} damage dealt`);
           }
-          
-          // Collect loot
+
           await this.collectNearbyLoot();
           return;
         }
-        
-        const distance = this.bot.entity.position.distanceTo(attacker.position);
-        
-        // Use shield when low health
-        if (this.bot.health < 8) {
-          console.log(`[COMBAT] Raising shield for defense`);
+
+        if (!botEntity || !botEntity.position || !attacker.position) {
+          return;
+        }
+
+        const distance = botEntity.position.distanceTo(attacker.position);
+
+        if (botHealth !== null && botHealth < 8 && bot && bot.inventory) {
+          console.log('[COMBAT] Raising shield for defense');
           await this.raiseShield();
         }
-        
-        // Eat food to heal if available
-        if (this.bot.health < 10) {
-          const food = this.bot.inventory.items().find(i => i.foodProperty);
+
+        if (botHealth !== null && botHealth < 10 && bot && bot.inventory && typeof bot.inventory.items === 'function') {
+          const food = bot.inventory.items().find(i => i && i.foodProperty);
           if (food) {
             await this.eatFood(food);
           }
         }
-        
-        // Move closer if too far
+
         if (distance > 3) {
           console.log(`[COMBAT] Moving closer (${distance.toFixed(1)}m)`);
           await this.moveToward(attacker);
         }
-        
-        // Attack with best weapon
+
         await this.executeSmartCombat(attacker);
-        
-        // Continue crystal PvP if resources available and target is player
+
+        if (!this.isCurrentlyFighting) {
+          clearInterval(combatLoop);
+          return;
+        }
+
         if (useCrystalPvP && crystalPvP && isPlayer) {
           const hasResources = this.hasCrystalResources();
-          if (hasResources && Math.random() < 0.3) { // 30% chance to continue crystal attacks
+          if (hasResources && Math.random() < 0.3) {
             await crystalPvP.executeCrystalCombo(attacker);
           }
         }
-        
+
       }, 200); // Update every 200ms
       
       // Store combat loop reference for cleanup
@@ -11470,29 +11521,41 @@ class CombatAI {
   }
   
   async evaluateAndEquipLoot() {
-    if (!this.bot.inventory) {
-      console.log('[LOOT] Inventory unavailable for equip');
+    if (!this.bot || !this.bot.inventory || typeof this.bot.inventory.items !== 'function') {
+      if (this.shouldLogError('Inventory unavailable for equip')) {
+        console.log('[LOOT] Inventory unavailable for equip');
+      }
       return;
     }
     
     try {
-      // Compare inventory items and equip best gear
-      const weapons = this.bot.inventory.items().filter(i => i.name && (i.name.includes('sword') || i.name.includes('axe')));
-      weapons.sort((a, b) => (ITEM_VALUES[b.name] || 0) - (ITEM_VALUES[a.name] || 0));
-      if (weapons[0]) {
-        await this.bot.equip(weapons[0], 'hand');
+      const inventorySlots = Array.isArray(this.bot.inventory.slots) ? this.bot.inventory.slots : [];
+      const currentWeaponSlot = this.bot.getEquipmentDestSlot ? this.bot.getEquipmentDestSlot('hand') : null;
+      const currentWeapon = currentWeaponSlot !== null ? inventorySlots[currentWeaponSlot] : null;
+      
+      const betterWeapon = this.getBestWeapon();
+      if (betterWeapon && betterWeapon !== currentWeapon) {
+        const weaponSlotItem = Number.isInteger(betterWeapon.slot) ? inventorySlots[betterWeapon.slot] : null;
+        const weaponToEquip = weaponSlotItem && typeof weaponSlotItem === 'object' ? weaponSlotItem : betterWeapon;
+        await this.bot.equip(weaponToEquip, 'hand');
+        console.log(`[LOOT] Equipped better weapon: ${weaponToEquip.name || betterWeapon.name}`);
       }
       
-      // Armor
       for (const slot of ['head', 'torso', 'legs', 'feet']) {
-        const armors = this.bot.inventory.items().filter(i => i.name && i.name.includes(this.getArmorType(slot)));
-        armors.sort((a, b) => (ITEM_VALUES[b.name] || 0) - (ITEM_VALUES[a.name] || 0));
-        if (armors[0]) {
-          await this.bot.equip(armors[0], slot);
+        const destSlot = this.bot.getEquipmentDestSlot ? this.bot.getEquipmentDestSlot(slot) : null;
+        const currentArmor = destSlot !== null ? inventorySlots[destSlot] : null;
+        const betterArmor = this.getBestArmor(slot);
+        if (betterArmor && betterArmor !== currentArmor) {
+          const armorSlotItem = Number.isInteger(betterArmor.slot) ? inventorySlots[betterArmor.slot] : null;
+          const armorToEquip = armorSlotItem && typeof armorSlotItem === 'object' ? armorSlotItem : betterArmor;
+          await this.bot.equip(armorToEquip, slot);
+          console.log(`[LOOT] Equipped better ${slot} armor: ${armorToEquip.name || betterArmor.name}`);
         }
       }
     } catch (err) {
-      console.log(`[LOOT] evaluateAndEquipLoot failed: ${err.message}`);
+      if (this.shouldLogError(err.message)) {
+        console.log(`[LOOT] evaluateAndEquipLoot failed: ${err.message}`);
+      }
     }
   }
   
@@ -23260,13 +23323,19 @@ class LagExploiter {
     const now = Date.now();
     
     // Track entity update frequency
-    const entities = Object.values(this.bot.entities).length;
+    const bot = this.bot;
+    let entityCount = 0;
+    if (bot && bot.world && bot.world.entities) {
+      entityCount = Object.values(bot.world.entities).length;
+    } else if (bot && bot.entities) {
+      entityCount = Object.values(bot.entities).length;
+    }
     
     // Calculate TPS estimate (simplified - would need more sophisticated detection)
     // In real implementation, would analyze packet timing
     const estimatedTPS = 20; // Placeholder - real implementation needs packet analysis
     
-    this.tpsHistory.push({ time: now, tps: estimatedTPS });
+    this.tpsHistory.push({ time: now, tps: estimatedTPS, entities: entityCount });
     this.currentTPS = estimatedTPS;
     
     // Keep last 60 seconds of data
