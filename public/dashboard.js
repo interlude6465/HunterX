@@ -118,6 +118,9 @@ function handleWebSocketMessage(message) {
     case 'event':
       handleEvent(message.data);
       break;
+    case 'HEARTBEAT':
+      // Keep-alive ping, acknowledge silently
+      break;
     default:
       console.log('Unknown message type:', message.type);
   }
