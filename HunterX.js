@@ -54,6 +54,20 @@ const pvp = require('mineflayer-pvp').plugin;
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const Vec3 = require('vec3').Vec3;
 
+let minecraftProtocol = null;
+try {
+  minecraftProtocol = require('minecraft-protocol');
+} catch (error) {
+  console.warn('[VERSION] minecraft-protocol module not available: ' + error.message);
+}
+
+let minecraftData = null;
+try {
+  minecraftData = require('minecraft-data');
+} catch (error) {
+  console.warn('[VERSION] minecraft-data module not available: ' + error.message);
+}
+
 // === MODULE-LEVEL CONFIG ===
 // Must be declared here at module level (before all classes and functions)
 // so that all functions including loadConfiguration() can access it
@@ -1593,46 +1607,291 @@ function initializeHealthTracking(bot) {
   console.log('[HEALTH] ✓ Health tracking started');
 }
 
-// === VERSION EXTRACTION AND SERVER DETECTION HELPERS ===
+// === VERSION DETECTION, MAPPING, AND CACHE HELPERS ===
 
-const PROTOCOL_VERSION_MAP = Object.freeze({
-  760: '1.19.2',
-  763: '1.20.1',
-  765: '1.20.4',
-  768: '1.21',
-  769: '1.21.1',
-  771: '1.21.3',
-  772: '1.21.4'
-});
-
-const DEFAULT_SUPPORTED_VERSIONS = Object.freeze([
-  '1.19.2',
-  '1.20',
-  '1.20.1',
-  '1.20.4',
-  '1.21',
+const DEFAULT_VERSION_PRIORITY = Object.freeze([
+  '1.21.4',
+  '1.21.3',
+  '1.21.2',
   '1.21.1',
-  '1.21.4'
+  '1.21',
+  '1.20.6',
+  '1.20.5',
+  '1.20.4',
+  '1.20.3',
+  '1.20.2',
+  '1.20.1',
+  '1.20',
+  '1.19.4',
+  '1.19.3',
+  '1.19.2',
+  '1.19.1',
+  '1.19',
+  '1.18.2',
+  '1.18.1',
+  '1.18',
+  '1.17.1',
+  '1.17'
 ]);
 
-function getSupportedVersions() {
-  try {
-    if (typeof config !== 'undefined' && config && config.bot && Array.isArray(config.bot.supportedVersions) && config.bot.supportedVersions.length) {
-      return config.bot.supportedVersions;
+const FALLBACK_VERSION_PROTOCOL_MAP = Object.freeze({
+  '1.21.4': 771,
+  '1.21.3': 770,
+  '1.21.2': 769,
+  '1.21.1': 768,
+  '1.21': 767,
+  '1.20.6': 766,
+  '1.20.5': 766,
+  '1.20.4': 765,
+  '1.20.3': 765,
+  '1.20.2': 764,
+  '1.20.1': 763,
+  '1.20': 763,
+  '1.19.4': 762,
+  '1.19.3': 761,
+  '1.19.2': 760,
+  '1.19.1': 760,
+  '1.19': 759,
+  '1.18.2': 758,
+  '1.18.1': 757,
+  '1.18': 757,
+  '1.17.1': 756,
+  '1.17': 755
+});
+
+const FALLBACK_PROTOCOL_VERSION_MAP = (() => {
+  const map = {};
+  for (const [version, protocol] of Object.entries(FALLBACK_VERSION_PROTOCOL_MAP)) {
+    if (!map[protocol] || compareMinecraftVersions(version, map[protocol]) > 0) {
+      map[protocol] = version;
     }
-  } catch (err) {}
-  return DEFAULT_SUPPORTED_VERSIONS;
+  }
+  return Object.freeze(map);
+})();
+
+const SERVER_VERSION_CACHE_FILE = path.join(__dirname, 'data', 'server_versions.json');
+let serverVersionCache = null;
+
+const serverVersionState = {
+  lastDetection: null,
+  lastSuccess: null
+};
+
+function parseServerAddress(serverAddress) {
+  if (!serverAddress || typeof serverAddress !== 'string') {
+    return { host: '', port: 25565 };
+  }
+  const trimmed = serverAddress.trim();
+  if (!trimmed) {
+    return { host: '', port: 25565 };
+  }
+  if (!trimmed.includes(':')) {
+    return { host: trimmed, port: 25565 };
+  }
+  const [hostPart, portPart] = trimmed.split(':');
+  const parsedPort = parseInt(portPart, 10);
+  return {
+    host: hostPart,
+    port: Number.isFinite(parsedPort) ? parsedPort : 25565
+  };
+}
+
+function getServerCacheKey(host, port) {
+  const normalizedHost = (host || '').trim().toLowerCase();
+  const normalizedPort = Number.isFinite(port) ? port : 25565;
+  return `${normalizedHost || 'unknown'}:${normalizedPort}`;
+}
+
+function ensureServerVersionCacheLoaded() {
+  if (serverVersionCache && typeof serverVersionCache === 'object') {
+    return serverVersionCache;
+  }
+  const loaded = safeReadJson(SERVER_VERSION_CACHE_FILE, {});
+  if (loaded && typeof loaded === 'object') {
+    serverVersionCache = loaded;
+  } else {
+    serverVersionCache = {};
+  }
+  return serverVersionCache;
+}
+
+function getCachedServerVersion(serverAddress) {
+  const { host, port } = parseServerAddress(serverAddress);
+  const cache = ensureServerVersionCacheLoaded();
+  const key = getServerCacheKey(host, port);
+  const entry = cache[key];
+  return entry && typeof entry === 'object' ? { ...entry } : null;
+}
+
+function rememberServerVersion(serverAddress, version, meta = {}) {
+  const normalizedVersion = resolveSupportedVersion(version);
+  if (!normalizedVersion) return false;
+  const { host, port } = parseServerAddress(serverAddress);
+  const cache = ensureServerVersionCacheLoaded();
+  const key = getServerCacheKey(host, port);
+  const existing = cache[key] && typeof cache[key] === 'object' ? cache[key] : {};
+  const entry = {
+    ...existing,
+    ...meta,
+    version: normalizedVersion,
+    lastDetectedAt: Date.now()
+  };
+  cache[key] = entry;
+  safeWriteJson(SERVER_VERSION_CACHE_FILE, cache);
+  serverVersionState.lastSuccess = {
+    serverKey: key,
+    host,
+    port,
+    version: normalizedVersion,
+    timestamp: entry.lastDetectedAt,
+    meta: { ...meta }
+  };
+  return true;
+}
+
+function clearCachedServerVersion(serverAddress) {
+  const { host, port } = parseServerAddress(serverAddress);
+  const cache = ensureServerVersionCacheLoaded();
+  const key = getServerCacheKey(host, port);
+  if (cache[key]) {
+    delete cache[key];
+    safeWriteJson(SERVER_VERSION_CACHE_FILE, cache);
+    return true;
+  }
+  return false;
+}
+
+function compareMinecraftVersions(a, b) {
+  if (a === b) return 0;
+  const parse = (input) => String(input || '')
+    .split('.')
+    .map(part => parseInt(part, 10))
+    .map(num => (Number.isFinite(num) ? num : 0));
+  const aParts = parse(a);
+  const bParts = parse(b);
+  const length = Math.max(aParts.length, bParts.length);
+  for (let i = 0; i < length; i++) {
+    const aVal = Number.isFinite(aParts[i]) ? aParts[i] : 0;
+    const bVal = Number.isFinite(bParts[i]) ? bParts[i] : 0;
+    if (aVal > bVal) return 1;
+    if (aVal < bVal) return -1;
+  }
+  return 0;
+}
+
+function normalizeVersionString(versionCandidate) {
+  if (!versionCandidate) return null;
+  const cleaned = String(versionCandidate)
+    .trim()
+    .replace(/^v/i, '')
+    .replace(/[^0-9.]/g, '.');
+  const segments = cleaned.split('.').filter(segment => segment.length > 0);
+  if (!segments.length) return null;
+  return segments.join('.');
+}
+
+function getSupportedVersions() {
+  const configured = (config && config.bot && Array.isArray(config.bot.supportedVersions))
+    ? config.bot.supportedVersions
+    : [];
+  const mineflayerVersions = Array.isArray(mineflayer && mineflayer.supportedVersions)
+    ? mineflayer.supportedVersions
+    : [];
+  const combined = [...configured, ...DEFAULT_VERSION_PRIORITY, ...mineflayerVersions];
+  const seen = new Set();
+  const result = [];
+  for (const candidate of combined) {
+    const normalized = normalizeVersionString(candidate);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
 }
 
 function getFallbackVersion() {
-  const defaults = DEFAULT_SUPPORTED_VERSIONS;
-  const defaultFallback = defaults[defaults.length - 1] || '1.21.4';
   try {
-    if (typeof config !== 'undefined' && config && config.bot) {
-      return config.bot.fallbackVersion || config.bot.defaultProtocolVersion || defaultFallback;
+    if (config && config.bot) {
+      const explicit = config.bot.fallbackVersion || config.bot.defaultProtocolVersion;
+      const resolved = resolveSupportedVersion(explicit);
+      if (resolved) return resolved;
     }
-  } catch (err) {}
-  return defaultFallback;
+  } catch (error) {}
+  const supported = getSupportedVersions();
+  if (supported.length > 0) {
+    return supported[0];
+  }
+  return DEFAULT_VERSION_PRIORITY[0] || '1.21.4';
+}
+
+function resolveSupportedVersion(versionCandidate) {
+  const normalized = normalizeVersionString(versionCandidate);
+  if (!normalized) return null;
+  const supported = getSupportedVersions();
+  if (supported.includes(normalized)) {
+    return normalized;
+  }
+  const parts = normalized.split('.');
+  const majorMinor = parts.slice(0, 2).join('.');
+  const major = parts[0];
+  const prefixMatch = supported.find(ver => normalized.startsWith(ver) || ver.startsWith(normalized));
+  if (prefixMatch) {
+    return prefixMatch;
+  }
+  if (majorMinor) {
+    const candidates = supported.filter(ver => ver.startsWith(majorMinor));
+    if (candidates.length) {
+      candidates.sort((a, b) => compareMinecraftVersions(b, a));
+      return candidates[0];
+    }
+  }
+  if (major) {
+    const majorMatches = supported.filter(ver => ver.startsWith(major + '.'));
+    if (majorMatches.length) {
+      majorMatches.sort((a, b) => compareMinecraftVersions(b, a));
+      return majorMatches[0];
+    }
+  }
+  return normalized;
+}
+
+function getProtocolForVersion(version) {
+  const normalized = normalizeVersionString(version);
+  if (!normalized) return null;
+  if (minecraftData && minecraftData.versionsByMinecraftVersion && minecraftData.versionsByMinecraftVersion.pc) {
+    const info = minecraftData.versionsByMinecraftVersion.pc[normalized];
+    if (info && Number.isFinite(info.protocolVersion)) {
+      return info.protocolVersion;
+    }
+  }
+  return FALLBACK_VERSION_PROTOCOL_MAP[normalized] || null;
+}
+
+function resolveProtocolVersion(protocolNumber) {
+  if (!Number.isFinite(protocolNumber)) return null;
+  if (minecraftData && minecraftData.versionsByProtocolVersion && minecraftData.versionsByProtocolVersion.pc) {
+    const info = minecraftData.versionsByProtocolVersion.pc[protocolNumber];
+    if (info && info.minecraftVersion) {
+      return resolveSupportedVersion(info.minecraftVersion);
+    }
+  }
+  const fallback = FALLBACK_PROTOCOL_VERSION_MAP[protocolNumber];
+  if (fallback) {
+    return resolveSupportedVersion(fallback);
+  }
+  const fallbackProtocols = Object.keys(FALLBACK_PROTOCOL_VERSION_MAP)
+    .map(key => parseInt(key, 10))
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a);
+  for (const candidate of fallbackProtocols) {
+    if (protocolNumber >= candidate) {
+      const mapped = FALLBACK_PROTOCOL_VERSION_MAP[candidate];
+      if (mapped) {
+        return resolveSupportedVersion(mapped);
+      }
+    }
+  }
+  return null;
 }
 
 function sanitizeErrorMessage(errorInput) {
@@ -1659,52 +1918,184 @@ function sanitizeErrorMessage(errorInput) {
   return String(errorInput).replace(/\u00A7[0-9A-FK-OR]/gi, '').replace(/\s+/g, ' ').trim();
 }
 
-function resolveSupportedVersion(versionCandidate) {
-  if (!versionCandidate) return null;
-  const cleaned = String(versionCandidate)
-    .trim()
-    .replace(/^v/i, '')
-    .replace(/[^0-9.]/g, '');
-  if (!cleaned) return null;
-  const supported = getSupportedVersions();
-  if (supported.includes(cleaned)) {
-    return cleaned;
-  }
-  const majorMinor = cleaned.split('.').slice(0, 2).join('.');
-  if (majorMinor) {
-    const match = supported.find(ver => ver.startsWith(cleaned) || cleaned.startsWith(ver) || ver.startsWith(majorMinor));
-    if (match) {
-      return match;
-    }
-  }
-  return cleaned;
+function recordVersionDetection(serverKey, info) {
+  serverVersionState.lastDetection = {
+    serverKey,
+    timestamp: Date.now(),
+    ...info
+  };
 }
 
-function resolveProtocolVersion(protocolNumber) {
-  if (!Number.isFinite(protocolNumber)) return null;
-  const direct = PROTOCOL_VERSION_MAP[protocolNumber];
-  if (direct) {
-    return resolveSupportedVersion(direct);
+async function pingServer(serverAddress) {
+  const { host, port } = parseServerAddress(serverAddress);
+  if (!host) {
+    throw new Error('Invalid server address');
   }
-  if (protocolNumber >= 758 && protocolNumber < 763) {
-    return resolveSupportedVersion('1.19.2');
+  if (minecraftProtocol && typeof minecraftProtocol.ping === 'function') {
+    try {
+      const result = await new Promise((resolve, reject) => {
+        minecraftProtocol.ping(
+          {
+            host,
+            port,
+            closeTimeout: 5000
+          },
+          (err, res) => {
+            if (err) return reject(err);
+            resolve(res);
+          }
+        );
+      });
+      if (result && result.version && result.version.name) {
+        console.log('[VERSION] Ping response: ' + result.version.name);
+      } else {
+        console.log('[VERSION] Ping response received from ' + host + ':' + port);
+      }
+      return result;
+    } catch (error) {
+      console.log('[VERSION] Ping via minecraft-protocol failed: ' + error.message);
+    }
   }
-  if (protocolNumber >= 763 && protocolNumber < 765) {
-    return resolveSupportedVersion('1.20.1');
+  let mcquery = null;
+  try {
+    mcquery = require('mc-query');
+  } catch (error) {
+    throw new Error('mc-query not available for ping');
   }
-  if (protocolNumber >= 765 && protocolNumber < 768) {
-    return resolveSupportedVersion('1.20.4');
+  if (!mcquery || typeof mcquery.ping !== 'function') {
+    throw new Error('No ping implementation available');
   }
-  if (protocolNumber >= 768 && protocolNumber < 769) {
-    return resolveSupportedVersion('1.21');
+  const result = await mcquery.ping({
+    host,
+    port,
+    timeout: 5000
+  });
+  const description = result && result.description && result.description.text ? result.description.text : 'No description';
+  console.log('[VERSION] Ping response: ' + description);
+  return result;
+}
+
+function extractVersionFromPing(response) {
+  if (!response || typeof response !== 'object') {
+    return null;
   }
-  if (protocolNumber >= 769 && protocolNumber < 771) {
-    return resolveSupportedVersion('1.21.1');
-  }
-  if (protocolNumber >= 771) {
-    return resolveSupportedVersion('1.21.4');
+  const versionInfo = response.version || response;
+  if (versionInfo && typeof versionInfo === 'object') {
+    const name = versionInfo.name || versionInfo.minecraftVersion || null;
+    if (name) {
+      const resolved = resolveSupportedVersion(name);
+      if (resolved) {
+        console.log('[VERSION] Ping detected version: ' + name + ' -> ' + resolved);
+        const protocolFromName = Number.isFinite(versionInfo.protocolVersion)
+          ? versionInfo.protocolVersion
+          : Number.isFinite(versionInfo.protocol)
+            ? versionInfo.protocol
+            : null;
+        return {
+          version: resolved,
+          raw: name,
+          protocol: protocolFromName
+        };
+      }
+    }
+    const numericProtocol = Number.isFinite(versionInfo.protocolVersion)
+      ? versionInfo.protocolVersion
+      : Number.isFinite(versionInfo.protocol)
+        ? versionInfo.protocol
+        : null;
+    if (numericProtocol !== null) {
+      const resolvedFromProtocol = resolveProtocolVersion(numericProtocol);
+      if (resolvedFromProtocol) {
+        console.log('[VERSION] Ping protocol ' + numericProtocol + ' -> ' + resolvedFromProtocol);
+        return {
+          version: resolvedFromProtocol,
+          raw: versionInfo.name || null,
+          protocol: numericProtocol
+        };
+      }
+    }
   }
   return null;
+}
+
+function addCandidateVersion(collection, version, reason, extra, notesCollection) {
+  const resolved = resolveSupportedVersion(version);
+  if (!resolved) return null;
+  if (!collection.includes(resolved)) {
+    collection.push(resolved);
+  }
+  if (Array.isArray(notesCollection)) {
+    notesCollection.push({
+      version: resolved,
+      reason,
+      ...(extra || {})
+    });
+  }
+  return resolved;
+}
+
+async function determineVersionCandidates(serverAddress, options = {}) {
+  const { host, port } = parseServerAddress(serverAddress);
+  const serverKey = getServerCacheKey(host, port);
+  const notes = [];
+  const candidates = [];
+  let pingInfo = null;
+  let cacheInfo = null;
+
+  if (!options.ignorePing && host) {
+    try {
+      const pingResult = await pingServer(serverAddress);
+      const extracted = extractVersionFromPing(pingResult);
+      pingInfo = extracted;
+      if (extracted && extracted.version) {
+        addCandidateVersion(candidates, extracted.version, 'ping', { protocol: extracted.protocol || null, raw: extracted.raw || null }, notes);
+      } else {
+        console.log('[VERSION] Could not detect version from ping');
+      }
+    } catch (error) {
+      console.log('[VERSION] Ping failed: ' + error.message);
+      notes.push({ reason: 'ping_failed', message: error.message });
+    }
+  }
+
+  if (!options.ignoreCache) {
+    const cached = getCachedServerVersion(serverAddress);
+    if (cached && cached.version) {
+      cacheInfo = { ...cached };
+      addCandidateVersion(candidates, cached.version, 'cache', { cachedAt: cached.lastDetectedAt || null }, notes);
+    }
+  }
+
+  const supported = getSupportedVersions();
+  for (const entry of supported) {
+    addCandidateVersion(candidates, entry, 'fallback', null, notes);
+  }
+
+  if (!candidates.length) {
+    const fallback = DEFAULT_VERSION_PRIORITY[0] || '1.21.4';
+    addCandidateVersion(candidates, fallback, 'default', null, notes);
+  }
+
+  const primaryCandidate = candidates[0];
+  recordVersionDetection(serverKey, {
+    host,
+    port,
+    candidates: candidates.slice(),
+    ping: pingInfo,
+    cache: cacheInfo,
+    notes: notes.slice()
+  });
+
+  return {
+    server: serverKey,
+    host,
+    port,
+    candidates,
+    notes,
+    fromPing: pingInfo,
+    fromCache: cacheInfo,
+    primaryCandidate
+  };
 }
 
 function setExtractionResult(version, confidence, details = {}) {
@@ -1721,25 +2112,25 @@ function extractVersionFromError(errorInput) {
   const message = sanitizeErrorMessage(errorInput);
   if (!message) {
     const fallback = getFallbackVersion();
-    console.log(`[DETECTION] Falling back to default protocol version: ${fallback}`);
+    console.log('[VERSION] Falling back to default protocol version: ' + fallback);
     return setExtractionResult(fallback, 'fallback', { reason: 'empty_message' });
   }
 
-  const patterns = [
-    { regex: /server\s+(?:is|requires)\s+(?:minecraft\s+)?(?:version\s+)?(1\.[\d.]+)/i, label: 'server_declaration' },
-    { regex: /outdated\s+client.*?(?:use|version)\s+(1\.[\d.]+)/i, label: 'outdated_client' },
-    { regex: /outdated\s+server.*?\bon\s+(1\.[\d.]+)/i, label: 'outdated_server' },
-    { regex: /requires\s+(?:minecraft\s+)?(1\.[\d.]+)/i, label: 'requires_version' },
-    { regex: /supports\s+(?:minecraft\s+)?(1\.[\d.]+)/i, label: 'supports_version' },
-    { regex: /version\s+(1\.(?:19|20|21)\.[\d]+)/i, label: 'generic_version' }
+  const versionPatterns = [
+    { regex: /server\s+(?:is|requires)\s+(?:minecraft\s+)?(?:version\s+)?(1\.(?:1[7-9]|20|21)(?:\.\d+)?)/i, label: 'server_declaration' },
+    { regex: /outdated\s+client.*?(?:use|version)\s+(1\.(?:1[7-9]|20|21)(?:\.\d+)?)/i, label: 'outdated_client' },
+    { regex: /outdated\s+server.*?\bon\s+(1\.(?:1[7-9]|20|21)(?:\.\d+)?)/i, label: 'outdated_server' },
+    { regex: /requires\s+(?:minecraft\s+)?(1\.(?:1[7-9]|20|21)(?:\.\d+)?)/i, label: 'requires_version' },
+    { regex: /supports\s+(?:minecraft\s+)?(1\.(?:1[7-9]|20|21)(?:\.\d+)?)/i, label: 'supports_version' },
+    { regex: /version\s+(1\.(?:1[7-9]|20|21)(?:\.\d+)?)/i, label: 'generic_version' }
   ];
 
-  for (const { regex, label } of patterns) {
+  for (const { regex, label } of versionPatterns) {
     const match = message.match(regex);
     if (match && match[1]) {
       const resolved = resolveSupportedVersion(match[1]);
       if (resolved) {
-        console.log(`[DETECTION] Extracted server version (${label.replace(/_/g, ' ')}): ${resolved}`);
+        console.log('[VERSION] Extracted server version (' + label.replace(/_/g, ' ') + '): ' + resolved);
         return setExtractionResult(resolved, 'extracted', { source: label, raw: match[1] });
       }
     }
@@ -1749,7 +2140,7 @@ function extractVersionFromError(errorInput) {
     /protocol\s+(?:version\s+)?(\d{3,4})/i,
     /server\s*(?:protocol|ver)\s*(\d{3,4})/i,
     /(?:expected|got)\s*protocol\s*(\d{3,4})/i,
-    /\b(7[5-9]\d)\b/
+    /\b([6-9]\d{2})\b/
   ];
 
   for (const regex of protocolPatterns) {
@@ -1758,34 +2149,22 @@ function extractVersionFromError(errorInput) {
       const protocolNum = parseInt(match[1], 10);
       const resolved = resolveProtocolVersion(protocolNum);
       if (resolved) {
-        console.log(`[DETECTION] Extracted server protocol ${protocolNum} -> version ${resolved}`);
+        console.log('[VERSION] Extracted server protocol ' + protocolNum + ' -> version ' + resolved);
         return setExtractionResult(resolved, 'protocol', { protocol: protocolNum });
       }
     }
   }
 
-  const genericMatch = message.match(/\b(1\.(?:19|20|21)(?:\.\d{1,2})?)\b/);
-  if (genericMatch && genericMatch[1]) {
-    const resolved = resolveSupportedVersion(genericMatch[1]);
-    if (resolved) {
-      console.log(`[DETECTION] Extracted server version (generic scan): ${resolved}`);
-      return setExtractionResult(resolved, 'extracted', { source: 'generic_scan', raw: genericMatch[1] });
-    }
-  }
-
-  console.log(`[DETECTION] Could not determine version from error: ${message.substring(0, 120)}`);
   const fallback = getFallbackVersion();
-  console.log(`[DETECTION] Falling back to default protocol version: ${fallback}`);
+  console.log('[VERSION] Could not determine version from message: ' + message.substring(0, 120));
+  console.log('[VERSION] Falling back to default protocol version: ' + fallback);
   return setExtractionResult(fallback, 'fallback', { reason: 'no_match' });
 }
 
 extractVersionFromError.lastResult = { version: null, confidence: 'none' };
 
 function extractVersionSafely(sourceMessage, context = 'general') {
-  const fallbackVersion = typeof getFallbackVersion === 'function'
-    ? getFallbackVersion()
-    : ((config && config.bot && config.bot.defaultProtocolVersion) || DEFAULT_SUPPORTED_VERSIONS[DEFAULT_SUPPORTED_VERSIONS.length - 1] || null);
-
+  const fallbackVersion = getFallbackVersion();
   let version = fallbackVersion;
   let meta = {
     confidence: fallbackVersion ? 'fallback' : 'none',
@@ -1800,26 +2179,24 @@ function extractVersionSafely(sourceMessage, context = 'general') {
         ...(extractVersionFromError.lastResult || {}),
         context
       };
-    } catch (err) {
-      console.warn(`[DETECTION] extractVersionFromError failed during ${context}: ${err.message}`);
+    } catch (error) {
+      console.warn('[VERSION] extractVersionFromError failed during ' + context + ': ' + error.message);
       version = fallbackVersion;
       meta = {
         confidence: fallbackVersion ? 'fallback' : 'none',
         reason: 'extractor_error',
-        error: err.message,
+        error: error.message,
         context
       };
       if (fallbackVersion) {
-        console.log(`[DETECTION] Falling back to default protocol version: ${fallbackVersion}`);
+        console.log('[VERSION] Falling back to default protocol version: ' + fallbackVersion);
       }
     }
-  } else {
-    if (!extractVersionSafely._missingLogged) {
-      console.warn('[DETECTION] extractVersionFromError helper is not defined - using fallback protocol detection');
-      extractVersionSafely._missingLogged = true;
-    }
+  } else if (!extractVersionSafely._missingLogged) {
+    console.warn('[VERSION] extractVersionFromError helper is not defined - using fallback protocol detection');
+    extractVersionSafely._missingLogged = true;
     if (fallbackVersion) {
-      console.log(`[DETECTION] Falling back to default protocol version: ${fallbackVersion}`);
+      console.log('[VERSION] Falling back to default protocol version: ' + fallbackVersion);
     }
   }
 
@@ -1829,57 +2206,6 @@ function extractVersionSafely(sourceMessage, context = 'general') {
 
 extractVersionSafely.lastResult = { version: null, confidence: 'none' };
 extractVersionSafely._missingLogged = false;
-
-function extractVersionFromPing(response) {
-  // Parse version from server ping response
-  if (response?.version?.name) {
-    console.log(`[DETECTION] Ping detected version: ${response.version.name}`);
-    return response.version.name;
-  }
-  
-  return null;
-}
-
-async function pingServer(serverIP) {
-  // Parse server IP and port
-  let host = serverIP;
-  let port = 25565;
-  
-  if (serverIP.includes(':')) {
-    [host, port] = serverIP.split(':');
-    port = parseInt(port);
-  }
-  
-  try {
-    // Try to use mc-query if available
-    let mcquery;
-    try {
-      mcquery = require('mc-query');
-    } catch (err) {
-      console.log('[DETECTION] mc-query not available, skipping ping');
-      throw new Error('mc-query not available');
-    }
-    
-    const result = await mcquery.ping({
-      host: host,
-      port: port,
-      timeout: 5000
-    });
-    
-    console.log(`[DETECTION] Ping response: ${result.description?.text || 'No description'}`);
-    
-    // Parse version from ping
-    if (result.version) {
-      return { version: result.version };
-    }
-    
-    return result;
-    
-  } catch (error) {
-    console.log(`[DETECTION] Ping failed: ${error.message}`);
-    throw error;
-  }
-}
 
 // === SAFE BOT METHOD WRAPPERS ===
 function safeBotQuit(bot, reason = 'Disconnected') {
@@ -17409,6 +17735,96 @@ try {
       outcome = 'handled';
 
       const lower = message.toLowerCase();
+      const trimmedLower = lower.trim();
+
+      if (trimmedLower === '!server version' || trimmedLower === 'server version') {
+        setOutcome('server_version_info');
+        const serverAddress = config.server || 'not set';
+        if (!globalBotSpawner) {
+          globalBotSpawner = new BotSpawner();
+        }
+        const status = globalBotSpawner.getStatus();
+        const serverType = status && status.serverType ? status.serverType : null;
+        const activeVersion = serverType && (serverType.detectedVersion || serverType.version)
+          ? (serverType.detectedVersion || serverType.version)
+          : (status && status.lastSuccessfulVersion && status.lastSuccessfulVersion.version
+            ? status.lastSuccessfulVersion.version
+            : getFallbackVersion());
+        const protocol = getProtocolForVersion(activeVersion);
+        const authMode = serverType ? (serverType.cracked ? 'cracked/offline' : 'premium') : 'unknown';
+        respond(true, `[VERSION] Server: ${serverAddress} | Active: ${activeVersion}${protocol ? ' (protocol ' + protocol + ')' : ''} | Mode: ${authMode}`);
+        const cached = getCachedServerVersion(config.server || '');
+        if (cached && cached.version) {
+          const cacheTime = cached.lastDetectedAt ? new Date(cached.lastDetectedAt).toLocaleString() : 'unknown';
+          respond(true, `[VERSION] Cache: ${cached.version} (updated ${cacheTime})`);
+        }
+        if (serverType && Array.isArray(serverType.versionCandidates) && serverType.versionCandidates.length) {
+          respond(true, `[VERSION] Candidates: ${serverType.versionCandidates.slice(0, 5).join(', ')}`);
+        }
+        return;
+      }
+
+      if (trimmedLower === 'server info' || trimmedLower === '!server info') {
+        setOutcome('server_info');
+        if (!globalBotSpawner) {
+          globalBotSpawner = new BotSpawner();
+        }
+        const status = globalBotSpawner.getStatus();
+        const serverAddress = config.server || 'not set';
+        const serverType = status.serverType || {};
+        const version = serverType.detectedVersion || serverType.version || (status.lastSuccessfulVersion && status.lastSuccessfulVersion.version) || getFallbackVersion();
+        const protocol = getProtocolForVersion(version);
+        const authMode = serverType.cracked ? 'cracked/offline' : serverType.useProxy === false ? 'premium' : 'unknown';
+        respond(true, `[SERVER] ${serverAddress} | Version: ${version}${protocol ? ' (protocol ' + protocol + ')' : ''} | Mode: ${authMode}`);
+        respond(true, `[SERVER] Bots: ${status.activeBots}/${status.maxBots}`);
+        if (Array.isArray(serverType.versionCandidates) && serverType.versionCandidates.length) {
+          respond(true, `[SERVER] Candidates: ${serverType.versionCandidates.slice(0, 5).join(', ')}`);
+        }
+        if (status.lastDetection && status.lastDetection.timestamp) {
+          const detectedAt = new Date(status.lastDetection.timestamp).toLocaleString();
+          const candidatePreview = Array.isArray(status.lastDetection.candidates) && status.lastDetection.candidates.length
+            ? status.lastDetection.candidates.slice(0, 5).join(', ')
+            : 'none';
+          respond(true, `[SERVER] Last detection: ${detectedAt} (${candidatePreview})`);
+        }
+        if (status.lastSuccessfulVersion && status.lastSuccessfulVersion.timestamp) {
+          const successTime = new Date(status.lastSuccessfulVersion.timestamp).toLocaleString();
+          respond(true, `[SERVER] Last successful connection: ${status.lastSuccessfulVersion.version} (${successTime})`);
+        }
+        return;
+      }
+
+      if (trimmedLower === 'update version' || trimmedLower === '!update version' || trimmedLower === 'update server version') {
+        if (!this.hasTrustLevel(username, 'trusted')) {
+          denyCommand('Only trusted+ players can update detection!', 'blocked_version_update_permissions');
+          return;
+        }
+        if (!globalBotSpawner) {
+          respond(false, 'Spawner not initialized yet.');
+          return;
+        }
+        if (!config.server) {
+          respond(false, 'Server address not configured.');
+          return;
+        }
+        setOutcome('server_version_update');
+        respond(true, '[VERSION] Re-detecting server version...');
+        clearCachedServerVersion(config.server);
+        try {
+          const detection = await globalBotSpawner.detectServerType(config.server, { forceVersionRedetect: true, ignoreCache: true });
+          const version = detection.detectedVersion || detection.version || getFallbackVersion();
+          const protocol = getProtocolForVersion(version);
+          const authMode = detection.cracked ? 'cracked/offline' : 'premium';
+          respond(true, `[VERSION] Best match: ${version}${protocol ? ' (protocol ' + protocol + ')' : ''} | Mode: ${authMode}`);
+          if (Array.isArray(detection.versionCandidates) && detection.versionCandidates.length) {
+            respond(true, `[VERSION] Candidates: ${detection.versionCandidates.slice(0, 5).join(', ')}`);
+          }
+        } catch (err) {
+          respond(false, `[VERSION] Detection failed: ${err.message}`);
+        }
+        return;
+      }
+
       config.dangerEscape = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
 
       const denyCommand = (msg, label = 'blocked_insufficient_trust') => {
@@ -25707,27 +26123,6 @@ class ProxyManager {
   }
 }
 
-// Server version detection helper - add this at module level, before BotSpawner class
-function extractVersionSafely(error, serverIP) {
-  try {
-    // Try to extract version from error message
-    if (error && error.message) {
-      const versionMatch = error.message.match(/version[:\s]+(\d+)/i);
-      if (versionMatch && versionMatch[1]) {
-        return parseInt(versionMatch[1]);
-      }
-    }
-    
-    // Fallback to common Minecraft version
-    // Most servers are 1.12 (protocol 340) or 1.8 (protocol 47)
-    return 340;
-  } catch (err) {
-    console.log('[VERSION] Error extracting version:', err.message);
-    return 340; // Default fallback
-  }
-}
-
-
 // === BOT SPAWNER WITH SERVER TYPE DETECTION ===
 class BotSpawner {
   constructor() {
@@ -25737,292 +26132,383 @@ class BotSpawner {
     this.proxyManager = null;
   }
   
-  async detectServerType(serverIP) {
-    console.log('[DETECTION] Testing server type...');
-    let detectedVersion = null;
-    
-    try {
-      // First, try to ping and get version
-      try {
-        const pingResponse = await pingServer(serverIP);
-        detectedVersion = extractVersionFromPing(pingResponse);
-      } catch (pingError) {
-        console.log('[DETECTION] Ping failed, will extract from connection attempt');
-      }
-      
-      // Use detected version or default
-      const versionToTry = detectedVersion || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4';
-      
-      console.log(`[DETECTION] Testing connection with version: ${versionToTry}`);
-      
-      const [host, portStr] = serverIP.split(':');
-      const port = parseInt(portStr) || 25565;
+  async detectServerType(serverIP, options = {}) {
+    if (!serverIP || typeof serverIP !== 'string') {
+      const fallback = getFallbackVersion();
+      console.log('[VERSION] No server provided, using fallback version ' + fallback);
+      this.serverType = {
+        cracked: true,
+        useProxy: true,
+        version: fallback,
+        detectedVersion: fallback,
+        detectionSource: 'fallback',
+        versionCandidates: [fallback],
+        detectionAttempts: [],
+        detectedAt: Date.now()
+      };
+      return this.serverType;
+    }
 
-      let testBot = null;
+    console.log('[VERSION] Testing server type...');
+    const detectionPlan = await determineVersionCandidates(serverIP, {
+      ignoreCache: options.forceVersionRedetect || options.ignoreCache,
+      ignorePing: options.ignorePing
+    });
 
-      try {
-        testBot = mineflayer.createBot({
-          host,
-          port,
-          username: `TestBot_${Date.now().toString(36)}`,
-          auth: 'offline',
-          version: versionToTry,
-          hideErrors: true,
-          checkTimeoutInterval: 30000,
-          closeTimeout: 60000
-        });
-      } catch (createError) {
-        console.error('[DETECTION] Failed to create test bot:', createError.message);
-        // Default to cracked mode if we can't even create a bot
-        return { 
-          cracked: true, 
-          useProxy: true, 
-          version: detectedVersion || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4',
-          detectedVersion: detectedVersion,
-          error: createError.message 
+    const { host, port } = parseServerAddress(serverIP);
+    const versionQueue = [];
+    const seenVersions = new Set();
+
+    const enqueueVersion = (candidate) => {
+      const normalized = resolveSupportedVersion(candidate);
+      if (!normalized || seenVersions.has(normalized)) return;
+      seenVersions.add(normalized);
+      versionQueue.push(normalized);
+    };
+
+    (detectionPlan.candidates || []).forEach(enqueueVersion);
+    if (!versionQueue.length) {
+      enqueueVersion(getFallbackVersion());
+    }
+
+    const attempts = [];
+    const tried = new Set();
+    let bestGuess = versionQueue.length ? versionQueue[0] : getFallbackVersion();
+    let finalResult = null;
+    let lastError = null;
+
+    const attemptVersion = (version) => {
+      return new Promise((resolve) => {
+        const protocol = getProtocolForVersion(version);
+        console.log('[VERSION] Trying version ' + version + (protocol ? ' (protocol ' + protocol + ')' : '') + '...');
+        const attemptRecord = {
+          version,
+          protocol,
+          startedAt: Date.now()
         };
-      }
+        let resolved = false;
+        let timeoutHandle = null;
+        let testBot = null;
 
-      return new Promise((resolve, reject) => {
-        let timeout = setTimeout(() => {
-          safeBotQuit(testBot, 'Server detection timeout');
-          testBot = null;
-          reject(new Error('Connection timeout'));
-        }, (config.bot && config.bot.connectionTimeout) || 10000);
-
-        const safeCleanup = () => {
-          if (timeout) {
-            clearTimeout(timeout);
-            timeout = null;
+        const conclude = (payload) => {
+          if (resolved) return;
+          resolved = true;
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
           }
           if (testBot) {
             safeBotQuit(testBot, 'Server detection completed');
             testBot = null;
           }
+          attemptRecord.finishedAt = Date.now();
+          attemptRecord.duration = attemptRecord.finishedAt - attemptRecord.startedAt;
+          attempts.push({ ...attemptRecord, ...payload });
+          resolve(payload);
+        };
+
+        try {
+          testBot = mineflayer.createBot({
+            host,
+            port,
+            username: `Detector_${Date.now().toString(36)}`,
+            auth: 'offline',
+            version,
+            hideErrors: true,
+            checkTimeoutInterval: 30000,
+            closeTimeout: 60000
+          });
+        } catch (creationError) {
+          console.log('[VERSION] ✗ ' + version + ' creation failed: ' + creationError.message);
+          lastError = creationError;
+          conclude({
+            result: 'failure',
+            outcome: 'creation_error',
+            error: creationError,
+            errorMessage: creationError.message
+          });
+          return;
+        }
+
+        timeoutHandle = setTimeout(() => {
+          console.log('[VERSION] ✗ ' + version + ' timed out');
+          lastError = new Error('Connection timeout');
+          conclude({
+            result: 'failure',
+            outcome: 'timeout',
+            error: lastError,
+            errorMessage: 'Connection timeout'
+          });
+        }, (config.bot && config.bot.connectionTimeout) || 10000);
+
+        const handleAlternateVersion = (extractedVersion, meta) => {
+          const normalizedExtracted = resolveSupportedVersion(extractedVersion);
+          if (normalizedExtracted && !seenVersions.has(normalizedExtracted)) {
+            console.log('[VERSION] 🔄 Suggesting alternative version: ' + normalizedExtracted + ' (' + (meta && meta.confidence ? meta.confidence : 'unknown') + ')');
+            versionQueue.unshift(normalizedExtracted);
+            seenVersions.add(normalizedExtracted);
+          }
+          return normalizedExtracted;
+        };
+
+        const handleAuthSuccess = (sourceLabel, rawMessage, extractedVersion, meta) => {
+          const versionChoice = extractedVersion ? resolveSupportedVersion(extractedVersion) : version;
+          if (versionChoice && versionChoice !== version) {
+            handleAlternateVersion(versionChoice, meta);
+          }
+          console.log('[VERSION] ✓ Detected premium authentication requirement (version ' + (versionChoice || version) + ')');
+          conclude({
+            result: 'success',
+            outcome: 'premium_required',
+            details: {
+              cracked: false,
+              useProxy: false,
+              version: versionChoice || version,
+              detectedVersion: versionChoice || version,
+              detectionSource: sourceLabel,
+              raw: rawMessage
+            },
+            newVersion: versionChoice && versionChoice !== version ? versionChoice : null,
+            meta
+          });
+        };
+
+        const handleFailure = (sourceLabel, errorObj, rawMessage, extractedVersion, meta) => {
+          const normalizedExtracted = extractedVersion ? resolveSupportedVersion(extractedVersion) : null;
+          if (normalizedExtracted && normalizedExtracted !== version) {
+            handleAlternateVersion(normalizedExtracted, meta);
+          }
+          const message = rawMessage || (errorObj ? sanitizeErrorMessage(errorObj) : '');
+          console.log('[VERSION] ✗ ' + version + ' failed: ' + (message || 'unknown reason'));
+          if (errorObj) {
+            lastError = errorObj;
+          } else if (message) {
+            lastError = new Error(message);
+          }
+          conclude({
+            result: 'failure',
+            outcome: sourceLabel,
+            error: errorObj || null,
+            errorMessage: message,
+            newVersion: normalizedExtracted && normalizedExtracted !== version ? normalizedExtracted : null,
+            meta
+          });
         };
 
         testBot.once('spawn', () => {
-          const finalVersion = testBot.version || versionToTry;
-          safeCleanup();
-          console.log(`[DETECTION] ✓ Server is CRACKED - will use proxies (version: ${finalVersion})`);
-          resolve({ 
-            cracked: true, 
-            useProxy: true, 
-            version: finalVersion,
-            detectedVersion: detectedVersion || finalVersion
+          console.log('[VERSION] ✓ Connected successfully with ' + version + ' (offline mode)');
+          conclude({
+            result: 'success',
+            outcome: 'cracked_spawn',
+            details: {
+              cracked: true,
+              useProxy: true,
+              version,
+              detectedVersion: version,
+              detectionSource: 'spawn'
+            }
           });
         });
 
         testBot.once('error', (err) => {
-          const finalVersion = testBot.version || versionToTry;
-          safeCleanup();
-          
-          // Try to extract version from error message
-          const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(err.message, 'server detection error');
-          if (extractedVersion) {
-            if (extractionMeta.confidence === 'fallback') {
-              console.log(`[DETECTION] ⚠️ Error did not reveal version, using fallback ${extractedVersion}`);
-              if (!detectedVersion) {
-                detectedVersion = extractedVersion;
-              }
-            } else {
-              const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
-              console.log(`[DETECTION] ✓ ${descriptor}: ${extractedVersion}`);
-              detectedVersion = extractedVersion;
-            }
-          }
-
-          if (err.message.includes('authentication') ||
-              err.message.includes('premium') ||
-              err.message.includes('Session') ||
-              err.message.includes('authenticate')) {
-            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (version: ${detectedVersion || finalVersion})`);
-            resolve({ 
-              cracked: false, 
-              useProxy: false, 
-              version: detectedVersion || finalVersion,
-              detectedVersion: detectedVersion
-            });
-          } else if (err.message.includes('reset') || err.message.includes('ECONNREFUSED')) {
-            console.log(`[DETECTION] ✓ Server is CRACKED (connection reset) - version: ${detectedVersion || finalVersion}`);
-            resolve({ 
-              cracked: true, 
-              useProxy: true, 
-              version: detectedVersion || finalVersion,
-              detectedVersion: detectedVersion
-            });
+          const message = sanitizeErrorMessage(err);
+          const { version: extractedVersion, meta } = extractVersionSafely(message || err, 'server detection error');
+          if (/authentication|premium|session|microsoft|mojang|login/i.test(message)) {
+            handleAuthSuccess('error', message, extractedVersion, meta);
           } else {
-            console.error('[DETECTION] Detection error:', err.message);
-            // Even if we can't determine server type, return extracted version
-            console.log(`[DETECTION] ⚠️ Uncertain, assuming CRACKED - version: ${detectedVersion || finalVersion}`);
-            resolve({ 
-              cracked: true, 
-              useProxy: true, 
-              version: detectedVersion || finalVersion,
-              detectedVersion: detectedVersion,
-              error: err.message 
-            });
+            handleFailure('error', err, message, extractedVersion, meta);
           }
         });
 
         testBot.once('kicked', (reason) => {
-          const finalVersion = testBot.version || versionToTry;
-          safeCleanup();
-          
-          const reasonStr = typeof reason === 'string' ? reason : JSON.stringify(reason);
-          
-          // Try to extract version from kick reason
-          const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(reasonStr, 'server detection kick');
-          if (extractedVersion) {
-            if (extractionMeta.confidence === 'fallback') {
-              console.log(`[DETECTION] ⚠️ Kick reason did not reveal version, using fallback ${extractedVersion}`);
-              if (!detectedVersion) {
-                detectedVersion = extractedVersion;
-              }
-            } else {
-              const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
-              console.log(`[DETECTION] ✓ ${descriptor} from kick: ${extractedVersion}`);
-              detectedVersion = extractedVersion;
-            }
-          }
-          
-          if (reasonStr.includes('authentication') ||
-              reasonStr.includes('premium') ||
-              reasonStr.includes('Session')) {
-            console.log(`[DETECTION] ✓ Server is PREMIUM - will use local account (version: ${detectedVersion || finalVersion})`);
-            resolve({ 
-              cracked: false, 
-              useProxy: false, 
-              version: detectedVersion || finalVersion,
-              detectedVersion: detectedVersion,
-              kickReason: reasonStr
-            });
+          const message = sanitizeErrorMessage(reason);
+          const { version: extractedVersion, meta } = extractVersionSafely(message || reason, 'server detection kick');
+          if (/authentication|premium|session|microsoft|mojang|login/i.test(message)) {
+            handleAuthSuccess('kick', message, extractedVersion, meta);
           } else {
-            console.log(`[DETECTION] Kicked for: ${reasonStr} - version: ${detectedVersion || finalVersion}`);
-            // Default to cracked mode on unknown kicks
-            resolve({ 
-              cracked: true, 
-              useProxy: true, 
-              version: detectedVersion || finalVersion,
-              detectedVersion: detectedVersion,
-              kickReason: reasonStr
-            });
+            handleFailure('kick', null, message, extractedVersion, meta);
           }
         });
 
-        testBot.once('end', () => {
-          if (timeout) {
-            clearTimeout(timeout);
-            timeout = null;
-          }
-          testBot = null;
+        testBot.once('end', (reason) => {
+          const message = sanitizeErrorMessage(reason);
+          handleFailure('end', null, message, null, null);
         });
       });
-    } catch (error) {
-      console.error('[DETECTION] Critical error:', error.message);
-      
-      // Try to extract version from error message
-      const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(error.message, 'server detection critical error');
-      if (extractedVersion) {
-        if (extractionMeta.confidence === 'fallback') {
-          console.log(`[DETECTION] ⚠️ Critical error did not reveal version, using fallback ${extractedVersion}`);
-          if (!detectedVersion) {
-            detectedVersion = extractedVersion;
-          }
-        } else {
-          const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
-          console.log(`[DETECTION] ✓ ${descriptor} from critical error: ${extractedVersion}`);
-          detectedVersion = extractedVersion;
-        }
+    };
+
+    while (versionQueue.length) {
+      const currentVersion = versionQueue.shift();
+      if (!currentVersion || tried.has(currentVersion)) {
+        continue;
       }
-      
-      // Default to cracked mode on critical errors
-      return { 
-        cracked: true, 
-        useProxy: true, 
-        version: detectedVersion || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4',
-        detectedVersion: detectedVersion,
-        error: error.message 
-      };
+      tried.add(currentVersion);
+
+      const outcome = await attemptVersion(currentVersion);
+      if (outcome.result === 'success' && outcome.details) {
+        finalResult = outcome.details;
+        bestGuess = finalResult.detectedVersion || finalResult.version || currentVersion;
+        break;
+      }
+
+      if (outcome.newVersion) {
+        enqueueVersion(outcome.newVersion);
+      }
     }
+
+    if (!finalResult) {
+      console.log('[VERSION] ⚠️ Could not determine version automatically, using fallback ' + bestGuess);
+      finalResult = {
+        cracked: true,
+        useProxy: true,
+        version: bestGuess,
+        detectedVersion: bestGuess,
+        detectionSource: 'fallback',
+        reason: lastError ? (lastError.message || String(lastError)) : 'no_successful_attempt'
+      };
+    } else {
+      console.log('[VERSION] ✓ Selected ' + finalResult.detectedVersion + ' (' + (finalResult.cracked ? 'cracked/offline' : 'premium') + ')');
+    }
+
+    const detectionResult = {
+      cracked: finalResult.cracked,
+      useProxy: finalResult.useProxy,
+      version: finalResult.detectedVersion || finalResult.version || bestGuess,
+      detectedVersion: finalResult.detectedVersion || finalResult.version || bestGuess,
+      detectionSource: finalResult.detectionSource || 'attempt',
+      versionCandidates: Array.from(seenVersions),
+      detectionAttempts: attempts,
+      bestGuess: bestGuess,
+      ping: detectionPlan.fromPing || null,
+      cache: detectionPlan.fromCache || null,
+      host,
+      port,
+      detectedAt: Date.now(),
+      lastError: lastError ? (lastError.message || String(lastError)) : null
+    };
+
+    this.serverType = detectionResult;
+    if (!config.swarm) {
+      config.swarm = {};
+    }
+    config.swarm.serverType = detectionResult;
+
+    recordVersionDetection(getServerCacheKey(host, port), {
+      host,
+      port,
+      candidates: detectionPlan.candidates,
+      attempts,
+      ping: detectionPlan.fromPing,
+      cache: detectionPlan.fromCache,
+      final: {
+        cracked: detectionResult.cracked,
+        useProxy: detectionResult.useProxy,
+        version: detectionResult.detectedVersion
+      }
+    });
+
+    return this.serverType;
   }
   
   async spawnBot(serverIP, options = {}) {
     try {
-      if (!this.serverType) {
-        this.serverType = await this.detectServerType(serverIP);
+      if (!this.serverType || options.forceVersionRedetect) {
+        this.serverType = await this.detectServerType(serverIP, { forceVersionRedetect: options.forceVersionRedetect });
       }
-      
-      // Use detected version if available, otherwise use provided or default
-      let versionToUse = this.serverType.detectedVersion || 
-                        options.version || 
-                        (config.bot && config.bot.defaultProtocolVersion) || '1.21.4';
-      
-      console.log(`[SPAWNER] Server type: ${this.serverType.cracked ? 'CRACKED' : 'PREMIUM'}`);
-      console.log(`[SPAWNER] Using: ${this.serverType.useProxy ? 'Proxy' : 'Local Account'}`);
-      console.log(`[SPAWNER] Protocol version: ${versionToUse}`);
-      
+
+      const versionCandidates = [];
+      const pushCandidate = (candidate) => {
+        const normalized = resolveSupportedVersion(candidate);
+        if (normalized && !versionCandidates.includes(normalized)) {
+          versionCandidates.push(normalized);
+        }
+      };
+
+      if (Array.isArray(options.versionCandidates)) {
+        options.versionCandidates.forEach(pushCandidate);
+      }
+
+      if (options.version) {
+        pushCandidate(options.version);
+      }
+
+      if (this.serverType && Array.isArray(this.serverType.versionCandidates)) {
+        this.serverType.versionCandidates.forEach(pushCandidate);
+      }
+
+      if (!versionCandidates.length) {
+        pushCandidate(getFallbackVersion());
+      }
+
+      const versionToUse = versionCandidates[0];
       options.version = versionToUse;
-      
+      options.versionCandidates = versionCandidates;
+
+      console.log('[SPAWNER] Server type: ' + (this.serverType.cracked ? 'CRACKED' : 'PREMIUM'));
+      console.log('[SPAWNER] Using: ' + (this.serverType.useProxy ? 'Proxy' : 'Local Account'));
+      console.log('[SPAWNER] Version candidates: ' + versionCandidates.join(', '));
+
       if (this.serverType.cracked) {
         if (this.getActiveBotCount() >= this.maxBots) {
           throw new Error(`Cannot spawn more bots - max limit ${this.maxBots} reached`);
         }
         return await this.createProxyBot(serverIP, options);
       }
-      
-      // Premium servers - only one local account bot allowed
+
       if (this.activeBots.some(info => info.type === 'local')) {
         throw new Error('Local account bot already running');
       }
-      
+
       return await this.createLocalBot(serverIP, options);
-      
     } catch (error) {
       console.error('[SPAWNER] Error in spawnBot:', error.message);
-      
-      // Try to extract version and retry once
       const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(error.message, 'spawnBot failure');
       if (extractedVersion && extractedVersion !== options.version) {
-        if (extractionMeta.confidence === 'fallback') {
-          console.log(`[SPAWNER] Retrying with fallback protocol version: ${extractedVersion}`);
-        } else {
-          const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
-          console.log(`[SPAWNER] Retrying with ${descriptor}: ${extractedVersion}`);
-        }
-        options.version = extractedVersion;
-        
-        if (this.serverType && this.serverType.cracked) {
-          return await this.createProxyBot(serverIP, options);
-        } else {
+        const descriptor = extractionMeta.confidence === 'protocol'
+          ? 'protocol-derived version'
+          : extractionMeta.confidence === 'fallback'
+            ? 'fallback protocol version'
+            : 'extracted version';
+        console.log('[SPAWNER] Retrying with ' + descriptor + ': ' + extractedVersion);
+        const normalized = resolveSupportedVersion(extractedVersion);
+        if (normalized) {
+          options.version = normalized;
+          options.versionCandidates = [normalized].concat(options.versionCandidates || []);
+          if (this.serverType && this.serverType.cracked) {
+            return await this.createProxyBot(serverIP, options);
+          }
           return await this.createLocalBot(serverIP, options);
         }
       }
-      
       throw error;
     }
   }
   
   async createProxyBot(serverIP, options) {
-    const [host, portStr] = serverIP.split(':');
-    const port = parseInt(portStr) || 25565;
+    const { host, port } = parseServerAddress(serverIP);
 
     if (!this.proxyManager) {
       this.proxyManager = new ProxyManager(null);
     }
 
     const username = options.username || this.generateRandomUsername();
-    const initialVersion = options.version || this.serverType.version || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4';
-    let version = initialVersion;
+    const initialCandidates = Array.isArray(options.versionCandidates) && options.versionCandidates.length
+      ? options.versionCandidates
+      : [options.version];
 
-    // Validate protocol version
-    if (!version || version === 'unknown') {
-      console.error('[SPAWNER] ✗ Invalid protocol version:', version);
-      throw new Error(`Invalid protocol version: ${version}`);
+    const queue = [];
+    const seen = new Set();
+    const enqueue = (candidate) => {
+      const normalized = resolveSupportedVersion(candidate);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      queue.push(normalized);
+    };
+
+    initialCandidates.forEach(enqueue);
+    if (!queue.length) {
+      enqueue(getFallbackVersion());
     }
-
-    console.log(`[SPAWNER] Creating proxy bot: ${username}`);
-    console.log(`[SPAWNER] Server: ${host}:${port}, Version: ${version}`);
 
     const createBotWithVersion = async (testVersion) => {
       const botOptions = {
@@ -26034,7 +26520,6 @@ class BotSpawner {
         hideErrors: false
       };
 
-      // Add proxy configuration if enabled
       if (config.proxy && config.proxy.enabled && config.proxy.host && config.proxy.port) {
         botOptions.connect = (client) => {
           const SocksClient = require('socks').SocksClient;
@@ -26052,7 +26537,6 @@ class BotSpawner {
             }
           };
 
-          // Add proxy authentication if provided
           if (config.proxy.username && config.proxy.password) {
             proxyOptions.proxy.userId = config.proxy.username;
             proxyOptions.proxy.password = config.proxy.password;
@@ -26066,7 +26550,7 @@ class BotSpawner {
               return socket;
             })
             .catch(err => {
-              console.error(`[PROXY] Connection failed: ${err.message}`);
+              console.error('[PROXY] Connection failed: ' + err.message);
               throw err;
             });
         };
@@ -26075,78 +26559,63 @@ class BotSpawner {
       return mineflayer.createBot(botOptions);
     };
 
-    try {
-      const bot = await createBotWithVersion(version);
-      this.registerBot(bot, username, 'proxy', options.role);
-      return bot;
-    } catch (error) {
-      console.error(`[SPAWNER] Failed with version ${version}: ${error.message}`);
-      
-      // Extract version from error
-      const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(error.message, 'proxy bot creation failure');
-      
-      if (extractedVersion && extractedVersion !== version) {
-        if (extractionMeta.confidence === 'fallback') {
-          console.log(`[SPAWNER] 🔄 Retrying with fallback protocol version: ${extractedVersion}`);
-        } else {
-          const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
-          console.log(`[SPAWNER] 🔄 Retrying with ${descriptor}: ${extractedVersion}`);
-        }
-        
-        try {
-          const bot = await createBotWithVersion(extractedVersion);
-          console.log(`[SPAWNER] ✓ Success with extracted version: ${extractedVersion}`);
-          this.registerBot(bot, username, 'proxy', options.role);
-          return bot;
-        } catch (retryError) {
-          console.error(`[SPAWNER] Retry failed: ${retryError.message}`);
-        }
-      }
-      
-      // Try alternative versions if extraction didn't work
-      console.log('[SPAWNER] Trying alternative versions...');
-      
-      const supportedVersions = (config.bot && Array.isArray(config.bot.supportedVersions)) ? config.bot.supportedVersions : ['1.19.2', '1.20', '1.20.1', '1.20.4', '1.21', '1.21.1', '1.21.4'];
-      for (const altVersion of supportedVersions) {
-        if (altVersion === version || altVersion === extractedVersion) continue;
-        
-        try {
-          console.log(`[SPAWNER] Attempting version: ${altVersion}`);
-          const bot = await createBotWithVersion(altVersion);
-          console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
-          this.registerBot(bot, username, 'proxy', options.role);
-          return bot;
-        } catch (altError) {
-          console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
-          continue;
+    let lastError = null;
+
+    while (queue.length) {
+      const version = queue.shift();
+      if (!version) continue;
+
+      const protocol = getProtocolForVersion(version);
+      console.log('[VERSION] Trying version ' + version + (protocol ? ' (protocol ' + protocol + ')' : '') + '...');
+
+      try {
+        const bot = await createBotWithVersion(version);
+        console.log('[VERSION] ✓ Connected successfully with ' + version);
+        rememberServerVersion(serverIP, version, { source: 'proxy', protocol });
+        this.registerBot(bot, username, 'proxy', options.role, { version, protocol, source: 'proxy' });
+        return bot;
+      } catch (error) {
+        const message = sanitizeErrorMessage(error.message || error);
+        console.log('[VERSION] ✗ Version ' + version + ' failed: ' + message);
+        lastError = error;
+        const { version: extractedVersion, meta } = extractVersionSafely(error.message || error, 'proxy bot creation failure');
+        const normalizedExtracted = resolveSupportedVersion(extractedVersion);
+        if (normalizedExtracted && !seen.has(normalizedExtracted)) {
+          console.log('[VERSION] 🔄 Queuing alternative version: ' + normalizedExtracted + ' (' + (meta.confidence || 'unknown') + ')');
+          seen.add(normalizedExtracted);
+          queue.unshift(normalizedExtracted);
         }
       }
-      
-      throw error;
     }
+
+    throw lastError || new Error('Unable to connect using available versions');
   }
   
   async createLocalBot(serverIP, options) {
-    const [host, portStr] = serverIP.split(':');
-    const port = parseInt(portStr) || 25565;
+    const { host, port } = parseServerAddress(serverIP);
 
     const account = config.localAccount;
     if (!account.username || !account.password) {
       throw new Error('Local account credentials not configured');
     }
 
-    const initialVersion = options.version || this.serverType.version || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4';
-    let version = initialVersion;
+    const initialCandidates = Array.isArray(options.versionCandidates) && options.versionCandidates.length
+      ? options.versionCandidates
+      : [options.version];
 
-    // Validate protocol version
-    if (!version || version === 'unknown') {
-      console.error('[SPAWNER] ✗ Invalid protocol version:', version);
-      throw new Error(`Invalid protocol version: ${version}`);
+    const queue = [];
+    const seen = new Set();
+    const enqueue = (candidate) => {
+      const normalized = resolveSupportedVersion(candidate);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      queue.push(normalized);
+    };
+
+    initialCandidates.forEach(enqueue);
+    if (!queue.length) {
+      enqueue(getFallbackVersion());
     }
-
-    const username = options.username || account.username;
-    console.log(`[SPAWNER] Creating local account bot: ${username}`);
-    console.log(`[SPAWNER] Server: ${host}:${port}, Version: ${version}`);
 
     const createBotWithVersion = async (testVersion) => {
       const botOptions = {
@@ -26159,7 +26628,6 @@ class BotSpawner {
         hideErrors: false
       };
 
-      // Add proxy configuration if enabled
       if (config.proxy && config.proxy.enabled && config.proxy.host && config.proxy.port) {
         botOptions.connect = (client) => {
           const SocksClient = require('socks').SocksClient;
@@ -26177,7 +26645,6 @@ class BotSpawner {
             }
           };
 
-          // Add proxy authentication if provided
           if (config.proxy.username && config.proxy.password) {
             proxyOptions.proxy.userId = config.proxy.username;
             proxyOptions.proxy.password = config.proxy.password;
@@ -26191,7 +26658,7 @@ class BotSpawner {
               return socket;
             })
             .catch(err => {
-              console.error(`[PROXY] Connection failed: ${err.message}`);
+              console.error('[PROXY] Connection failed: ' + err.message);
               throw err;
             });
         };
@@ -26200,64 +26667,52 @@ class BotSpawner {
       return mineflayer.createBot(botOptions);
     };
 
-    try {
-      const bot = await createBotWithVersion(version);
-      this.registerBot(bot, username, 'local', options.role);
-      return bot;
-    } catch (error) {
-      console.error(`[SPAWNER] Failed with version ${version}: ${error.message}`);
-      
-      // Extract version from error
-      const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(error.message, 'local bot creation failure');
-      
-      if (extractedVersion && extractedVersion !== version) {
-        if (extractionMeta.confidence === 'fallback') {
-          console.log(`[SPAWNER] 🔄 Retrying with fallback protocol version: ${extractedVersion}`);
-        } else {
-          const descriptor = extractionMeta.confidence === 'protocol' ? 'protocol-derived version' : 'extracted version';
-          console.log(`[SPAWNER] 🔄 Retrying with ${descriptor}: ${extractedVersion}`);
-        }
-        
-        try {
-          const bot = await createBotWithVersion(extractedVersion);
-          console.log(`[SPAWNER] ✓ Success with extracted version: ${extractedVersion}`);
-          this.registerBot(bot, username, 'local', options.role);
-          return bot;
-        } catch (retryError) {
-          console.error(`[SPAWNER] Retry failed: ${retryError.message}`);
-        }
-      }
-      
-      // Try alternative versions
-      console.log('[SPAWNER] Trying alternative versions...');
-      
-      const supportedVersions = (config.bot && Array.isArray(config.bot.supportedVersions)) ? config.bot.supportedVersions : ['1.19.2', '1.20', '1.20.1', '1.20.4', '1.21', '1.21.1', '1.21.4'];
-      for (const altVersion of supportedVersions) {
-        if (altVersion === version || altVersion === extractedVersion) continue;
-        
-        try {
-          console.log(`[SPAWNER] Attempting version: ${altVersion}`);
-          const bot = await createBotWithVersion(altVersion);
-          console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
-          this.registerBot(bot, username, 'local', options.role);
-          return bot;
-        } catch (altError) {
-          console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
-          continue;
+    const username = options.username || account.username;
+    let lastError = null;
+
+    while (queue.length) {
+      const version = queue.shift();
+      if (!version) continue;
+
+      const protocol = getProtocolForVersion(version);
+      console.log('[VERSION] Trying version ' + version + (protocol ? ' (protocol ' + protocol + ')' : '') + ' for local account...');
+
+      try {
+        const bot = await createBotWithVersion(version);
+        console.log('[VERSION] ✓ Connected successfully with ' + version);
+        rememberServerVersion(serverIP, version, { source: 'local', protocol });
+        this.registerBot(bot, username, 'local', options.role, { version, protocol, source: 'local' });
+        return bot;
+      } catch (error) {
+        const message = sanitizeErrorMessage(error.message || error);
+        console.log('[VERSION] ✗ Version ' + version + ' failed: ' + message);
+        lastError = error;
+        const { version: extractedVersion, meta } = extractVersionSafely(error.message || error, 'local bot creation failure');
+        const normalizedExtracted = resolveSupportedVersion(extractedVersion);
+        if (normalizedExtracted && !seen.has(normalizedExtracted)) {
+          console.log('[VERSION] 🔄 Queuing alternative version: ' + normalizedExtracted + ' (' + (meta.confidence || 'unknown') + ')');
+          seen.add(normalizedExtracted);
+          queue.unshift(normalizedExtracted);
         }
       }
-      
-      throw error;
     }
+
+    throw lastError || new Error('Unable to connect using available versions');
   }
   
-  registerBot(bot, username, type, role = null) {
+  registerBot(bot, username, type, role = null, connection = {}) {
+    const version = connection.version || (bot && bot.version) || null;
     const entry = {
       bot,
       username,
       type,
       role,
-      spawned: Date.now()
+      spawned: Date.now(),
+      connection: {
+        version,
+        protocol: connection.protocol || getProtocolForVersion(version) || null,
+        source: connection.source || null
+      }
     };
     this.activeBots.push(entry);
     this.refreshSwarmBotList();
@@ -26285,7 +26740,10 @@ class BotSpawner {
       username: info.username,
       type: info.type,
       role: info.role,
-      spawned: info.spawned
+      spawned: info.spawned,
+      version: info.connection && info.connection.version ? info.connection.version : null,
+      protocol: info.connection && info.connection.protocol ? info.connection.protocol : null,
+      source: info.connection && info.connection.source ? info.connection.source : null
     }));
   }
   
@@ -26493,9 +26951,14 @@ class BotSpawner {
   getStatus() {
     return {
       serverType: this.serverType,
+      versionCandidates: this.serverType && Array.isArray(this.serverType.versionCandidates)
+        ? this.serverType.versionCandidates
+        : [],
       activeBots: this.activeBots.length,
       maxBots: this.maxBots,
-      bots: config.swarm.bots
+      bots: config.swarm.bots,
+      lastDetection: serverVersionState.lastDetection,
+      lastSuccessfulVersion: serverVersionState.lastSuccess
     };
   }
 }
