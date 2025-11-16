@@ -16508,6 +16508,127 @@ class AutoFisher {
   }
 }
 
+const DEFAULT_COMMAND_TRUST = {
+  emergency: 'guest',
+  navigation: 'guest',
+  combat: 'trusted',
+  gathering: 'guest',
+  discovery: 'trusted',
+  base: 'trusted',
+  maintenance: 'trusted',
+  building: 'trusted',
+  analytics: 'trusted',
+  trust: 'admin',
+  gear: 'trusted',
+  system: 'admin',
+  swim: 'guest',
+  swarm: 'trusted',
+  misc: 'guest'
+};
+
+function createCommandDefinition(key, config) {
+  const category = config.category || 'misc';
+  const triggerList = Array.isArray(config.triggers) ? config.triggers : [config.triggers];
+  return {
+    key,
+    category,
+    triggers: triggerList.slice(),
+    minTrust: config.minTrust || DEFAULT_COMMAND_TRUST[category] || 'guest',
+    usage: config.usage || null,
+    displayName: config.displayName || (triggerList[0] || key)
+  };
+}
+
+const COMMAND_DEFINITIONS = [
+  ...[
+    { key: 'help', triggers: ['help', 'need help', 'help me', 'help at'], usage: '!help <x> <y> <z>', commandTemplate: '!help' },
+    { key: 'swarmStatus', triggers: ['swarm status', 'swarm info'], usage: '!swarm status' },
+    { key: 'spawnBots', triggers: ['spawn', 'spawn bots', 'spawn more', 'spawn bot'], usage: '!spawn <count>', minTrust: 'admin' },
+    { key: 'stopAction', triggers: ['stop', 'halt', 'cease'], usage: '!stop', commandTemplate: '!stop' },
+    { key: 'statusReport', triggers: ['status report'], usage: 'status report', minTrust: 'trusted' },
+    { key: 'swarmTest', triggers: ['test bot', 'test bots', 'swarm test'], usage: '!test bot', minTrust: 'admin', commandTemplate: '!test bot' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'emergency' })),
+  ...[
+    { key: 'goto', triggers: ['goto'], usage: '!goto <x> <y> <z>' },
+    { key: 'follow', triggers: ['follow'], usage: '!follow <player>' },
+    { key: 'comeTo', triggers: ['come to', 'come here'], usage: 'come to <x> <y> <z>', commandTemplate: '!come to' },
+    { key: 'setHome', triggers: ['set home here', 'set home'], usage: 'set home here|x,y,z', minTrust: 'trusted' },
+    { key: 'goHome', triggers: ['go home', 'head home'], usage: 'go home', minTrust: 'trusted' },
+    { key: 'travelTo', triggers: ['travel to', 'travel'], usage: 'travel to <location>' },
+    { key: 'findHighway', triggers: ['find highway', 'highway'], usage: 'find highway' },
+    { key: 'botLocation', triggers: ['where are you'], usage: 'where are you', minTrust: 'trusted' },
+    { key: 'playerLocation', triggers: ['what is my location', 'where am i', 'my location'], usage: 'what is my location', minTrust: 'trusted' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'navigation' })),
+  ...[
+    { key: 'attack', triggers: ['attack'], usage: '!attack <player>', minTrust: 'trusted' },
+    { key: 'coordinatedAttack', triggers: ['coordinated attack'], usage: 'coordinated attack <player>', minTrust: 'trusted' },
+    { key: 'retreat', triggers: ['retreat', 'fall back'], usage: 'retreat', minTrust: 'trusted' },
+    { key: 'startGuard', triggers: ['start guard', 'begin guard'], usage: 'start guard <x> <y> <z>', minTrust: 'trusted' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'combat' })),
+  ...[
+    { key: 'mineResource', triggers: ['mine'], usage: '!mine <resource>' },
+    { key: 'collectItem', triggers: ['collect'], usage: 'collect <item>' },
+    { key: 'findItem', triggers: ['find'], usage: 'find <item>' },
+    { key: 'huntMob', triggers: ['hunt'], usage: 'hunt <mob>' },
+    { key: 'fish', triggers: ['fish for'], usage: 'fish for <fish>' },
+    { key: 'farmCrop', triggers: ['farm'], usage: 'farm <crop>' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'gathering' })),
+  ...[
+    { key: 'stashScan', triggers: ['stash'], usage: '!stash', minTrust: 'trusted' },
+    { key: 'dupeTest', triggers: ['dupe'], usage: '!dupe <item>', minTrust: 'admin' },
+    { key: 'scannerStatus', triggers: ['scanner status'], usage: 'scanner status', minTrust: 'trusted' },
+    { key: 'scannerReport', triggers: ['scanner report'], usage: 'scanner report', minTrust: 'trusted' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'discovery' })),
+  ...[
+    { key: 'homeStatus', triggers: ['home status', 'home info'], usage: 'home status', minTrust: 'trusted' },
+    { key: 'depositValuables', triggers: ['deposit', 'store valuables'], usage: 'deposit', minTrust: 'trusted' },
+    { key: 'defenseStatus', triggers: ['defense status'], usage: 'defense status', minTrust: 'trusted' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'base' })),
+  ...[
+    { key: 'maintenanceStatus', triggers: ['maintenance status', 'repair status'], usage: 'maintenance status', minTrust: 'trusted' },
+    { key: 'maintenanceStart', triggers: ['start maintenance'], usage: 'start maintenance', minTrust: 'trusted' },
+    { key: 'maintenanceStop', triggers: ['stop maintenance'], usage: 'stop maintenance', minTrust: 'trusted' },
+    { key: 'repairArmor', triggers: ['repair armor', 'fix armor'], usage: 'repair armor', minTrust: 'trusted' },
+    { key: 'swapElytra', triggers: ['swap elytra', 'fix elytra'], usage: 'swap elytra', minTrust: 'trusted' },
+    { key: 'checkElytra', triggers: ['check elytra'], usage: 'check elytra', minTrust: 'trusted' },
+    { key: 'setXpFarmHere', triggers: ['set xp farm here'], usage: 'set xp farm here', minTrust: 'trusted' },
+    { key: 'setXpFarm', triggers: ['set xp farm'], usage: 'set xp farm <x,y,z>', minTrust: 'trusted' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'maintenance' })),
+  ...[
+    { key: 'startBuild', triggers: ['start build'], usage: 'start build <schematic>', minTrust: 'trusted' },
+    { key: 'buildSchematic', triggers: ['build schematic'], usage: 'build schematic <name>', minTrust: 'trusted' },
+    { key: 'buildStatus', triggers: ['build status'], usage: 'build status', minTrust: 'trusted' },
+    { key: 'buildProgress', triggers: ['build progress'], usage: 'build progress', minTrust: 'trusted' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'building' })),
+  ...[
+    { key: 'analytics', triggers: ['stats', 'performance', 'analytics'], usage: '!stats', minTrust: 'trusted' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'analytics' })),
+  ...[
+    { key: 'trustLevel', triggers: ['trust level', 'check trust'], usage: 'trust level <player>', minTrust: 'trusted' },
+    { key: 'listWhitelist', triggers: ['list whitelist', 'show whitelist'], usage: 'list whitelist', minTrust: 'trusted' },
+    { key: 'setTrust', triggers: ['set trust', 'set level'], usage: 'set trust <player> <level>', minTrust: 'owner' },
+    { key: 'removeTrust', triggers: ['remove trust', 'remove whitelist'], usage: 'remove trust <player>', minTrust: 'admin' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'trust' })),
+  ...[
+    { key: 'gearUp', triggers: ['gear up', 'get geared', 'go get geared'], usage: 'gear up <tier>', minTrust: 'trusted' },
+    { key: 'gearStatus', triggers: ['gear status', 'gear progress'], usage: 'gear status', minTrust: 'trusted' },
+    { key: 'gearUpgradeNetherite', triggers: ['upgrade to netherite', 'netherite upgrade'], usage: 'upgrade to netherite', minTrust: 'trusted' },
+    { key: 'selfUpgrade', triggers: ['get yourself netherite', 'get yourself diamond', 'equip yourself'], usage: 'get yourself <tier>', minTrust: 'trusted' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'gear' })),
+  ...[
+    { key: 'detectServer', triggers: ['detect server', 'detect'], usage: '!detect', minTrust: 'admin' },
+    { key: 'modeChange', triggers: ['change to', 'switch to'], usage: 'change to <mode>', minTrust: 'admin' },
+    { key: 'escapeStatus', triggers: ['escape status', 'status'], usage: '!status', minTrust: 'trusted', commandTemplate: '!status' },
+    { key: 'escapeToggle', triggers: ['escape'], usage: '!escape on|off', minTrust: 'trusted' },
+    { key: 'stayToggle', triggers: ['stay', 'dontleave', 'stay put'], usage: '!stay', minTrust: 'trusted' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'system' })),
+  ...[
+    { key: 'swimEnable', triggers: ['swim enable', 'swim on'], usage: '!swim enable' },
+    { key: 'swimDisable', triggers: ['swim disable', 'swim off'], usage: '!swim disable' },
+    { key: 'swimStatus', triggers: ['swim status'], usage: '!swim status' }
+  ].map(def => createCommandDefinition(def.key, { ...def, category: 'swim' }))
+];
+
 // === INTELLIGENT CONVERSATION SYSTEM ===
 class ConversationAI {
   constructor(bot) {
@@ -16516,16 +16637,257 @@ class ConversationAI {
     this.maxContext = 10;
     this.trustLevels = ['guest', 'trusted', 'admin', 'owner'];
     this.itemHunter = new ItemHunter(bot);
-    
+
+    const conversationConfig = config.conversationalAI || {};
+    if (!globalMessageInterceptor && typeof MessageInterceptor === 'function') {
+      if (this.bot && this.bot.messageInterceptor instanceof MessageInterceptor) {
+        globalMessageInterceptor = this.bot.messageInterceptor;
+      } else {
+        globalMessageInterceptor = new MessageInterceptor(this.bot);
+      }
+    }
+
+    if (this.bot && !this.bot.messageInterceptor && globalMessageInterceptor) {
+      this.bot.messageInterceptor = globalMessageInterceptor;
+    }
+
+    this.messageInterceptor = globalMessageInterceptor;
+    this.commandDefinitions = this.buildCommandRegistry();
+
     // Initialize LLM bridge if enabled
     const llmConfig = {
-      ...config.conversationalAI.llmConfig,
-      useLLM: config.conversationalAI.useLLM
+      ...conversationConfig.llmConfig,
+      useLLM: conversationConfig.useLLM
     };
     this.llmBridge = new LLMBridge(llmConfig);
     this.dialogueRL = new DialogueRL(bot);
   }
   
+  buildCommandRegistry() {
+    const registry = COMMAND_DEFINITIONS.map(def => {
+      const normalizedTriggers = (def.triggers || [])
+        .filter(Boolean)
+        .map(trigger => trigger.trim().toLowerCase())
+        .filter(trigger => trigger.length > 0);
+
+      const displayName = def.displayName || (def.triggers && def.triggers[0]) || def.key;
+
+      return {
+        ...def,
+        rawTriggers: (def.triggers || []).slice(),
+        triggers: normalizedTriggers,
+        displayName
+      };
+    });
+
+    this.commandDefinitionMap = new Map();
+    for (const entry of registry) {
+      if (!this.commandDefinitionMap.has(entry.key)) {
+        this.commandDefinitionMap.set(entry.key, entry);
+      }
+    }
+
+    return registry;
+  }
+
+  parsePrefixedCommand(message) {
+    if (!message || typeof message !== 'string') {
+      return null;
+    }
+
+    const trimmed = message.trim();
+    if (!trimmed.startsWith('!')) {
+      return null;
+    }
+
+    let mode = 'single';
+    let prefixLength = 1;
+
+    if (trimmed.startsWith('!!')) {
+      mode = 'swarm';
+      prefixLength = 2;
+    }
+
+    const commandBody = trimmed.slice(prefixLength).trim();
+    return {
+      mode,
+      prefix: trimmed.slice(0, prefixLength),
+      commandBody,
+      original: trimmed
+    };
+  }
+
+  matchCommandDefinition(commandBody) {
+    if (!commandBody) {
+      return null;
+    }
+
+    const normalizedBody = commandBody.trim();
+    if (normalizedBody.length === 0) {
+      return null;
+    }
+
+    const lowerBody = normalizedBody.toLowerCase();
+    let bestMatch = null;
+
+    for (const definition of this.commandDefinitions) {
+      for (const trigger of definition.triggers) {
+        if (!trigger) {
+          continue;
+        }
+
+        if (lowerBody === trigger || lowerBody.startsWith(`${trigger} `) ||
+            lowerBody.startsWith(`${trigger},`) || lowerBody.startsWith(`${trigger};`) ||
+            lowerBody.startsWith(`${trigger}:`)) {
+          const nextChar = lowerBody.charAt(trigger.length);
+          if (lowerBody.length === trigger.length || /\s|,|;|:/.test(nextChar)) {
+            const argsText = normalizedBody.slice(trigger.length).trim();
+            if (!bestMatch || trigger.length > bestMatch.length) {
+              bestMatch = {
+                definition,
+                trigger,
+                argsText,
+                length: trigger.length
+              };
+            }
+          }
+        }
+      }
+    }
+
+    return bestMatch;
+  }
+
+  ensureCommandAccess(username, parsedCommand) {
+    if (!parsedCommand || !parsedCommand.definition) {
+      return true;
+    }
+
+    const requiredLevel = parsedCommand.definition.minTrust || 'guest';
+    if (!requiredLevel || requiredLevel === 'guest') {
+      return true;
+    }
+
+    if (isSystemCommandUser(username)) {
+      return true;
+    }
+
+    if (!this.isWhitelisted(username)) {
+      this.bot.chat('Sorry, only whitelisted players can give me commands!');
+      return false;
+    }
+
+    if (this.hasTrustLevel(username, requiredLevel)) {
+      return true;
+    }
+
+    const display = parsedCommand.definition.displayName || parsedCommand.definition.key;
+    this.bot.chat(`Sorry ${username}, the "${display}" command requires ${requiredLevel}+ access.`);
+    return false;
+  }
+
+  formatCommandForHandler(parsedCommand) {
+    if (!parsedCommand) {
+      return '';
+    }
+
+    const template = parsedCommand.definition && parsedCommand.definition.commandTemplate;
+    if (template) {
+      if (template.includes('%ARGS%')) {
+        const replacement = parsedCommand.argsText ? parsedCommand.argsText : '';
+        return template.replace('%ARGS%', replacement).trim();
+      }
+      if (parsedCommand.argsText) {
+        return `${template} ${parsedCommand.argsText}`.trim();
+      }
+      return template.trim();
+    }
+
+    const body = parsedCommand.commandBody || '';
+    if (!body) {
+      return '!';
+    }
+
+    return `!${body}`.trim();
+  }
+
+  async routePrefixedCommand(username, sanitizedMessage, prefixInfo) {
+    if (!prefixInfo) {
+      return false;
+    }
+
+    const commandBody = prefixInfo.commandBody;
+    if (!commandBody) {
+      this.bot.chat('Please provide a command after the prefix.');
+      return true;
+    }
+
+    if (commandBody.length > 100) {
+      this.bot.chat('Command too long! Please keep it under 100 characters.');
+      return true;
+    }
+
+    const startTime = Date.now();
+
+    const match = this.matchCommandDefinition(commandBody);
+    if (!match) {
+      this.bot.chat("I don't recognize that command. Try '!help' for options.");
+      return true;
+    }
+
+    const parsedCommand = {
+      username,
+      mode: prefixInfo.mode,
+      prefix: prefixInfo.prefix,
+      commandBody,
+      trigger: match.trigger,
+      argsText: match.argsText,
+      args: match.argsText ? match.argsText.split(/\s+/).filter(Boolean) : [],
+      definition: match.definition,
+      commandKey: match.definition.key,
+      displayName: match.definition.displayName,
+      broadcastText: `${match.trigger}${match.argsText ? ` ${match.argsText}` : ''}`.trim(),
+      originalMessage: sanitizedMessage
+    };
+
+    if (!this.ensureCommandAccess(username, parsedCommand)) {
+      return true;
+    }
+
+    if (prefixInfo.mode === 'swarm') {
+      if (!globalSwarmCoordinator) {
+        this.bot.chat('Swarm coordinator not available for group commands!');
+        return true;
+      }
+
+      const broadcastPayload = parsedCommand.commandBody || match.trigger;
+      globalSwarmCoordinator.broadcastCommand(broadcastPayload);
+
+      const display = parsedCommand.definition.displayName || parsedCommand.definition.key;
+      this.bot.chat(`📢 Broadcasting "${display}" to all bots`);
+    }
+
+    const handlerMessage = this.formatCommandForHandler(parsedCommand);
+    await this.handleCommand(username, handlerMessage, {
+      source: 'chat',
+      parsedCommand,
+      commandDefinition: parsedCommand.definition
+    });
+
+    if (this.dialogueRL) {
+      const commandResponseTime = Date.now() - startTime;
+      const messageType = this.classifyMessageType(commandBody);
+      const actionLabel = prefixInfo.mode === 'swarm' ? 'execute_swarm_command' : 'execute_prefixed_command';
+      this.dialogueRL.recordOutcome(username, commandBody, actionLabel, {
+        success: true,
+        responseTime: commandResponseTime,
+        trustViolation: false
+      }, messageType);
+    }
+
+    return true;
+  }
+
   // Strip bot name from message with various formats
   stripBotName(message, username) {
     if (!message) return message;
@@ -17032,8 +17394,9 @@ class ConversationAI {
     }
     
     // Also log to MessageInterceptor if available
-    if (globalMessageInterceptor) {
-      globalMessageInterceptor.logConversation(qaEntry);
+    const interceptor = this.messageInterceptor || globalMessageInterceptor;
+    if (interceptor) {
+      interceptor.logConversation(qaEntry);
     }
   }
   
@@ -17144,8 +17507,9 @@ class ConversationAI {
       }
 
       // Log message to interceptor
-      if (globalMessageInterceptor) {
-        globalMessageInterceptor.logMessage(userValidation.sanitized, sanitizedMessage, 'chat');
+      const interceptor = this.messageInterceptor || globalMessageInterceptor;
+      if (interceptor) {
+        interceptor.logMessage(userValidation.sanitized, sanitizedMessage, 'chat');
       }
 
       // Handle /msg relay for trusted+ users
@@ -17154,29 +17518,13 @@ class ConversationAI {
         return;
       }
 
-      // Handle group commands (!! prefix)
-      if (sanitizedMessage.startsWith('!!')) {
-        console.log(`[CMD_DEBUG][COMMAND] Group command detected: ${sanitizedMessage}`);
-        if (!this.isWhitelisted(userValidation.sanitized)) {
-          this.bot.chat("Sorry, only whitelisted players can give me commands!");
+      // Handle prefixed command routing (! / !!)
+      const prefixInfo = this.parsePrefixedCommand(sanitizedMessage);
+      if (prefixInfo) {
+        const handled = await this.routePrefixedCommand(userValidation.sanitized, sanitizedMessage, prefixInfo);
+        if (handled) {
           return;
         }
-        const cleanCommand = sanitizedMessage.substring(2).trim();
-        
-        // Validate command length to prevent abuse
-        if (cleanCommand.length > 100) {
-          this.bot.chat("Command too long! Please keep it under 100 characters.");
-          return;
-        }
-        
-        if (globalSwarmCoordinator) {
-          console.log(`[CMD_DEBUG][COMMAND] Broadcasting group command: ${cleanCommand}`);
-          globalSwarmCoordinator.broadcastCommand(cleanCommand);
-          this.bot.chat(`📢 Broadcasting command to all bots: ${cleanCommand}`);
-        } else {
-          this.bot.chat("Swarm coordinator not available for group commands!");
-        }
-        return;
       }
 
       if (!this.shouldRespond(username, message)) return;
@@ -17256,6 +17604,15 @@ try {
 
         if (response) {
           this.bot.chat(response);
+        }
+
+        const conversationResponseTime = Date.now() - startTime;
+        if (this.dialogueRL) {
+          this.dialogueRL.recordOutcome(username, normalizedMessage, 'natural_response', {
+            success: !!response,
+            responseTime: conversationResponseTime,
+            trustViolation: false
+          }, messageType);
         }
       } catch (error) {
         console.error(`[CONVERSATION] Error handling message: ${error.message}`);
@@ -17397,6 +17754,8 @@ try {
     console.log(`[CMD_DEBUG][COMMAND] (${source}) Processing command from ${username}: ${message} | trust=${trustLevel || 'none'} | bypass=${bypassTrust}`);
 
     this._activeCommandContext = { username, bypassTrust, source, respond, setOutcome };
+    this._activeCommandContext.parsedCommand = options.parsedCommand || null;
+    this._activeCommandContext.commandDefinition = options.commandDefinition || null;
 
     const commandExecutor = async () => {
       if (!bypassTrust && !whitelistEntry) {
@@ -34439,8 +34798,17 @@ class ProductionTracker {
 // Extend existing MessageInterceptor with conversation logging methods
 if (typeof MessageInterceptor !== 'undefined') {
   // Add conversation logging methods to existing MessageInterceptor class
+  MessageInterceptor.prototype.logMessage = function(username, message, channel = 'chat') {
+    try {
+      return this.interceptMessage(message, username, channel, { origin: 'manual_log' });
+    } catch (error) {
+      console.error('[MESSAGE_INTERCEPTOR] Failed to log message:', error.message);
+      return null;
+    }
+  };
+
   MessageInterceptor.prototype.logConversation = function(qaEntry) {
-    if (!this.conversations) {
+
       this.conversations = [];
       this.maxConversations = 100;
     }
