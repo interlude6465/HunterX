@@ -5659,15 +5659,60 @@ class SwarmCoordinator {
   broadcastCommand(command) {
     console.log(`[SWARM] Broadcasting command to all bots: ${command}`);
 
+    let websocketCount = 0;
+    let directBotCount = 0;
+
+    // Send to WebSocket-connected bots
     for (const [botId, botInfo] of this.bots) {
-      if (botInfo.ws.readyState === WebSocket.OPEN) {
+      if (botInfo.ws && botInfo.ws.readyState === WebSocket.OPEN) {
         botInfo.ws.send(JSON.stringify({
           type: 'COMMAND',
           command: command,
           timestamp: Date.now()
         }));
+        websocketCount++;
       }
     }
+
+    // Also send to direct spawned bots (from BotSpawner)
+    if (globalBotSpawner) {
+      for (const botInfo of globalBotSpawner.activeBots) {
+        if (botInfo.bot && botInfo.bot.chat) {
+          // Send command as chat message that the bot will process
+          setTimeout(() => {
+            try {
+              // Simulate receiving the command as a chat message
+              if (botInfo.bot.emit) {
+                botInfo.bot.emit('chat', 'system', `!!${command}`);
+              }
+            } catch (error) {
+              console.error(`[SWARM] Failed to send command to ${botInfo.username}:`, error.message);
+            }
+          }, 100);
+          directBotCount++;
+        }
+      }
+    }
+
+    // Also send to globally registered bots
+    if (typeof activeBots !== 'undefined') {
+      for (const bot of activeBots) {
+        if (bot && bot.chat && bot.username) {
+          setTimeout(() => {
+            try {
+              if (bot.emit) {
+                bot.emit('chat', 'system', `!!${command}`);
+              }
+            } catch (error) {
+              console.error(`[SWARM] Failed to send command to global bot ${bot.username}:`, error.message);
+            }
+          }, 150);
+          directBotCount++;
+        }
+      }
+    }
+
+    console.log(`[SWARM] ✅ Command broadcast sent to ${websocketCount} WebSocket bots + ${directBotCount} direct bots`);
   }
 
   sendAck(botId, messageId) {
@@ -17835,13 +17880,53 @@ try {
         return;
       }
 
+      // Proxy warnings for multiple bots
+      if (count > 1) {
+        const proxyEnabled = config.proxy && config.proxy.enabled;
+        if (!proxyEnabled) {
+          this.bot.chat(`⚠️ WARNING: Spawning ${count} bots without proxy configuration!`);
+          this.bot.chat(`⚠️ This may result in server rate limiting or bans.`);
+          this.bot.chat(`💡 Configure proxies with '!setup' command for better results.`);
+        } else {
+          this.bot.chat(`✅ Using proxy configuration for ${count} bots`);
+        }
+      }
+
       this.bot.chat(`🤖 Spawning ${count} more bots...`);
 
       globalBotSpawner.spawnMultiple(config.server, count, config.mode).then(() => {
         this.bot.chat(`✅ Successfully spawned ${count} bots! Total active: ${globalBotSpawner.getActiveBotCount()}`);
+        this.bot.chat(`💡 Test with: !!attack <player> or !!goto x y z`);
       }).catch(err => {
         this.bot.chat(`❌ Failed to spawn bots: ${err.message}`);
       });
+
+      return;
+    }
+    
+    // Test spawned bots command
+    if (lower.includes('!test') && lower.includes('bot')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        denyCommand("Only admin+ can test bots!", 'blocked_bot_test');
+        return;
+      }
+
+      if (!globalBotSpawner || globalBotSpawner.getActiveBotCount() === 0) {
+        this.bot.chat("No spawned bots to test. Use '!spawn X bots' first.");
+        return;
+      }
+
+      this.bot.chat("🧪 Testing spawned bot responsiveness...");
+      
+      // Test with a simple movement command
+      if (globalSwarmCoordinator) {
+        globalSwarmCoordinator.broadcastCommand("stop");
+        setTimeout(() => {
+          this.bot.chat("✅ Test command sent to all bots. Check console for responses.");
+        }, 1000);
+      } else {
+        this.bot.chat("❌ SwarmCoordinator not available for testing.");
+      }
 
       return;
     }
@@ -18184,7 +18269,19 @@ try {
               this.bot.chat(`❌ Attack failed: ${error.message}`);
             }
           } else {
-            this.bot.chat("Combat AI not available!");
+            // Fallback: Try to move towards target with pathfinder
+            if (this.bot.pathfinder) {
+              try {
+                console.log(`[EXEC] Moving towards ${targetPlayer} (fallback)`);
+                await this.bot.pathfinder.goto(new goals.GoalNear(target.position, 2));
+                this.bot.chat(`🏃 Moved towards ${targetPlayer}!`);
+              } catch (error) {
+                console.log(`[EXEC] Movement failed: ${error.message}`);
+                this.bot.chat(`❌ Movement failed: ${error.message}`);
+              }
+            } else {
+              this.bot.chat("❌ Combat AI and pathfinder not available!");
+            }
           }
           
           // Also broadcast to swarm if available
@@ -18195,6 +18292,9 @@ try {
               targetPos: target.position,
               timestamp: Date.now()
             });
+            
+            // Also broadcast as command for spawned bots
+            globalSwarmCoordinator.broadcastCommand(`attack ${targetPlayer}`);
           }
         } else {
           this.bot.chat(`Target ${targetPlayer} not found!`);
@@ -26201,6 +26301,18 @@ class BotSpawner {
   async spawnMultiple(serverIP, count, mode) {
     console.log(`[SPAWNER] Spawning ${count} bots...`);
     
+    // Check for proxy configuration when spawning multiple bots
+    if (count > 1) {
+      const proxyEnabled = config.proxy && config.proxy.enabled;
+      if (!proxyEnabled) {
+        console.log(`[SPAWNER] ⚠️ WARNING: Spawning ${count} bots without proxy configuration!`);
+        console.log(`[SPAWNER] ⚠️ This may result in server rate limiting or bans.`);
+        console.log(`[SPAWNER] 💡 Consider configuring proxies with '!setup' command`);
+      } else {
+        console.log(`[SPAWNER] ✅ Using proxy configuration for ${count} bots`);
+      }
+    }
+    
     const bots = [];
     for (let i = 0; i < count; i++) {
       try {
@@ -26210,6 +26322,9 @@ class BotSpawner {
         
         bot.once('spawn', () => {
           console.log(`[SPAWNER] Bot ${i + 1}/${count} spawned: ${username}`);
+          
+          // Initialize full bot systems for spawned bots
+          this.initializeSpawnedBot(bot, username, mode);
         });
         
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -26218,7 +26333,157 @@ class BotSpawner {
       }
     }
     
+    // After all bots are spawned, ensure they're registered with SwarmCoordinator
+    setTimeout(() => {
+      this.registerBotsWithSwarmCoordinator();
+    }, count * 2000 + 3000);
+    
     return bots;
+  }
+  
+  // Initialize spawned bot with all required systems
+  initializeSpawnedBot(bot, username, mode) {
+    console.log(`[SPAWNER] Initializing bot systems for ${username}...`);
+    
+    try {
+      // 1. Initialize pathfinder and movement
+      if (bot.pathfinder && bot.pathfinder.setMovements) {
+        const movements = new Movements(bot);
+        bot.pathfinder.setMovements(movements);
+        console.log(`[SPAWNER] ✅ Pathfinder initialized for ${username}`);
+      } else {
+        console.log(`[SPAWNER] ⚠️ Pathfinder not available for ${username}`);
+      }
+      
+      // 2. Initialize combat AI if available
+      if (typeof CombatAI !== 'undefined') {
+        bot.combatAI = new CombatAI(bot);
+        console.log(`[SPAWNER] ✅ Combat AI initialized for ${username}`);
+      }
+      
+      // 3. Initialize command handling system
+      if (typeof ConversationAI !== 'undefined') {
+        bot.conversationAI = new ConversationAI(bot);
+        console.log(`[SPAWNER] ✅ Command handling initialized for ${username}`);
+      }
+      
+      // 4. Register with global systems
+      registerBot(bot);
+      updateBotHeartbeat(username, bot);
+      
+      // 5. Add bot to SwarmCoordinator if available
+      if (globalSwarmCoordinator) {
+        globalSwarmCoordinator.registerBot(bot);
+        console.log(`[SPAWNER] ✅ Registered ${username} with SwarmCoordinator`);
+      }
+      
+      // 6. Initialize analytics tracking
+      bot.localAnalytics = {
+        kills: 0,
+        deaths: 0,
+        damageDealt: 0,
+        damageTaken: 0,
+        stashesFound: 0,
+        dupeAttempts: 0,
+        dupeSuccesses: 0
+      };
+      
+      // 7. Add chat handler for direct commands
+      bot.on('chat', async (chatUsername, message) => {
+        if (chatUsername === bot.username) return;
+        
+        // Handle group commands (!!)
+        if (message.startsWith('!!')) {
+          console.log(`[SPAWNER] ${username} received group command: ${message}`);
+          await this.handleGroupCommand(bot, message, chatUsername);
+        }
+      });
+      
+      console.log(`[SPAWNER] ✅ Full initialization complete for ${username}`);
+      
+    } catch (error) {
+      console.error(`[SPAWNER] ❌ Failed to initialize ${username}:`, error.message);
+    }
+  }
+  
+  // Handle group commands for spawned bots
+  async handleGroupCommand(bot, message, senderUsername) {
+    try {
+      const command = message.substring(2).trim(); // Remove '!!' prefix
+      console.log(`[SPAWNER] Executing command "${command}" for ${bot.username}`);
+      
+      // Attack command
+      if (command.startsWith('attack ')) {
+        const targetName = command.substring(7).trim();
+        const target = Object.values(bot.entities).find(e => 
+          e.type === 'player' && e.username === targetName
+        );
+        
+        if (target) {
+          console.log(`[SPAWNER] ${bot.username} attacking ${targetName}`);
+          bot.chat(`🎯 Attacking ${targetName}!`);
+          
+          if (bot.combatAI) {
+            await bot.combatAI.handleCombat(target);
+          } else if (bot.pathfinder) {
+            // Fallback: Move towards target
+            await bot.pathfinder.goto(new goals.GoalNear(target.position, 2));
+          }
+        }
+      }
+      
+      // Goto command
+      else if (command.startsWith('goto ')) {
+        const coords = command.substring(5).trim().split(/\s+/);
+        if (coords.length >= 3) {
+          const x = parseInt(coords[0]);
+          const y = parseInt(coords[1]);
+          const z = parseInt(coords[2]);
+          
+          console.log(`[SPAWNER] ${bot.username} going to ${x} ${y} ${z}`);
+          bot.chat(`🚶 Heading to ${x} ${y} ${z}`);
+          
+          if (bot.pathfinder) {
+            await bot.pathfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2));
+          }
+        }
+      }
+      
+      // Stop command
+      else if (command === 'stop') {
+        console.log(`[SPAWNER] ${bot.username} stopping`);
+        bot.chat(`🛑 Stopping`);
+        
+        if (bot.pathfinder) {
+          bot.pathfinder.stop();
+        }
+      }
+      
+    } catch (error) {
+      console.error(`[SPAWNER] Command execution failed for ${bot.username}:`, error.message);
+    }
+  }
+  
+  // Register all spawned bots with SwarmCoordinator
+  registerBotsWithSwarmCoordinator() {
+    if (!globalSwarmCoordinator) {
+      console.log(`[SPAWNER] ⚠️ SwarmCoordinator not available`);
+      return;
+    }
+    
+    let registeredCount = 0;
+    for (const botInfo of this.activeBots) {
+      try {
+        if (botInfo.bot && globalSwarmCoordinator.registerBot) {
+          globalSwarmCoordinator.registerBot(botInfo.bot);
+          registeredCount++;
+        }
+      } catch (error) {
+        console.error(`[SPAWNER] Failed to register ${botInfo.username}:`, error.message);
+      }
+    }
+    
+    console.log(`[SPAWNER] ✅ Registered ${registeredCount} bots with SwarmCoordinator`);
   }
   
   getActiveBotCount() {
