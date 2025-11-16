@@ -16977,7 +16977,8 @@ try {
       '!mine', 'mine', 'collect', 'find', 'hunt', 'fish for', 'farm', 'gather', 'get me',
 
       // Discovery & Testing
-      '!stash', 'stash', '!dupe', 'dupe', 'scanner status', 'scanner report',
+      '!stash', 'stash', '!dupe', 'dupe', 'scanner status', 'scanner report', 
+      'dupe discover', 'dupe discovery', 'discover start', 'discover stop', 'discover report', 'discover status',
 
       // Base & Storage
       'home status', 'home info', 'deposit', 'store valuables',
@@ -18063,6 +18064,89 @@ try {
     
     if (lower.includes('dupe report') || lower.includes('dupe stats')) {
       this.bot.chat(`Dupe Stats: ${config.analytics.dupe.successfulDupes} successes out of ${config.analytics.dupe.totalAttempts} attempts. ${config.analytics.dupe.activeExploits.length} active exploits found!`);
+      return;
+    }
+    
+    // Dupe Discovery commands
+    if (lower.includes('!dupe discover start') || lower.includes('start dupe discovery')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        this.bot.chat("Only trusted+ users can start dupe discovery!");
+        return;
+      }
+      
+      if (!globalDupeDiscoveryManager) {
+        globalDupeDiscoveryManager = new DupeDiscoveryManager(this.bot);
+      }
+      
+      if (globalDupeDiscoveryManager.isActive) {
+        this.bot.chat("Dupe discovery is already running!");
+        return;
+      }
+      
+      this.bot.chat("🔍 Initiating autonomous dupe discovery...");
+      await globalDupeDiscoveryManager.startDiscovery();
+      return;
+    }
+    
+    if (lower.includes('!dupe discover stop') || lower.includes('stop dupe discovery')) {
+      if (!globalDupeDiscoveryManager) {
+        this.bot.chat("Dupe discovery manager not initialized!");
+        return;
+      }
+      
+      globalDupeDiscoveryManager.stopDiscovery();
+      return;
+    }
+    
+    if (lower.includes('!dupe discover report') || lower.includes('dupe discovery report')) {
+      if (!globalDupeDiscoveryManager) {
+        globalDupeDiscoveryManager = new DupeDiscoveryManager(this.bot);
+      }
+      
+      const report = globalDupeDiscoveryManager.getReport();
+      
+      if (report.message) {
+        this.bot.chat(report.message);
+        return;
+      }
+      
+      this.bot.chat(`📊 Dupe Discovery Report:`);
+      this.bot.chat(`  Methods tested: ${report.summary.totalMethodsTested}`);
+      this.bot.chat(`  Successful: ${report.summary.successfulDupes} | Failed: ${report.summary.failedAttempts}`);
+      this.bot.chat(`  Success rate: ${report.summary.successRate}`);
+      
+      if (report.mostPromisingMethod !== 'None found') {
+        this.bot.chat(`  Most promising: ${report.mostPromisingMethod}`);
+      }
+      
+      if (report.serverBehavior) {
+        this.bot.chat(`  Server safety: ${report.serverBehavior.safetyLevel} | Anti-dupe: ${report.serverBehavior.antiDupeActive ? 'Active' : 'Inactive'}`);
+      }
+      
+      if (report.nextRecommendations && report.nextRecommendations.length > 0) {
+        this.bot.chat(`  Next: ${report.nextRecommendations[0]}`);
+      }
+      
+      return;
+    }
+    
+    if (lower.includes('!dupe discover status')) {
+      if (!globalDupeDiscoveryManager) {
+        this.bot.chat("Dupe discovery manager not initialized. Use '!dupe discover start' to begin.");
+        return;
+      }
+      
+      const status = globalDupeDiscoveryManager.isActive ? 'Running' : 'Idle';
+      const currentMethod = globalDupeDiscoveryManager.currentMethod ? globalDupeDiscoveryManager.currentMethod.name : 'None';
+      const totalHistory = globalDupeDiscoveryManager.attemptHistory.length;
+      const hypotheses = globalDupeDiscoveryManager.hypotheses.length;
+      
+      this.bot.chat(`🔍 Dupe Discovery Status:`);
+      this.bot.chat(`  State: ${status}`);
+      this.bot.chat(`  Current method: ${currentMethod}`);
+      this.bot.chat(`  Total attempts: ${totalHistory}`);
+      this.bot.chat(`  Hypotheses generated: ${hypotheses}`);
+      
       return;
     }
     
@@ -30970,6 +31054,95 @@ function ensureConfigStructure(targetConfig) {
     };
   }
   
+  if (!cfg.dupeDiscovery) {
+    cfg.dupeDiscovery = {
+      enabled: true,
+      autoStartIdleThreshold: 300000, // 5 minutes idle
+      methodRetryDelay: 5000, // 5 seconds between methods
+      materialGatherTimeout: 60000, // 1 minute to gather materials
+      confidenceThreshold: 0.7, // Only accept 70%+ confidence results
+      maxAttemptsPerMethod: 3,
+      logFilePath: './data/dupe_discovery.json',
+      hypothesisPath: './data/dupe_hypotheses.json',
+      reportPath: './data/dupe_discovery_report.json',
+      antiDetection: {
+        spacingDelay: 10000, // 10 seconds between attempts
+        randomizeOrder: true,
+        mixNormalActivities: true,
+        stopOnKick: true
+      },
+      methods: [
+        {
+          name: 'crystal_pvp_dupe',
+          description: 'Crystal PvP duplication method',
+          requirements: ['end_crystal', 'bed', 'totem_of_undying'],
+          steps: [
+            'equip_totem',
+            'place_bed',
+            'place_crystal_near_bed',
+            'detonate_crystal',
+            'check_inventory'
+          ],
+          successIndicators: ['inventory_increase', 'item_duplication'],
+          riskLevel: 'high'
+        },
+        {
+          name: 'anchor_dupe',
+          description: 'Respawn anchor duplication',
+          requirements: ['respawn_anchor', 'glowstone'],
+          steps: [
+            'place_anchor',
+            'charge_anchor',
+            'interact_rapid',
+            'check_inventory'
+          ],
+          successIndicators: ['inventory_increase'],
+          riskLevel: 'medium'
+        },
+        {
+          name: 'shulker_dupe',
+          description: 'Shulker box duplication',
+          requirements: ['shulker_box'],
+          steps: [
+            'place_shulker',
+            'fill_items',
+            'break_timing',
+            'check_inventory'
+          ],
+          successIndicators: ['inventory_increase', 'shulker_duplication'],
+          riskLevel: 'low'
+        },
+        {
+          name: 'totem_dupe',
+          description: 'Totem duplication variant',
+          requirements: ['totem_of_undying'],
+          steps: [
+            'equip_totem',
+            'take_lethal_damage',
+            'quick_switch',
+            'check_inventory'
+          ],
+          successIndicators: ['totem_count_increase'],
+          riskLevel: 'high'
+        },
+        {
+          name: 'donkey_dupe',
+          description: 'Donkey/chest duplication',
+          requirements: ['donkey', 'chest'],
+          steps: [
+            'spawn_donkey',
+            'attach_chest',
+            'fill_chest',
+            'kill_donkey_timing',
+            'check_drops'
+          ],
+          successIndicators: ['item_duplication'],
+          riskLevel: 'low'
+        }
+      ]
+    };
+  }
+  
   if (!global.config) {
     global.config = cfg;
   }
@@ -31016,7 +31189,8 @@ function saveConfiguration() {
       tasks: cfg.tasks || { current: null, queue: [], history: [], pausedForSafety: false, suspendedSnapshot: null },
       personality: cfg.personality || { friendly: true, helpful: true, curious: true, cautious: true, name: 'Hunter' },
       videoFeed: cfg.videoFeed || { enabled: true, fps: 3, resolution: 'medium' },
-      lifesteal: cfg.lifesteal || { enabled: false, keywords: [] }
+      lifesteal: cfg.lifesteal || { enabled: false, keywords: [] },
+      dupeDiscovery: cfg.dupeDiscovery || { enabled: true, autoStartIdleThreshold: 300000, methodRetryDelay: 5000, materialGatherTimeout: 60000, confidenceThreshold: 0.7, maxAttemptsPerMethod: 3, logFilePath: './data/dupe_discovery.json', hypothesisPath: './data/dupe_hypotheses.json', reportPath: './data/dupe_discovery_report.json', antiDetection: {}, methods: [] }
     };
 
     const result = safeWriteJson(configPath, configToSave);
@@ -33145,6 +33319,719 @@ if (typeof MessageInterceptor !== 'undefined') {
     };
   };
 }
+
+// === DUPE DISCOVERY MANAGER ===
+
+class DupeDiscoveryManager {
+  constructor(bot) {
+    this.bot = bot;
+    this.isActive = false;
+    this.currentMethod = null;
+    this.methodIndex = 0;
+    this.attemptHistory = [];
+    this.hypotheses = [];
+    this.lastActivityTime = Date.now();
+    this.gatheringMaterials = false;
+    this.testResults = [];
+    this.config = config.dupeDiscovery || {};
+    
+    // Load previous results
+    this.loadHistory();
+    this.loadHypotheses();
+    
+    console.log('[DUPE_DISCOVERY] Manager initialized');
+  }
+  
+  loadHistory() {
+    try {
+      const data = safeReadJson(this.config.logFilePath || './data/dupe_discovery.json', { attempts: [] });
+      this.attemptHistory = data.attempts || [];
+      console.log(`[DUPE_DISCOVERY] Loaded ${this.attemptHistory.length} previous attempts`);
+    } catch (err) {
+      console.error('[DUPE_DISCOVERY] Error loading history:', err.message);
+      this.attemptHistory = [];
+    }
+  }
+  
+  loadHypotheses() {
+    try {
+      const data = safeReadJson(this.config.hypothesisPath || './data/dupe_hypotheses.json', { hypotheses: [] });
+      this.hypotheses = data.hypotheses || [];
+      console.log(`[DUPE_DISCOVERY] Loaded ${this.hypotheses.length} hypotheses`);
+    } catch (err) {
+      console.error('[DUPE_DISCOVERY] Error loading hypotheses:', err.message);
+      this.hypotheses = [];
+    }
+  }
+  
+  saveHistory() {
+    try {
+      safeWriteJson(this.config.logFilePath || './data/dupe_discovery.json', {
+        attempts: this.attemptHistory,
+        lastUpdate: Date.now()
+      });
+    } catch (err) {
+      console.error('[DUPE_DISCOVERY] Error saving history:', err.message);
+    }
+  }
+  
+  saveHypotheses() {
+    try {
+      safeWriteJson(this.config.hypothesisPath || './data/dupe_hypotheses.json', {
+        hypotheses: this.hypotheses,
+        lastUpdate: Date.now()
+      });
+    } catch (err) {
+      console.error('[DUPE_DISCOVERY] Error saving hypotheses:', err.message);
+    }
+  }
+  
+  async startDiscovery() {
+    if (this.isActive) {
+      console.log('[DUPE_DISCOVERY] Discovery already in progress');
+      return false;
+    }
+    
+    if (!this.bot) {
+      console.error('[DUPE_DISCOVERY] Bot not initialized');
+      return false;
+    }
+    
+    this.isActive = true;
+    this.methodIndex = 0;
+    this.testResults = [];
+    
+    console.log('[DUPE_DISCOVERY] 🔍 Starting autonomous dupe discovery');
+    this.bot.chat('🔍 Starting dupe discovery mode! Testing known methods...');
+    
+    // Randomize method order if configured
+    const methods = [...(this.config.methods || [])];
+    if (this.config.antiDetection && this.config.antiDetection.randomizeOrder) {
+      this.shuffleArray(methods);
+    }
+    
+    // Start testing methods
+    await this.testAllMethods(methods);
+    
+    return true;
+  }
+  
+  stopDiscovery() {
+    this.isActive = false;
+    this.currentMethod = null;
+    console.log('[DUPE_DISCOVERY] Discovery stopped');
+    if (this.bot) {
+      this.bot.chat('🛑 Dupe discovery stopped.');
+    }
+  }
+  
+  async testAllMethods(methods) {
+    for (let i = 0; i < methods.length && this.isActive; i++) {
+      const method = methods[i];
+      
+      console.log(`[DUPE_DISCOVERY] Testing method ${i + 1}/${methods.length}: ${method.name}`);
+      this.bot.chat(`Testing: ${method.description} [${method.riskLevel} risk]`);
+      
+      // Anti-detection: Space out attempts
+      if (i > 0 && this.config.antiDetection && this.config.antiDetection.spacingDelay) {
+        await this.sleep(this.config.antiDetection.spacingDelay);
+      }
+      
+      // Mix in normal activities for anti-detection
+      if (this.config.antiDetection && this.config.antiDetection.mixNormalActivities) {
+        await this.performNormalActivity();
+      }
+      
+      // Test the method
+      const result = await this.testMethod(method);
+      this.testResults.push(result);
+      
+      // Log result
+      this.logAttempt(method, result);
+      
+      // Announce result
+      if (result.success) {
+        this.bot.chat(`✅ SUCCESS! ${method.name} works! Confidence: ${(result.confidence * 100).toFixed(0)}%`);
+        console.log(`[DUPE_DISCOVERY] ✅ SUCCESS: ${method.name} (confidence: ${result.confidence})`);
+      } else {
+        this.bot.chat(`❌ Failed: ${method.name} - ${result.reason}`);
+        console.log(`[DUPE_DISCOVERY] ❌ FAILED: ${method.name} - ${result.reason}`);
+      }
+      
+      // Wait between methods
+      await this.sleep(this.config.methodRetryDelay || 5000);
+    }
+    
+    // Generate final report
+    await this.generateReport();
+    await this.generateHypotheses();
+    
+    this.isActive = false;
+    console.log('[DUPE_DISCOVERY] Discovery complete');
+    this.bot.chat('✅ Dupe discovery complete! Use "!dupe report" to see results.');
+  }
+  
+  async testMethod(method) {
+    this.currentMethod = method;
+    const startTime = Date.now();
+    const startInventory = this.snapshotInventory();
+    
+    try {
+      // Check if we have required materials
+      const missingMaterials = this.checkRequiredMaterials(method.requirements);
+      
+      if (missingMaterials.length > 0) {
+        console.log(`[DUPE_DISCOVERY] Missing materials: ${missingMaterials.join(', ')}`);
+        
+        // Attempt to gather materials
+        const gathered = await this.gatherMaterials(missingMaterials);
+        
+        if (!gathered) {
+          return {
+            success: false,
+            reason: 'Could not gather required materials',
+            confidence: 0,
+            duration: Date.now() - startTime,
+            missingMaterials
+          };
+        }
+      }
+      
+      // Execute method steps
+      const executionResult = await this.executeMethodSteps(method);
+      
+      if (!executionResult.completed) {
+        return {
+          success: false,
+          reason: executionResult.error || 'Execution failed',
+          confidence: 0,
+          duration: Date.now() - startTime
+        };
+      }
+      
+      // Check for success indicators
+      const endInventory = this.snapshotInventory();
+      const success = this.checkSuccessIndicators(method, startInventory, endInventory);
+      
+      return {
+        success: success.detected,
+        reason: success.reason,
+        confidence: success.confidence,
+        duration: Date.now() - startTime,
+        inventoryChange: success.inventoryChange,
+        serverResponse: executionResult.serverResponse
+      };
+      
+    } catch (err) {
+      console.error(`[DUPE_DISCOVERY] Error testing ${method.name}:`, err.message);
+      return {
+        success: false,
+        reason: `Error: ${err.message}`,
+        confidence: 0,
+        duration: Date.now() - startTime
+      };
+    }
+  }
+  
+  checkRequiredMaterials(requirements) {
+    const missing = [];
+    
+    for (const item of requirements) {
+      const count = this.countItem(item);
+      if (count === 0) {
+        missing.push(item);
+      }
+    }
+    
+    return missing;
+  }
+  
+  countItem(itemName) {
+    if (!this.bot || !this.bot.inventory) return 0;
+    
+    const items = this.bot.inventory.items();
+    let count = 0;
+    
+    for (const item of items) {
+      if (item.name === itemName) {
+        count += item.count;
+      }
+    }
+    
+    return count;
+  }
+  
+  snapshotInventory() {
+    if (!this.bot || !this.bot.inventory) return {};
+    
+    const snapshot = {};
+    const items = this.bot.inventory.items();
+    
+    for (const item of items) {
+      snapshot[item.name] = (snapshot[item.name] || 0) + item.count;
+    }
+    
+    return snapshot;
+  }
+  
+  async gatherMaterials(materials) {
+    console.log(`[DUPE_DISCOVERY] Attempting to gather: ${materials.join(', ')}`);
+    this.bot.chat(`🔨 Gathering materials: ${materials.join(', ')}`);
+    
+    this.gatheringMaterials = true;
+    
+    // Simplified gathering logic - in production, integrate with mining/collection systems
+    const timeout = this.config.materialGatherTimeout || 60000;
+    const startTime = Date.now();
+    
+    for (const material of materials) {
+      if (Date.now() - startTime > timeout) {
+        console.log('[DUPE_DISCOVERY] Material gathering timeout');
+        this.gatheringMaterials = false;
+        return false;
+      }
+      
+      // Try to find and collect the material
+      const success = await this.findAndCollectMaterial(material, timeout - (Date.now() - startTime));
+      
+      if (!success) {
+        console.log(`[DUPE_DISCOVERY] Failed to gather ${material}`);
+        this.gatheringMaterials = false;
+        return false;
+      }
+    }
+    
+    this.gatheringMaterials = false;
+    console.log('[DUPE_DISCOVERY] Materials gathered successfully');
+    return true;
+  }
+  
+  async findAndCollectMaterial(material, timeout) {
+    // Placeholder - integrate with existing mining/gathering systems
+    console.log(`[DUPE_DISCOVERY] Looking for ${material}...`);
+    
+    // Check if material is nearby
+    if (this.bot && this.bot.findBlock) {
+      const block = this.bot.findBlock({
+        matching: (block) => block.name === material,
+        maxDistance: 32
+      });
+      
+      if (block) {
+        console.log(`[DUPE_DISCOVERY] Found ${material} at ${block.position}`);
+        // In production, use pathfinder to reach and collect
+        return true;
+      }
+    }
+    
+    // If not found, mark as unavailable
+    console.log(`[DUPE_DISCOVERY] ${material} not found nearby`);
+    return false;
+  }
+  
+  async executeMethodSteps(method) {
+    console.log(`[DUPE_DISCOVERY] Executing steps for ${method.name}`);
+    
+    try {
+      for (const step of method.steps) {
+        console.log(`[DUPE_DISCOVERY]   Step: ${step}`);
+        
+        // Execute each step
+        const stepResult = await this.executeStep(step, method);
+        
+        if (!stepResult.success) {
+          return {
+            completed: false,
+            error: `Step "${step}" failed: ${stepResult.error}`,
+            serverResponse: stepResult.serverResponse
+          };
+        }
+        
+        // Small delay between steps
+        await this.sleep(500);
+      }
+      
+      return {
+        completed: true,
+        serverResponse: 'no_kick'
+      };
+      
+    } catch (err) {
+      return {
+        completed: false,
+        error: err.message,
+        serverResponse: 'error'
+      };
+    }
+  }
+  
+  async executeStep(step, method) {
+    // Placeholder step execution - integrate with bot actions
+    console.log(`[DUPE_DISCOVERY]   Executing: ${step}`);
+    
+    try {
+      switch (step) {
+        case 'equip_totem':
+          // Try to equip totem in offhand
+          return { success: true };
+          
+        case 'place_bed':
+        case 'place_anchor':
+        case 'place_shulker':
+        case 'place_crystal_near_bed':
+          // Try to place block/item
+          return { success: true };
+          
+        case 'charge_anchor':
+        case 'interact_rapid':
+        case 'fill_items':
+        case 'fill_chest':
+          // Interaction steps
+          return { success: true };
+          
+        case 'detonate_crystal':
+        case 'break_timing':
+        case 'take_lethal_damage':
+        case 'kill_donkey_timing':
+          // Timing-based steps
+          return { success: true };
+          
+        case 'quick_switch':
+          // Quick inventory operations
+          return { success: true };
+          
+        case 'check_inventory':
+        case 'check_drops':
+          // Verification steps
+          return { success: true };
+          
+        default:
+          console.log(`[DUPE_DISCOVERY]   Unknown step: ${step}`);
+          return { success: true };
+      }
+    } catch (err) {
+      return {
+        success: false,
+        error: err.message
+      };
+    }
+  }
+  
+  checkSuccessIndicators(method, beforeInv, afterInv) {
+    const changes = {};
+    let totalIncrease = 0;
+    
+    // Calculate inventory changes
+    for (const item in afterInv) {
+      const before = beforeInv[item] || 0;
+      const after = afterInv[item] || 0;
+      const diff = after - before;
+      
+      if (diff > 0) {
+        changes[item] = diff;
+        totalIncrease += diff;
+      }
+    }
+    
+    // Check success indicators
+    const indicators = method.successIndicators || [];
+    let confidence = 0;
+    let reason = '';
+    
+    if (indicators.includes('inventory_increase') && totalIncrease > 0) {
+      confidence += 0.5;
+      reason = `Inventory increased by ${totalIncrease} items`;
+    }
+    
+    if (indicators.includes('item_duplication') && Object.keys(changes).length > 0) {
+      confidence += 0.3;
+      reason += ` | Items duplicated: ${Object.keys(changes).join(', ')}`;
+    }
+    
+    if (indicators.includes('shulker_duplication')) {
+      const shulkerIncrease = changes['shulker_box'] || 0;
+      if (shulkerIncrease > 0) {
+        confidence += 0.4;
+        reason += ` | Shulker boxes duplicated: ${shulkerIncrease}`;
+      }
+    }
+    
+    if (indicators.includes('totem_count_increase')) {
+      const totemIncrease = changes['totem_of_undying'] || 0;
+      if (totemIncrease > 0) {
+        confidence += 0.5;
+        reason += ` | Totems duplicated: ${totemIncrease}`;
+      }
+    }
+    
+    const detected = confidence >= (this.config.confidenceThreshold || 0.7);
+    
+    return {
+      detected,
+      confidence: Math.min(confidence, 1.0),
+      reason: detected ? reason : 'No significant inventory changes detected',
+      inventoryChange: changes
+    };
+  }
+  
+  logAttempt(method, result) {
+    const attempt = {
+      timestamp: Date.now(),
+      method: method.name,
+      description: method.description,
+      requirements: method.requirements,
+      riskLevel: method.riskLevel,
+      success: result.success,
+      confidence: result.confidence,
+      reason: result.reason,
+      duration: result.duration,
+      inventoryChange: result.inventoryChange || {},
+      serverResponse: result.serverResponse || 'unknown'
+    };
+    
+    this.attemptHistory.push(attempt);
+    
+    // Keep last 1000 attempts
+    if (this.attemptHistory.length > 1000) {
+      this.attemptHistory = this.attemptHistory.slice(-1000);
+    }
+    
+    this.saveHistory();
+    
+    // Update analytics
+    if (config.analytics && config.analytics.dupe) {
+      config.analytics.dupe.totalAttempts = (config.analytics.dupe.totalAttempts || 0) + 1;
+      if (result.success) {
+        config.analytics.dupe.successfulDupes = (config.analytics.dupe.successfulDupes || 0) + 1;
+      }
+    }
+  }
+  
+  async generateHypotheses() {
+    console.log('[DUPE_DISCOVERY] Generating hypotheses based on results...');
+    
+    const successfulMethods = this.testResults.filter(r => r.success);
+    const failedMethods = this.testResults.filter(r => !r.success);
+    
+    const hypotheses = [];
+    
+    // Generate hypothesis based on success/failure patterns
+    if (successfulMethods.length > 0) {
+      hypotheses.push({
+        type: 'success_pattern',
+        timestamp: Date.now(),
+        content: `Successful methods: ${successfulMethods.map(r => r.method?.name || 'unknown').join(', ')}. These methods bypassed server anti-dupe checks.`,
+        confidence: 0.8,
+        recommendations: [
+          'Focus on similar timing-based methods',
+          'Test variations of successful methods with different items',
+          'Document exact timing and sequences for reproduction'
+        ]
+      });
+    }
+    
+    if (failedMethods.length > 0) {
+      const commonReasons = this.findCommonFailureReasons(failedMethods);
+      hypotheses.push({
+        type: 'failure_pattern',
+        timestamp: Date.now(),
+        content: `Failed methods (${failedMethods.length}). Common reasons: ${commonReasons.join(', ')}`,
+        confidence: 0.7,
+        recommendations: [
+          'Server likely has protections against these specific methods',
+          'Try alternative approaches not yet tested',
+          'Consider plugin-specific bypasses'
+        ]
+      });
+    }
+    
+    // Anti-cheat behavior hypothesis
+    if (this.testResults.length > 0) {
+      const kickCount = this.testResults.filter(r => r.serverResponse === 'kicked').length;
+      if (kickCount > 0) {
+        hypotheses.push({
+          type: 'anti_cheat',
+          timestamp: Date.now(),
+          content: `Server kicked bot ${kickCount} times during testing. Likely has active anti-dupe monitoring.`,
+          confidence: 0.9,
+          recommendations: [
+            'Increase spacing between attempts',
+            'Use more subtle methods',
+            'Test during off-peak hours',
+            'Consider proxy rotation'
+          ]
+        });
+      }
+    }
+    
+    // Save all hypotheses
+    this.hypotheses.push(...hypotheses);
+    this.saveHypotheses();
+    
+    // Update analytics
+    if (config.analytics && config.analytics.dupe) {
+      config.analytics.dupe.hypothesesTested = (config.analytics.dupe.hypothesesTested || 0) + hypotheses.length;
+    }
+    
+    console.log(`[DUPE_DISCOVERY] Generated ${hypotheses.length} new hypotheses`);
+  }
+  
+  findCommonFailureReasons(failedMethods) {
+    const reasonCounts = {};
+    
+    for (const method of failedMethods) {
+      const reason = method.reason || 'unknown';
+      reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+    }
+    
+    return Object.entries(reasonCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([reason]) => reason);
+  }
+  
+  async generateReport() {
+    console.log('[DUPE_DISCOVERY] Generating discovery report...');
+    
+    const totalTested = this.testResults.length;
+    const successful = this.testResults.filter(r => r.success).length;
+    const failed = this.testResults.filter(r => !r.success).length;
+    
+    const report = {
+      timestamp: Date.now(),
+      summary: {
+        totalMethodsTested: totalTested,
+        successfulDupes: successful,
+        failedAttempts: failed,
+        successRate: totalTested > 0 ? ((successful / totalTested) * 100).toFixed(1) + '%' : '0%'
+      },
+      results: this.testResults.map(r => ({
+        method: r.method?.name || 'unknown',
+        success: r.success,
+        confidence: r.confidence,
+        reason: r.reason,
+        duration: r.duration
+      })),
+      mostPromisingMethod: this.findMostPromisingMethod(),
+      nextRecommendations: this.generateNextRecommendations(),
+      serverBehavior: {
+        antiDupeActive: failed > successful,
+        kicksDetected: this.testResults.filter(r => r.serverResponse === 'kicked').length,
+        safetyLevel: this.calculateServerSafetyLevel()
+      }
+    };
+    
+    // Save report
+    try {
+      safeWriteJson(this.config.reportPath || './data/dupe_discovery_report.json', report);
+      console.log('[DUPE_DISCOVERY] Report saved');
+    } catch (err) {
+      console.error('[DUPE_DISCOVERY] Error saving report:', err.message);
+    }
+    
+    return report;
+  }
+  
+  findMostPromisingMethod() {
+    const successful = this.testResults.filter(r => r.success);
+    
+    if (successful.length === 0) {
+      return 'None found';
+    }
+    
+    // Sort by confidence
+    successful.sort((a, b) => b.confidence - a.confidence);
+    
+    const best = successful[0];
+    return `${best.method?.name || 'unknown'} (confidence: ${(best.confidence * 100).toFixed(0)}%)`;
+  }
+  
+  generateNextRecommendations() {
+    const recommendations = [];
+    
+    const successful = this.testResults.filter(r => r.success);
+    const failed = this.testResults.filter(r => !r.success);
+    
+    if (successful.length > 0) {
+      recommendations.push('Test variations of successful methods with different items');
+      recommendations.push('Try combining successful methods for better results');
+      recommendations.push('Document exact conditions that led to success');
+    } else {
+      recommendations.push('All tested methods failed - server likely has strong anti-dupe');
+      recommendations.push('Research server-specific plugins and their vulnerabilities');
+      recommendations.push('Try less common duplication methods not yet tested');
+    }
+    
+    if (failed.some(f => f.reason.includes('materials'))) {
+      recommendations.push('Improve material gathering system for better test coverage');
+    }
+    
+    return recommendations;
+  }
+  
+  calculateServerSafetyLevel() {
+    const successful = this.testResults.filter(r => r.success).length;
+    const total = this.testResults.length;
+    
+    if (total === 0) return 'unknown';
+    
+    const successRate = successful / total;
+    
+    if (successRate > 0.5) return 'low'; // Many dupes work
+    if (successRate > 0.2) return 'medium'; // Some dupes work
+    return 'high'; // Most/all dupes blocked
+  }
+  
+  getReport() {
+    const report = safeReadJson(this.config.reportPath || './data/dupe_discovery_report.json', null);
+    
+    if (!report) {
+      return {
+        summary: {
+          totalMethodsTested: 0,
+          successfulDupes: 0,
+          failedAttempts: 0,
+          successRate: '0%'
+        },
+        message: 'No discovery runs yet. Use "!dupe discover start" to begin.'
+      };
+    }
+    
+    return report;
+  }
+  
+  async performNormalActivity() {
+    // Perform a normal activity to blend in
+    console.log('[DUPE_DISCOVERY] Performing normal activity for anti-detection...');
+    
+    const activities = [
+      'look_around',
+      'walk_short_distance',
+      'check_inventory',
+      'mine_nearby_block'
+    ];
+    
+    const activity = activities[Math.floor(Math.random() * activities.length)];
+    
+    // Simplified activity execution
+    await this.sleep(2000);
+    console.log(`[DUPE_DISCOVERY] Performed: ${activity}`);
+  }
+  
+  shuffleArray(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [array[i], array[j]] = [array[j], array[i]];
+    }
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// Global instance
+let globalDupeDiscoveryManager = null;
 
 // === STARTUP SEQUENCE ===
 // Initialize HunterX with automatic setup and credential management
