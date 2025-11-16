@@ -11086,6 +11086,10 @@ class CombatAI {
     this.combatLogger = null;
     this.combatCheck = null;
     this.hostileMobDetector = new HostileMobDetector();
+    
+    // Sprint state management
+    this.isSprinting = false;
+    this.sprintCheckInterval = null;
     this.toolSelector = new ToolSelector(bot);
     // Error throttling to prevent spam
     this.errorCooldown = 1000; // 1 second per unique message
@@ -11259,6 +11263,96 @@ class CombatAI {
     
     return null;
   }
+
+  // === COMBAT SPRINT MANAGEMENT ===
+  
+  canSprint() {
+    // Check if bot has enough food to sprint (minimum 6 food points)
+    const foodLevel = this.bot.food || 20;
+    return foodLevel >= 6;
+  }
+  
+  shouldSprintToTarget(target) {
+    if (!target || !target.position || !this.bot.entity || !this.bot.entity.position) {
+      return false;
+    }
+    
+    // Check distance - only sprint if target is close enough to chase but far enough to need speed
+    const distance = this.bot.entity.position.distanceTo(target.position);
+    return distance > 3 && distance <= 20; // Sprint for medium range pursuit
+  }
+  
+  enableCombatSprint() {
+    if (this.isSprinting || !this.canSprint()) {
+      return;
+    }
+    
+    try {
+      this.bot.setControlState('sprint', true);
+      this.isSprinting = true;
+      console.log('[COMBAT] 🏃 Sprint enabled during combat chase');
+      
+      // Start periodic sprint validation
+      if (this.sprintCheckInterval) {
+        clearInterval(this.sprintCheckInterval);
+      }
+      
+      this.sprintCheckInterval = setInterval(() => {
+        this.validateCombatSprint();
+      }, 500); // Check every 500ms
+      
+    } catch (err) {
+      console.log(`[COMBAT] Failed to enable sprint: ${err.message}`);
+    }
+  }
+  
+  disableCombatSprint() {
+    if (!this.isSprinting) {
+      return;
+    }
+    
+    try {
+      this.bot.setControlState('sprint', false);
+      this.isSprinting = false;
+      console.log('[COMBAT] 🚶 Sprint disabled');
+      
+      // Clear sprint validation interval
+      if (this.sprintCheckInterval) {
+        clearInterval(this.sprintCheckInterval);
+        this.sprintCheckInterval = null;
+      }
+      
+    } catch (err) {
+      console.log(`[COMBAT] Failed to disable sprint: ${err.message}`);
+    }
+  }
+  
+  validateCombatSprint() {
+    // Validate sprint conditions during combat
+    if (!this.isSprinting) {
+      return;
+    }
+    
+    // Check food level
+    if (!this.canSprint()) {
+      console.log('[COMBAT] 🍖 Food level too low, disabling sprint');
+      this.disableCombatSprint();
+      return;
+    }
+    
+    // Check if we should still be sprinting (chasing target)
+    if (!this.shouldSprintToTarget(this.currentTarget)) {
+      this.disableCombatSprint();
+      return;
+    }
+    
+    // Check if bot is in water (sprinting doesn't work well in water)
+    if (this.bot.isInWater) {
+      console.log('[COMBAT] 🌊 Bot in water, disabling sprint');
+      this.disableCombatSprint();
+      return;
+    }
+  }
   
   pauseCombat(reason = 'paused') {
     if (this.combatCheck) {
@@ -11273,6 +11367,9 @@ class CombatAI {
     this.inCombat = false;
     this.isCurrentlyFighting = false;
 
+    // Disable sprint when combat ends
+    this.disableCombatSprint();
+
     if (this.combatLogger) {
       this.combatLogger.stopMonitoring(reason);
     }
@@ -11286,6 +11383,9 @@ class CombatAI {
     
     this.inCombat = false;
     this.currentTarget = null;
+    
+    // Disable sprint when combat is aborted
+    this.disableCombatSprint();
     
     if (this.combatLogger) {
       this.combatLogger.stopMonitoring(reason);
@@ -11429,6 +11529,11 @@ class CombatAI {
               await this.toolSelector.equipFullGear('combat');
             }
 
+            // Enable sprint for combat pursuit if conditions are met
+            if (this.shouldSprintToTarget(attacker)) {
+              this.enableCombatSprint();
+            }
+
             // Initialize crystal PvP if we have resources and target is player
             const useCrystalPvP = this.hasCrystalResources() && isPlayer;
             let crystalPvP = null;
@@ -11496,6 +11601,17 @@ class CombatAI {
           }
         }
 
+        // Sprint management during combat pursuit
+        if (this.shouldSprintToTarget(attacker)) {
+          if (!this.isSprinting) {
+            this.enableCombatSprint();
+          }
+        } else {
+          if (this.isSprinting) {
+            this.disableCombatSprint();
+          }
+        }
+
         if (distance > 3) {
           console.log(`[COMBAT] Moving closer (${distance.toFixed(1)}m)`);
           await this.moveToward(attacker);
@@ -11527,6 +11643,10 @@ class CombatAI {
       }
       this.inCombat = false;
       this.isCurrentlyFighting = false;
+      
+      // Disable sprint on error
+      this.disableCombatSprint();
+      
       return;
     }
   }
