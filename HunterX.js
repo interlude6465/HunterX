@@ -11756,16 +11756,7 @@ class CombatAI {
         
       case 'approach':
         console.log('[COMBAT] 🏃 Closing distance');
-        if (this.bot && this.bot.pathfinder) {
-          try {
-            await this.bot.pathfinder.goto(new goals.GoalNear(target.position, 3));
-          } catch (err) {
-            console.log(`[COMBAT] Pathfinding error: ${err.message}`);
-          }
-        } else {
-          console.log('[COMBAT] ⚠️ Pathfinder not available, using fallback movement');
-        }
-        await sleep(1000);
+        await this.approachTargetWithFallback(target);
         return await this.executeOptimalAttack(target);
         
       default:
@@ -11856,6 +11847,65 @@ class CombatAI {
       console.log('[COMBAT] ⚠️ Pathfinder not available for approachTarget');
     }
     await sleep(500);
+  }
+
+  async approachTargetWithFallback(target) {
+    if (!target || !target.position || !this.bot || !this.bot.entity) {
+      console.log('[COMBAT] ⚠️ Invalid target or bot for approach');
+      return;
+    }
+
+    const initialDistance = this.bot.entity.position.distanceTo(target.position);
+    const startTime = Date.now();
+    const maxApproachTime = 2000;
+    let pathfinderFailed = false;
+
+    if (this.bot && this.bot.pathfinder) {
+      try {
+        console.log(`[COMBAT] Using pathfinder to approach (distance: ${initialDistance.toFixed(1)}m)`);
+        const goal = new goals.GoalNear(target.position, 3);
+        await this.bot.pathfinder.goto(goal);
+        console.log('[COMBAT] ✓ Pathfinder approach successful');
+        return;
+      } catch (err) {
+        console.log(`[COMBAT] Pathfinder failed: ${err.message}, falling back to direct movement`);
+        pathfinderFailed = true;
+      }
+    } else {
+      console.log('[COMBAT] Pathfinder not available, using fallback movement');
+      pathfinderFailed = true;
+    }
+
+    if (pathfinderFailed) {
+      console.log('[COMBAT] Initiating fallback movement...');
+      let lastDistance = initialDistance;
+      
+      while (Date.now() - startTime < maxApproachTime) {
+        if (!this.bot || !this.bot.entity) break;
+        
+        const currentDistance = this.bot.entity.position.distanceTo(target.position);
+        
+        if (currentDistance < 3) {
+          console.log('[COMBAT] ✓ Reached target using fallback movement');
+          this.bot.setControlState('forward', false);
+          break;
+        }
+
+        this.bot.lookAt(target.position);
+        this.bot.setControlState('forward', true);
+        
+        if (currentDistance < lastDistance - 0.1) {
+          console.log(`[COMBAT] → Moving towards target (${currentDistance.toFixed(1)}m)`);
+          lastDistance = currentDistance;
+        }
+        
+        await sleep(100);
+      }
+      
+      this.bot.setControlState('forward', false);
+      const finalDistance = this.bot.entity.position.distanceTo(target.position);
+      console.log(`[COMBAT] Fallback approach complete (${initialDistance.toFixed(1)}m → ${finalDistance.toFixed(1)}m)`);
+    }
   }
 
   getCombatMetrics() {
