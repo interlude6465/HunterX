@@ -6366,6 +6366,181 @@ class SwarmCoordinator {
     
     console.log(`[BUILD] 🔄 Reassigned section from ${failedBotId} to ${newBot.id}`);
   }
+  
+  // Register a local mineflayer bot with the SwarmCoordinator
+  registerBot(bot) {
+    if (!bot || !bot.username) {
+      console.log('[SWARM] Invalid bot provided for registration');
+      return false;
+    }
+    
+    const botId = bot.username;
+    
+    // Check if bot is already registered
+    if (this.bots.has(botId)) {
+      console.log(`[SWARM] Bot ${botId} is already registered`);
+      return false;
+    }
+    
+    console.log(`[SWARM] Registering local bot: ${botId}`);
+    
+    // Create bot entry similar to WebSocket-connected bots
+    const botEntry = {
+      bot: bot, // Reference to the actual mineflayer bot instance
+      ws: null, // No WebSocket for local bots
+      id: botId,
+      status: 'idle',
+      position: bot.entity ? bot.entity.position : null,
+      health: bot.health || 20,
+      task: null,
+      lastHeartbeat: Date.now(),
+      type: 'local' // Mark as local bot
+    };
+    
+    this.bots.set(botId, botEntry);
+    
+    // Set up event listeners for the local bot
+    this.setupLocalBotListeners(bot, botId);
+    
+    // Set as default video bot if none exists
+    if (!this.defaultVideoBot) {
+      this.defaultVideoBot = botId;
+    }
+    
+    this.broadcastVideoState();
+    
+    console.log(`[SWARM] ✅ Successfully registered local bot: ${botId}`);
+    return true;
+  }
+  
+  // Unregister a local mineflayer bot from the SwarmCoordinator
+  unregisterBot(botUsername) {
+    if (!this.bots.has(botUsername)) {
+      console.log(`[SWARM] Bot ${botUsername} is not registered`);
+      return false;
+    }
+    
+    console.log(`[SWARM] Unregistering bot: ${botUsername}`);
+    
+    const botEntry = this.bots.get(botUsername);
+    
+    // Clean up event listeners if it's a local bot
+    if (botEntry.type === 'local' && botEntry.bot) {
+      this.cleanupLocalBotListeners(botEntry.bot, botUsername);
+    }
+    
+    // Remove bot from tracking
+    this.bots.delete(botUsername);
+    
+    // Remove from video feeds if exists
+    if (config.swarm && config.swarm.videoFeeds) {
+      config.swarm.videoFeeds.delete(botUsername);
+    }
+    
+    // Update default video bot if necessary
+    if (this.defaultVideoBot === botUsername) {
+      const remaining = this.getBotIdList();
+      this.defaultVideoBot = remaining.length > 0 ? remaining[0] : null;
+    }
+    
+    this.broadcastVideoState();
+    
+    console.log(`[SWARM] ✅ Successfully unregistered bot: ${botUsername}`);
+    return true;
+  }
+  
+  // Set up event listeners for local bots to keep them in sync with the coordinator
+  setupLocalBotListeners(bot, botId) {
+    if (!bot) return;
+    
+    // Listen for position updates
+    const moveListener = () => {
+      const botEntry = this.bots.get(botId);
+      if (botEntry && bot.entity) {
+        botEntry.position = bot.entity.position;
+        botEntry.lastHeartbeat = Date.now();
+      }
+    };
+    
+    // Listen for health updates
+    const healthListener = () => {
+      const botEntry = this.bots.get(botId);
+      if (botEntry) {
+        botEntry.health = bot.health;
+        botEntry.lastHeartbeat = Date.now();
+      }
+    };
+    
+    // Listen for death
+    const deathListener = () => {
+      const botEntry = this.bots.get(botId);
+      if (botEntry) {
+        botEntry.status = 'dead';
+        botEntry.health = 0;
+      }
+    };
+    
+    // Listen for respawn
+    const respawnListener = () => {
+      const botEntry = this.bots.get(botId);
+      if (botEntry) {
+        botEntry.status = 'idle';
+        botEntry.health = bot.health;
+        botEntry.lastHeartbeat = Date.now();
+      }
+    };
+    
+    // Listen for disconnect
+    const disconnectListener = () => {
+      console.log(`[SWARM] Local bot ${botId} disconnected`);
+      this.unregisterBot(botId);
+    };
+    
+    // Store listeners for cleanup
+    bot._swarmListeners = {
+      move: moveListener,
+      health: healthListener,
+      death: deathListener,
+      respawn: respawnListener,
+      disconnect: disconnectListener
+    };
+    
+    // Attach listeners
+    bot.on('move', moveListener);
+    bot.on('health', healthListener);
+    bot.on('death', deathListener);
+    bot.on('respawn', respawnListener);
+    bot.on('disconnect', disconnectListener);
+    
+    // Initial position and health sync
+    if (bot.entity) {
+      const botEntry = this.bots.get(botId);
+      if (botEntry) {
+        botEntry.position = bot.entity.position;
+        botEntry.health = bot.health;
+      }
+    }
+  }
+  
+  // Clean up event listeners for local bots
+  cleanupLocalBotListeners(bot, botId) {
+    if (!bot || !bot._swarmListeners) return;
+    
+    // Remove all stored listeners
+    bot.removeListener('move', bot._swarmListeners.move);
+    bot.removeListener('health', bot._swarmListeners.health);
+    bot.removeListener('death', bot._swarmListeners.death);
+    bot.removeListener('respawn', bot._swarmListeners.respawn);
+    bot.removeListener('disconnect', bot._swarmListeners.disconnect);
+    
+    // Clear listener reference
+    delete bot._swarmListeners;
+  }
+  
+  // Helper method to get list of bot IDs
+  getBotIdList() {
+    return Array.from(this.bots.keys());
+  }
 }
 
 // === BASE MONITOR ===
@@ -27214,10 +27389,17 @@ class BotSpawner {
       registerBot(bot);
       updateBotHeartbeat(username, bot);
       
-      // 5. Add bot to SwarmCoordinator if available
-      if (globalSwarmCoordinator) {
+      // 5. Add bot to SwarmCoordinator if available, initialize if needed
+      if (!globalSwarmCoordinator) {
+        globalSwarmCoordinator = new SwarmCoordinator(9090);
+        console.log('[SPAWNER] ✅ SwarmCoordinator initialized for spawned bot');
+      }
+      
+      try {
         globalSwarmCoordinator.registerBot(bot);
         console.log(`[SPAWNER] ✅ Registered ${username} with SwarmCoordinator`);
+      } catch (error) {
+        console.error(`[SPAWNER] ❌ Failed to register ${username} with SwarmCoordinator:`, error.message);
       }
       
       // 6. Initialize analytics tracking
@@ -27310,8 +27492,8 @@ class BotSpawner {
   // Register all spawned bots with SwarmCoordinator
   registerBotsWithSwarmCoordinator() {
     if (!globalSwarmCoordinator) {
-      console.log(`[SPAWNER] ⚠️ SwarmCoordinator not available`);
-      return;
+      globalSwarmCoordinator = new SwarmCoordinator(9090);
+      console.log(`[SPAWNER] ✅ SwarmCoordinator initialized for batch registration`);
     }
     
     let registeredCount = 0;
