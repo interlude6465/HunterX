@@ -32725,6 +32725,154 @@ class TrapDetector {
     }
 }
 
+async function safeEquipItem(bot, item, destination) {
+  if (!bot || !item || !bot.inventory || !Array.isArray(bot.inventory.slots)) {
+    return false;
+  }
+
+  const slot = typeof item.slot === 'number' ? item.slot : null;
+  if (slot === null) {
+    return false;
+  }
+
+  const normalizedQuickBar = Number.isInteger(bot.quickBarSlot) ? bot.quickBarSlot : 0;
+
+  const move = async (source, target) => {
+    if (source === target) return true;
+    if (!bot.moveSlotItem || typeof bot.moveSlotItem !== 'function') {
+      return false;
+    }
+    try {
+      const result = await bot.moveSlotItem(source, target);
+      return !!result;
+    } catch (err) {
+      console.log(`[EQUIP] Failed to move slot ${source} → ${target}: ${err.message}`);
+      return false;
+    }
+  };
+
+  const setQuickBar = async (index) => {
+    if (index < 0 || index > 8) return;
+    if (bot.quickBarSlot === index) return;
+    if (typeof bot.setQuickBarSlot === 'function') {
+      try {
+        await bot.setQuickBarSlot(index);
+      } catch (err) {
+        console.log(`[EQUIP] Failed to set quick bar slot ${index}: ${err.message}`);
+      }
+    }
+  };
+
+  if (destination === 'off-hand') {
+    if (slot === 45) {
+      return true;
+    }
+
+    if (await move(slot, 45)) {
+      return true;
+    }
+
+    const tempSlot = findEmptyInventorySlot(bot);
+    if (tempSlot !== -1) {
+      const occupant = bot.inventory.slots[45];
+      if (occupant) {
+        const movedOut = await move(45, tempSlot);
+        if (!movedOut) {
+          return false;
+        }
+      }
+      if (await move(slot, 45)) {
+        return true;
+      }
+      if (bot.inventory.slots[tempSlot]) {
+        await move(tempSlot, 45);
+      }
+    }
+
+    return false;
+  }
+
+  if (destination === 'hand') {
+    if (slot >= 36 && slot <= 44) {
+      await setQuickBar(slot - 36);
+      return true;
+    }
+
+    const targetSlot = normalizedQuickBar + 36;
+    if (slot === targetSlot) {
+      await setQuickBar(targetSlot - 36);
+      return true;
+    }
+
+    if (await move(slot, targetSlot)) {
+      await setQuickBar(targetSlot - 36);
+      return true;
+    }
+
+    const emptyHotbar = findEmptyHotbarSlot(bot);
+    if (emptyHotbar !== -1 && await move(slot, emptyHotbar)) {
+      await setQuickBar(emptyHotbar - 36);
+      return true;
+    }
+
+    const tempSlot = findEmptyInventorySlot(bot);
+    if (tempSlot !== -1) {
+      const occupant = bot.inventory.slots[targetSlot];
+      if (occupant) {
+        const movedOut = await move(targetSlot, tempSlot);
+        if (!movedOut) {
+          return false;
+        }
+      }
+      if (await move(slot, targetSlot)) {
+        await setQuickBar(targetSlot - 36);
+        return true;
+      }
+      if (bot.inventory.slots[tempSlot]) {
+        await move(tempSlot, targetSlot);
+      }
+    }
+
+    return false;
+  }
+
+  try {
+    await bot.equip(item, destination);
+    return true;
+  } catch (err) {
+    console.log(`[EQUIP] Fallback equip failed for ${item.name}: ${err.message}`);
+    return false;
+  }
+}
+
+function findEmptyInventorySlot(bot) {
+  if (!bot || !bot.inventory || !Array.isArray(bot.inventory.slots)) {
+    return -1;
+  }
+
+  for (let i = 9; i < 36 && i < bot.inventory.slots.length; i++) {
+    if (!bot.inventory.slots[i]) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+function findEmptyHotbarSlot(bot) {
+  if (!bot || !bot.inventory || !Array.isArray(bot.inventory.slots)) {
+    return -1;
+  }
+
+  for (let i = 36; i <= 44 && i < bot.inventory.slots.length; i++) {
+    if (!bot.inventory.slots[i]) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
 class EscapeArtist {
   constructor(bot) {
     this.bot = bot;
@@ -32804,7 +32952,12 @@ class EscapeArtist {
     
     const safeDirection = await this.calculateSafeDirection();
     
-    await this.bot.equip(pearl, 'hand');
+    const equipped = await safeEquipItem(this.bot, pearl, 'hand');
+    if (!equipped) {
+      console.log('[ESCAPE] Failed to equip ender pearl safely');
+      return false;
+    }
+
     await this.bot.lookAt(safeDirection);
     await this.bot.activateItem();
     
@@ -32816,7 +32969,12 @@ class EscapeArtist {
     const chorus = this.bot.inventory.items().find(item => item.name === 'chorus_fruit');
     if (!chorus) return false;
     
-    await this.bot.equip(chorus, 'hand');
+    const equipped = await safeEquipItem(this.bot, chorus, 'hand');
+    if (!equipped) {
+      console.log('[ESCAPE] Failed to equip chorus fruit safely');
+      return false;
+    }
+
     await this.bot.consume();
     
     await this.sleep(500);
@@ -32829,7 +32987,11 @@ class EscapeArtist {
     const waterBucket = this.bot.inventory.items().find(item => item.name === 'water_bucket');
     if (!waterBucket) return false;
     
-    await this.bot.equip(waterBucket, 'hand');
+    const equipped = await safeEquipItem(this.bot, waterBucket, 'hand');
+    if (!equipped) {
+      console.log('[ESCAPE] Failed to equip water bucket safely');
+      return false;
+    }
     
     if (this.bot.entity.onFire) {
       const below = this.bot.entity.position.offset(0, -1, 0);
@@ -32870,7 +33032,12 @@ class EscapeArtist {
     const totem = this.bot.inventory.items().find(item => item.name === 'totem_of_undying');
     if (!totem) return false;
     
-    await this.bot.equip(totem, 'off-hand');
+    const equipped = await safeEquipItem(this.bot, totem, 'off-hand');
+    if (!equipped) {
+      console.log('[ESCAPE] Failed to equip totem safely');
+      return false;
+    }
+
     console.log('[ESCAPE] Totem equipped - will survive next fatal hit');
     
     return true;
@@ -32911,7 +33078,13 @@ class EscapeArtist {
   async fireResPotion() {
     const potion = this.bot.inventory.items().find(item => item.name === 'potion' && item.nbt?.value?.Potion?.value.endsWith('fire_resistance'));
     if (!potion) return false;
-    await this.bot.equip(potion, 'hand');
+
+    const equipped = await safeEquipItem(this.bot, potion, 'hand');
+    if (!equipped) {
+      console.log('[ESCAPE] Failed to equip fire resistance potion safely');
+      return false;
+    }
+
     await this.bot.consume();
     return true;
   }
@@ -33016,9 +33189,13 @@ class DangerMonitor {
     );
     
     if (goldenApple) {
-      await this.bot.equip(goldenApple, 'hand');
-      await this.bot.consume();
-      console.log('[DANGER] Consumed golden apple');
+      const equippedApple = await safeEquipItem(this.bot, goldenApple, 'hand');
+      if (equippedApple) {
+        await this.bot.consume();
+        console.log('[DANGER] Consumed golden apple');
+      } else {
+        console.log('[DANGER] Failed to equip golden apple safely');
+      }
     }
     
     // Drink health potion
@@ -33027,9 +33204,13 @@ class DangerMonitor {
     );
     
     if (healthPotion) {
-      await this.bot.equip(healthPotion, 'hand');
-      await this.bot.consume();
-      console.log('[DANGER] Drank health potion');
+      const equippedPotion = await safeEquipItem(this.bot, healthPotion, 'hand');
+      if (equippedPotion) {
+        await this.bot.consume();
+        console.log('[DANGER] Drank health potion');
+      } else {
+        console.log('[DANGER] Failed to equip health potion safely');
+      }
     }
   }
   
