@@ -16753,7 +16753,10 @@ class ConversationAI {
       return false;
     }
 
-    if (options.bypassTrust || isSystemCommandUser(username)) {
+    const context = this._activeCommandContext;
+    const bypassFromContext = context && context.username === username ? context.bypassTrust : false;
+
+    if (options.bypassTrust || bypassFromContext || isSystemCommandUser(username)) {
       return true;
     }
 
@@ -16767,7 +16770,12 @@ class ConversationAI {
       return false;
     }
 
-    return userIndex >= minIndex;
+    if (userIndex >= minIndex) {
+      return true;
+    }
+
+    console.log(`[CMD_DEBUG][TRUST] ${username} lacks required level ${minLevel} (has ${userLevel})`);
+    return false;
   }
 
   shouldRespond(username, message) {
@@ -17069,17 +17077,34 @@ try {
     const bypassTrust = options.bypassTrust || isSystemCommandUser(username);
     const whitelistEntry = findWhitelistEntry(username);
     const trustLevel = whitelistEntry ? (whitelistEntry.level || 'guest') : (bypassTrust ? 'owner' : null);
+    const sendReply = typeof options.reply === 'function' ? options.reply : null;
     let outcome = 'no_action';
+    let error = null;
+
+    const respond = (success, text) => {
+      if (!text) return;
+      if (source === 'chat') {
+        this.bot.chat(text);
+      } else if (sendReply) {
+        sendReply({ success, message: text });
+      } else {
+        console.log(`[CMD_DEBUG][COMMAND] (${source}) Response to ${username}: ${text}`);
+      }
+    };
+
+    const setOutcome = (label) => {
+      outcome = label;
+    };
 
     console.log(`[CMD_DEBUG][COMMAND] (${source}) Processing command from ${username}: ${message} | trust=${trustLevel || 'none'} | bypass=${bypassTrust}`);
 
-    try {
+    this._activeCommandContext = { username, bypassTrust, source, respond, setOutcome };
+
+    const commandExecutor = async () => {
       if (!bypassTrust && !whitelistEntry) {
         outcome = 'blocked_not_whitelisted';
         console.log(`[CMD_DEBUG][COMMAND] (${source}) Blocked command from ${username}: user not in whitelist`);
-        if (source === 'chat') {
-          this.bot.chat("Sorry, only whitelisted players can give me commands!");
-        }
+        respond(false, "Sorry, only whitelisted players can give me commands!");
         return;
       }
 
@@ -17088,11 +17113,14 @@ try {
       const lower = message.toLowerCase();
       config.dangerEscape = config.dangerEscape || { enabled: true, playerProximityRadius: 50 };
 
-      const trustCheck = (level) => this.hasTrustLevel(username, level, { bypassTrust });
+      const denyCommand = (msg, label = 'blocked_insufficient_trust') => {
+        setOutcome(label);
+        respond(false, msg);
+      };
     
     // Status report command
     if (lower.includes('status report')) {
-      console.log(`[COMMAND] Status report requested by ${username}`);
+      console.log(`[CMD_DEBUG][COMMAND] Status report requested by ${username}`);
       const snapshot = await this.getBotStatusSnapshot(username);
       const report = this.formatStatusReport(snapshot, username);
       
@@ -17119,7 +17147,7 @@ try {
     
     // Bot location command
     if (lower.includes('where are you')) {
-      console.log(`[COMMAND] Location request by ${username}`);
+      console.log(`[CMD_DEBUG][COMMAND] Location request by ${username}`);
       const snapshot = await this.getBotStatusSnapshot(username);
       const report = this.formatLocationReport(snapshot, username);
       
@@ -17145,7 +17173,7 @@ try {
     
     // Player location command
     if (lower.includes('what is my location') || lower.includes('where am i') || lower.includes('my location')) {
-      console.log(`[COMMAND] Player location request by ${username}`);
+      console.log(`[CMD_DEBUG][COMMAND] Player location request by ${username}`);
       
       const player = this.bot.players[username];
       if (!player || !player.entity) {
@@ -17183,7 +17211,7 @@ try {
     
     if (lower.startsWith('!escape')) {
       if (!this.hasTrustLevel(username, 'trusted')) {
-        this.bot.chat("Only trusted+ can modify escape behavior!");
+        denyCommand("Only trusted+ can modify escape behavior!", 'blocked_escape_permissions');
         return;
       }
       
@@ -17209,7 +17237,7 @@ try {
     
     if (lower.startsWith('!stay') || lower.startsWith('!dontleave')) {
       if (!this.hasTrustLevel(username, 'trusted')) {
-        this.bot.chat("Only trusted+ can modify escape behavior!");
+        denyCommand("Only trusted+ can modify escape behavior!", 'blocked_escape_permissions');
         return;
       }
       
@@ -17226,7 +17254,7 @@ try {
     // Trust management commands (admin+ only)
     if (lower.includes('set trust') || lower.includes('set level')) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can manage trust levels!");
+        denyCommand("Only admin+ can manage trust levels!", 'blocked_trust_management');
         return;
       }
       
@@ -17261,7 +17289,7 @@ try {
     // List whitelisted players (trusted+ only)
     if (lower.includes('list whitelist') || lower.includes('show whitelist')) {
       if (!this.hasTrustLevel(username, 'trusted')) {
-        this.bot.chat("Only trusted+ users can view the whitelist!");
+        denyCommand("Only trusted+ users can view the whitelist!", 'blocked_whitelist_view');
         return;
       }
       
@@ -17279,7 +17307,7 @@ try {
     // Remove player from whitelist (admin+ only)
     if (lower.includes('remove trust') || lower.includes('remove whitelist')) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can remove players from whitelist!");
+        denyCommand("Only admin+ can remove players from whitelist!", 'blocked_trust_management');
         return;
       }
       
@@ -17532,7 +17560,7 @@ try {
     // Spawn more bots command
     if (lower.includes('spawn') && (lower.includes('bot') || lower.includes('more'))) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can spawn more bots!");
+        denyCommand("Only admin+ can spawn more bots!", 'blocked_bot_spawn');
         return;
       }
 
@@ -17584,7 +17612,7 @@ try {
     // Detect server type command
     if (lower.includes('!detect') || lower.includes('detect server')) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can run server detection!");
+        denyCommand("Only admin+ can run server detection!", 'blocked_server_detection');
         return;
       }
 
@@ -17663,12 +17691,12 @@ try {
     // Mode changes (admin+ only - critical operation)
     if (lower.includes('change to') || lower.includes('switch to')) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can change my operating mode!");
+        denyCommand("Only admin+ can change my operating mode!", 'blocked_mode_change');
         return;
       }
-      
+
       if (lower.includes('pvp')) {
-        config.mode = 'pvp';
+
         this.bot.chat("Switching to PvP mode! Let's fight! ⚔️");
       } else if (lower.includes('dupe')) {
         config.mode = 'dupe';
@@ -18092,7 +18120,7 @@ try {
     // Spawn command
     if (lower.includes('!spawn')) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can spawn bots!");
+        denyCommand("Only admin+ can spawn bots!", 'blocked_bot_spawn');
         return;
       }
       
@@ -18140,7 +18168,7 @@ try {
     // Dialogue RL commands
     if (lower.includes('!rl') || lower.includes('rl dialogue')) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can control RL settings!");
+        denyCommand("Only admin+ can control RL settings!", 'blocked_rl_settings');
         return;
       }
       
@@ -18189,7 +18217,7 @@ try {
 
       if (lower.includes('movement')) {
         if (!this.hasTrustLevel(username, 'admin')) {
-          this.bot.chat("Only admin+ can control Movement RL!");
+          denyCommand("Only admin+ can control Movement RL!", 'blocked_rl_settings');
           return;
         }
 
@@ -18239,7 +18267,7 @@ try {
     // Global RL analytics commands
     if (lower.startsWith('!rl') && lower.includes('status')) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can view RL analytics!");
+        denyCommand("Only admin+ can view RL analytics!", 'blocked_rl_settings');
         return;
       }
       
@@ -18254,7 +18282,7 @@ try {
     
     if (lower.startsWith('!rl') && lower.includes('save')) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can save RL models!");
+        denyCommand("Only admin+ can save RL models!", 'blocked_rl_settings');
         return;
       }
       
@@ -18280,7 +18308,7 @@ try {
     
     if (lower.startsWith('!rl') && lower.includes('reset')) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can reset RL stats!");
+        denyCommand("Only admin+ can reset RL stats!", 'blocked_rl_settings');
         return;
       }
       
@@ -18297,7 +18325,7 @@ try {
     
     if (lower.startsWith('!rl') && (lower.includes('abtest') || lower.includes('a/b'))) {
       if (!this.hasTrustLevel(username, 'owner')) {
-        this.bot.chat("Only owner can control A/B testing!");
+        denyCommand("Only owner can control A/B testing!", 'blocked_rl_settings');
         return;
       }
       
@@ -18568,7 +18596,7 @@ try {
     if (lower.includes('!stats') || lower.includes('stats') || lower.includes('analytics') || lower.includes('performance')) {
       if (lower.includes('performance') || lower.includes('analytics')) {
         if (!this.hasTrustLevel(username, 'admin')) {
-          this.bot.chat("Only admin+ can view performance analytics!");
+          denyCommand("Only admin+ can view performance analytics!", 'blocked_analytics');
           return;
         }
       }
@@ -18624,7 +18652,7 @@ try {
     // Dupe command (admin only)
     if (lower.includes('!dupe') || (lower.includes('dupe') && lower.includes('test'))) {
       if (!this.hasTrustLevel(username, 'admin')) {
-        this.bot.chat("Only admin+ can test dupes!");
+        denyCommand("Only admin+ can test dupes!", 'blocked_dupe_test');
         return;
       }
 
@@ -18683,6 +18711,22 @@ try {
     
     // Start the hunt in background
     this.huntForItem(username, itemName, quantity, knowledge);
+  };
+
+    return commandExecutor()
+      .catch(err => {
+        error = err;
+        outcome = outcome && !outcome.startsWith('error') ? `error:${outcome}` : (outcome || 'error');
+        console.error(`[CMD_DEBUG][COMMAND] (${source}) Error processing command for ${username}: ${err.stack || err.message}`);
+        if (sendReply && source !== 'chat') {
+          sendReply({ success: false, message: err.message || 'Command failed' });
+        }
+        throw err;
+      })
+      .finally(() => {
+        this._activeCommandContext = null;
+        console.log(`[CMD_DEBUG][COMMAND] (${source}) Completed for ${username}: outcome=${outcome}${error ? ' (error)' : ''}`);
+      });
   }
   
   async huntForItem(requester, itemName, quantity, knowledge) {
@@ -19175,7 +19219,15 @@ try {
 
   handleTrustCommand(username, message) {
     if (!this.hasTrustLevel(username, 'admin')) {
-      this.bot.chat("Only admin+ can manage trust!");
+      const context = this._activeCommandContext;
+      if (context && typeof context.setOutcome === 'function') {
+        context.setOutcome('blocked_trust_management');
+      }
+      if (context && typeof context.respond === 'function') {
+        context.respond(false, "Only admin+ can manage trust!");
+      } else {
+        this.bot.chat("Only admin+ can manage trust!");
+      }
       return;
     }
 
@@ -27995,8 +28047,16 @@ http.createServer((req, res) => {
         const { command, action, projectId, mode, exploit, enabled, schematicPath, location, username } = data;
         
         if (!globalBot) {
+          console.log(`[CMD_DEBUG][HTTP] Command request blocked: bot not connected`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: false, response: 'Bot not connected yet!' }));
+          return;
+        }
+
+        if (typeof command !== 'string' || command.trim().length === 0) {
+          console.log('[CMD_DEBUG][HTTP] Invalid command payload received');
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, response: 'Invalid command payload' }));
           return;
         }
         
@@ -28075,26 +28135,46 @@ http.createServer((req, res) => {
           return;
         }
         
-        // Use provided username or default to WebDashboard
-        const user = username || 'WebDashboard';
-        
-        // Process command through conversation AI
-        const conversationAI = new ConversationAI(globalBot);
-        
-        // Check if user has permission
-        if (!conversationAI.isWhitelisted(user)) {
-          res.writeHead(403, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ response: 'Access denied: User not whitelisted' }));
-          return;
+        const normalizedCommand = command.trim();
+        const commandUser = (typeof username === 'string' && username.trim().length > 0)
+          ? username.trim()
+          : 'CommandAPI';
+        const bypassTrust = isSystemCommandUser(commandUser);
+        let responded = false;
+
+        const conversationAI = globalConversationAI || new ConversationAI(globalBot);
+        if (!globalConversationAI) {
+          globalConversationAI = conversationAI;
         }
-        
-        await conversationAI.handleCommand(user, command);
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, response: 'Command executed!' }));
+
+        const reply = (payload = {}) => {
+          if (responded) return;
+          responded = true;
+          const success = payload.success !== false;
+          const messageText = payload.message || (success ? 'Command executed!' : 'Command blocked');
+          const statusCode = success ? 200 : (payload.statusCode || 403);
+          console.log(`[CMD_DEBUG][HTTP] Responding to ${commandUser}: success=${success} message="${messageText}"`);
+          res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success, response: messageText }));
+        };
+
+        console.log(`[CMD_DEBUG][HTTP] Received command "${normalizedCommand}" from ${commandUser} (bypass=${bypassTrust})`);
+
+        await conversationAI.handleCommand(commandUser, normalizedCommand, {
+          source: 'http',
+          bypassTrust,
+          reply
+        });
+
+        if (!responded) {
+          reply({ success: true, message: 'Command executed!' });
+        }
       } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, response: 'Command failed: ' + err.message }));
+        console.error(`[CMD_DEBUG][HTTP] Command error: ${err.stack || err.message}`);
+        if (!res.writableEnded) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, response: 'Command failed: ' + err.message }));
+        }
       }
     });
   } else {
@@ -28152,7 +28232,7 @@ const dashboardWss = new WebSocket.Server({ port: 9090 });
 let dashboardClients = new Set();
 
 dashboardWss.on('connection', (ws) => {
-  console.log('[DASHBOARD-WS] Client connected');
+  console.log('[CMD_DEBUG][WS] Client connected');
   dashboardClients.add(ws);
   
   // Send initial status
@@ -28187,7 +28267,7 @@ console.log('[DASHBOARD-WS] WebSocket server listening on port 9090');
 
 // Handle dashboard WebSocket messages
 function handleDashboardMessage(ws, message) {
-  console.log('[DASHBOARD-WS] Received:', message.type, message.action);
+  console.log(`[CMD_DEBUG][WS] Received message type=${message.type} action=${message.action || 'n/a'} command=${message.command || 'n/a'}`);
   
   switch (message.type) {
     case 'status':
@@ -28355,63 +28435,66 @@ function getConfigData() {
 
 // Execute command via dashboard
 async function executeCommand(ws, command) {
+  let responded = false;
+  let lastReplyPayload = null;
+
+  const sendResponse = (payload = {}) => {
+    if (responded) return;
+    responded = true;
+    lastReplyPayload = payload;
+    const success = payload.success !== false;
+    const messageText = payload.message || (success ? 'Command executed' : 'Command blocked');
+    console.log(`[CMD_DEBUG][WS] Responding to command "${command}": success=${success} message="${messageText}"`);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendDashboardMessage(ws, {
+        type: 'command_response',
+        data: {
+          success,
+          message: messageText,
+          command
+        }
+      });
+    }
+  };
+
   try {
     if (!globalBot) {
-      sendDashboardMessage(ws, {
-        type: 'command_response',
-        data: {
-          success: false,
-          message: 'Bot not connected',
-          command: command
-        }
-      });
+      console.log(`[CMD_DEBUG][WS] Command "${command}" blocked: bot not connected`);
+      sendResponse({ success: false, message: 'Bot not connected' });
       return;
     }
-    
-    // Process through conversation AI if available
-    if (typeof ConversationAI !== 'undefined') {
-      const conversationAI = new ConversationAI(globalBot);
-      await conversationAI.handleCommand('WebDashboard', command);
-      
-      sendDashboardMessage(ws, {
-        type: 'command_response',
+
+    const conversationAI = globalConversationAI || new ConversationAI(globalBot);
+    if (!globalConversationAI) {
+      globalConversationAI = conversationAI;
+    }
+
+    console.log(`[CMD_DEBUG][WS] Received command "${command}"`);
+
+    await conversationAI.handleCommand('WebDashboard', command, {
+      source: 'websocket',
+      bypassTrust: true,
+      reply: sendResponse
+    });
+
+    if (!responded) {
+      sendResponse({ success: true, message: 'Command executed' });
+    }
+
+    const wasSuccessful = !lastReplyPayload || lastReplyPayload.success !== false;
+    if (wasSuccessful) {
+      broadcastToAllDashboards({
+        type: 'chat',
         data: {
-          success: true,
-          message: 'Command executed',
-          command: command
-        }
-      });
-    } else {
-      // Direct command execution
-      globalBot.chat(command);
-      
-      sendDashboardMessage(ws, {
-        type: 'command_response',
-        data: {
-          success: true,
-          message: 'Command sent to bot',
-          command: command
+          message: `Command executed: ${command}`
         }
       });
     }
-    
-    // Broadcast to console
-    broadcastToAllDashboards({
-      type: 'chat',
-      data: {
-        message: `Command executed: ${command}`
-      }
-    });
   } catch (err) {
-    console.error('[DASHBOARD-WS] Command execution error:', err);
-    sendDashboardMessage(ws, {
-      type: 'command_response',
-      data: {
-        success: false,
-        message: `Error: ${err.message}`,
-        command: command
-      }
-    });
+    console.error(`[CMD_DEBUG][WS] Command execution error: ${err.stack || err.message}`);
+    if (!responded) {
+      sendResponse({ success: false, message: `Error: ${err.message}` });
+    }
   }
 }
 
@@ -28853,6 +28936,7 @@ async function launchBot(username, role = 'fighter') {
   // Initialize movement mode manager BEFORE ConversationAI to ensure it's available for command handling
   bot.movementModeManager = new MovementModeManager(bot);
   const conversationAI = new ConversationAI(bot);
+  globalConversationAI = conversationAI;
   
   // Load persisted dialogue RL model if available
   await conversationAI.dialogueRL.loadModel();
