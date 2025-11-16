@@ -10769,6 +10769,9 @@ class SwarmManager {
       case 'BOT_REGISTER':
         this.registerBot(message, ws);
         break;
+      case 'HEARTBEAT':
+        // Keep-alive ping, acknowledge silently
+        break;
       default:
         console.log(`[SWARM] Unknown message type: ${message.type}`);
     }
@@ -28768,6 +28771,10 @@ function handleDashboardMessage(ws, message) {
       }
       break;
       
+    case 'HEARTBEAT':
+      // Keep-alive ping, acknowledge silently
+      break;
+      
     default:
       console.log('[DASHBOARD-WS] Unknown message type:', message.type);
   }
@@ -29910,6 +29917,17 @@ async function launchBot(username, role = 'fighter') {
                 }
                 bot.chat('Help operation complete. Returning to normal tasks.');
                 bot.currentHelpOperation = null;
+              }
+              break;
+              
+            case 'HEARTBEAT':
+              // Keep-alive ping, acknowledge silently
+              break;
+              
+            default:
+              // Only log if it's not a HEARTBEAT (keep-alive)
+              if (message.type !== 'HEARTBEAT') {
+                console.log(`[SWARM] Unknown message type: ${message.type}`);
               }
               break;
           }
