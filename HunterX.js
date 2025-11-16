@@ -2950,6 +2950,16 @@ config = {
     modeHistory: []
   },
   
+  // Swimming behavior
+  swimming: {
+    enabled: true,
+    autoSwim: true,
+    sprintInWater: true,
+    allowPathfindingThroughWater: true,
+    detectWaterDepth: true,
+    minDepthForSwim: 1
+  },
+  
   // Home defense system
   homeDefense: {
     enabled: false,
@@ -11509,6 +11519,16 @@ class CombatAI {
   
   async moveToward(target) {
     try {
+      // Check if bot or target is in water and use swimming behavior
+      const botInWater = this.bot.isInWater;
+      const targetInWater = target && target.position ? this.isPositionInWater(target.position) : false;
+      
+      if ((botInWater || targetInWater) && this.bot.swimmingBehavior) {
+        console.log('[COMBAT] Target in water - using swimming navigation');
+        // Swimming behavior will automatically handle movement while pathfinding
+        this.bot.swimmingBehavior.setEnabled(true);
+      }
+      
       await this.bot.pathfinder.goto(new goals.GoalNear(
         target.position.x,
         target.position.y,
@@ -11519,8 +11539,28 @@ class CombatAI {
       // Couldn't pathfind, use direct movement as fallback
       const dir = target.position.minus(this.bot.entity.position).normalize();
       this.bot.setControlState('forward', true);
+      
+      // If in water, enable jump for swimming
+      if (this.bot.isInWater) {
+        this.bot.setControlState('jump', true);
+      }
+      
       await sleep(100);
       this.bot.setControlState('forward', false);
+      
+      if (this.bot.isInWater) {
+        this.bot.setControlState('jump', false);
+      }
+    }
+  }
+  
+  isPositionInWater(position) {
+    try {
+      if (!this.bot || !position) return false;
+      const block = this.bot.blockAt(position);
+      return block && block.name === 'water';
+    } catch (err) {
+      return false;
     }
   }
   
@@ -18086,6 +18126,59 @@ try {
       return;
     }
     
+    // Swimming commands
+    if (lower.includes('!swim')) {
+      if (lower.includes('enable') || lower.includes('on')) {
+        if (this.bot.swimmingBehavior) {
+          this.bot.swimmingBehavior.setEnabled(true);
+          this.bot.chat('🏊 Swimming behavior enabled');
+        } else {
+          this.bot.chat('❌ Swimming behavior not available');
+        }
+        return;
+      } else if (lower.includes('disable') || lower.includes('off')) {
+        if (this.bot.swimmingBehavior) {
+          this.bot.swimmingBehavior.setEnabled(false);
+          this.bot.chat('🏊 Swimming behavior disabled');
+        } else {
+          this.bot.chat('❌ Swimming behavior not available');
+        }
+        return;
+      } else if (lower.includes('status')) {
+        if (this.bot.swimmingBehavior) {
+          const inWater = this.bot.isInWater;
+          const enabled = this.bot.swimmingBehavior.enabled;
+          const depth = this.bot.swimmingBehavior.getWaterDepth();
+          this.bot.chat(`🏊 Swimming: ${enabled ? 'Enabled' : 'Disabled'} | In water: ${inWater ? 'Yes' : 'No'} | Depth: ${depth} blocks`);
+        } else {
+          this.bot.chat('❌ Swimming behavior not available');
+        }
+        return;
+      } else if (lower.includes('to')) {
+        // Swim to coordinates
+        const coords = this.extractCoords(message);
+        if (coords && this.bot.swimmingBehavior) {
+          this.bot.chat(`🏊 Swimming to ${coords.x} ${coords.y} ${coords.z}`);
+          try {
+            const success = await this.bot.swimmingBehavior.swimToPosition(new Vec3(coords.x, coords.y, coords.z));
+            if (success) {
+              this.bot.chat('✅ Reached swimming destination');
+            } else {
+              this.bot.chat('❌ Failed to swim to destination');
+            }
+          } catch (error) {
+            this.bot.chat(`❌ Swimming error: ${error.message}`);
+          }
+        } else {
+          this.bot.chat('Usage: !swim to x y z');
+        }
+        return;
+      } else {
+        this.bot.chat('Usage: !swim [enable|disable|status|to x y z]');
+        return;
+      }
+    }
+    
     // Equip command
     if (lower.includes('!equip')) {
       const itemMatch = message.match(/!equip\s+(.+)/i);
@@ -22750,6 +22843,185 @@ class MovementModeManager {
         this.bot.chat(`/msg ${player} ${message}`);
       }, 100);
     });
+  }
+}
+
+// === SWIMMING BEHAVIOR ===
+class SwimmingBehavior {
+  constructor(bot) {
+    this.bot = bot;
+    this.isSwimming = false;
+    this.wasInWater = false;
+    this.swimInterval = null;
+    this.enabled = config.swimming?.enabled !== false;
+    this.autoSwim = config.swimming?.autoSwim !== false;
+    this.sprintInWater = config.swimming?.sprintInWater !== false;
+    this.swimDepthThreshold = config.swimming?.minDepthForSwim || 1;
+    
+    console.log('[SWIMMING] Swimming behavior initialized');
+  }
+  
+  start() {
+    if (this.swimInterval) {
+      return; // Already started
+    }
+    
+    // Monitor water state on every physics tick
+    this.bot.on('physicsTick', this.handlePhysicsTick.bind(this));
+    console.log('[SWIMMING] Swimming behavior started');
+  }
+  
+  stop() {
+    if (this.swimInterval) {
+      clearInterval(this.swimInterval);
+      this.swimInterval = null;
+    }
+    
+    // Stop swimming controls
+    this.disableSwimming();
+    console.log('[SWIMMING] Swimming behavior stopped');
+  }
+  
+  handlePhysicsTick() {
+    if (!this.enabled || !this.bot || !this.bot.entity) {
+      return;
+    }
+    
+    const inWater = this.bot.isInWater;
+    
+    // Water entry detection
+    if (inWater && !this.wasInWater) {
+      this.onWaterEntry();
+    }
+    
+    // Water exit detection
+    if (!inWater && this.wasInWater) {
+      this.onWaterExit();
+    }
+    
+    // Update swimming state
+    if (inWater) {
+      this.updateSwimming();
+    }
+    
+    this.wasInWater = inWater;
+  }
+  
+  onWaterEntry() {
+    console.log('[SWIMMING] Entered water - enabling swimming mode');
+    this.isSwimming = true;
+  }
+  
+  onWaterExit() {
+    console.log('[SWIMMING] Exited water - disabling swimming mode');
+    this.isSwimming = false;
+    this.disableSwimming();
+  }
+  
+  updateSwimming() {
+    if (!this.isSwimming || !this.bot || !this.autoSwim) {
+      return;
+    }
+    
+    try {
+      // Check if bot is actually submerged (not just at surface)
+      const currentPos = this.bot.entity.position;
+      const blockAbove = this.bot.blockAt(currentPos.offset(0, 1, 0));
+      const blockAtHead = this.bot.blockAt(currentPos.offset(0, 0.5, 0));
+      
+      const isSubmerged = (blockAbove && blockAbove.name === 'water') || 
+                          (blockAtHead && blockAtHead.name === 'water');
+      
+      if (isSubmerged) {
+        // Enable jump to swim upward/forward
+        if (this.bot.setControlState) {
+          this.bot.setControlState('jump', true);
+        }
+      } else {
+        // At surface, disable jump
+        if (this.bot.setControlState) {
+          this.bot.setControlState('jump', false);
+        }
+      }
+      
+      // Enable sprint for faster swimming when moving
+      if (this.sprintInWater && this.bot.pathfinder && this.bot.pathfinder.isMoving()) {
+        if (this.bot.setControlState) {
+          this.bot.setControlState('sprint', true);
+        }
+      }
+    } catch (err) {
+      // Ignore errors silently to avoid spam
+    }
+  }
+  
+  disableSwimming() {
+    try {
+      if (this.bot && this.bot.setControlState) {
+        this.bot.setControlState('jump', false);
+        this.bot.setControlState('sprint', false);
+      }
+    } catch (err) {
+      // Ignore errors
+    }
+  }
+  
+  isInWater() {
+    return this.bot && this.bot.isInWater;
+  }
+  
+  getWaterDepth() {
+    if (!this.bot || !this.bot.entity) {
+      return 0;
+    }
+    
+    try {
+      const pos = this.bot.entity.position;
+      let depth = 0;
+      
+      // Check blocks above until we find non-water
+      for (let y = 0; y < 10; y++) {
+        const block = this.bot.blockAt(pos.offset(0, y, 0));
+        if (block && block.name === 'water') {
+          depth++;
+        } else {
+          break;
+        }
+      }
+      
+      return depth;
+    } catch (err) {
+      return 0;
+    }
+  }
+  
+  async swimToPosition(target) {
+    if (!this.bot || !this.bot.pathfinder) {
+      return false;
+    }
+    
+    try {
+      console.log(`[SWIMMING] Swimming to position: ${target.x}, ${target.y}, ${target.z}`);
+      
+      // Temporarily enable swimming for pathfinding
+      this.enabled = true;
+      
+      // Use pathfinder to navigate - swimming will be handled automatically
+      await this.bot.pathfinder.goto(new goals.GoalNear(target.x, target.y, target.z, 2));
+      
+      return true;
+    } catch (err) {
+      console.error('[SWIMMING] Error swimming to position:', err.message);
+      return false;
+    }
+  }
+  
+  setEnabled(enabled) {
+    this.enabled = enabled;
+    if (!enabled) {
+      this.disableSwimming();
+    }
+    console.log(`[SWIMMING] Swimming behavior ${enabled ? 'enabled' : 'disabled'}`);
   }
 }
 
@@ -29180,8 +29452,19 @@ async function launchBot(username, role = 'fighter') {
 
     // Set up movements configuration
     try {
-      bot.pathfinder.setMovements(new Movements(bot));
-      console.log('[PATHFINDER] Movements configured successfully');
+      const movements = new Movements(bot);
+      
+      // Enable water navigation for swimming
+      movements.canSwim = true;
+      movements.allowSprinting = true;
+      
+      // Allow pathfinding through water
+      if (movements.blocksCantBreak) {
+        movements.blocksCantBreak.delete(bot.registry.blocksByName.water?.id);
+      }
+      
+      bot.pathfinder.setMovements(movements);
+      console.log('[PATHFINDER] Movements configured successfully with swimming enabled');
     } catch (err) {
       console.error('[PATHFINDER] Failed to set movements:', err.message);
       return;
@@ -29210,6 +29493,12 @@ async function launchBot(username, role = 'fighter') {
     // Initialize movement manager
     bot.movementManager = new MovementModeManager(bot);
     console.log('[MOVEMENT] Movement manager initialized');
+    
+    // Initialize swimming behavior
+    bot.swimmingBehavior = new SwimmingBehavior(bot);
+    bot.swimmingBehavior.start();
+    console.log('[SWIMMING] Swimming behavior initialized and started');
+    
     // Initialize new systems
     if (!globalProxyManager) {
       globalProxyManager = new ProxyManager(bot);
@@ -31276,6 +31565,30 @@ function ensureConfigStructure(targetConfig) {
       fallbackVersion: '1.21.4',
       connectionTimeout: 10000,
       maxRetries: 3
+    };
+  }
+  
+  if (!cfg.movement) {
+    cfg.movement = {
+      currentMode: 'standard',
+      exploitUsage: {
+        elytraFly: false,
+        boatPhase: false,
+        pearlExploit: false,
+        horseSpeed: false
+      },
+      modeHistory: []
+    };
+  }
+  
+  if (!cfg.swimming) {
+    cfg.swimming = {
+      enabled: true,
+      autoSwim: true,
+      sprintInWater: true,
+      allowPathfindingThroughWater: true,
+      detectWaterDepth: true,
+      minDepthForSwim: 1
     };
   }
   
