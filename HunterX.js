@@ -26077,6 +26077,15 @@ class BotSpawner {
 
     try {
       const bot = await createBotWithVersion(version);
+      
+      // Load pathfinder plugin for spawned bot
+      try {
+        bot.loadPlugin(pathfinder);
+        console.log(`[SPAWNER] ✅ Pathfinder plugin loaded for proxy bot: ${username}`);
+      } catch (err) {
+        console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
+      }
+      
       this.registerBot(bot, username, 'proxy', options.role);
       return bot;
     } catch (error) {
@@ -26094,13 +26103,22 @@ class BotSpawner {
         }
         
         try {
-          const bot = await createBotWithVersion(extractedVersion);
-          console.log(`[SPAWNER] ✓ Success with extracted version: ${extractedVersion}`);
-          this.registerBot(bot, username, 'proxy', options.role);
-          return bot;
-        } catch (retryError) {
-          console.error(`[SPAWNER] Retry failed: ${retryError.message}`);
-        }
+           const bot = await createBotWithVersion(extractedVersion);
+           console.log(`[SPAWNER] ✓ Success with extracted version: ${extractedVersion}`);
+
+           // Load pathfinder plugin for spawned bot
+           try {
+             bot.loadPlugin(pathfinder);
+             console.log(`[SPAWNER] ✅ Pathfinder plugin loaded for proxy bot: ${username}`);
+           } catch (err) {
+             console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
+           }
+
+           this.registerBot(bot, username, 'proxy', options.role);
+           return bot;
+         } catch (retryError) {
+           console.error(`[SPAWNER] Retry failed: ${retryError.message}`);
+         }
       }
       
       // Try alternative versions if extraction didn't work
@@ -26114,6 +26132,15 @@ class BotSpawner {
           console.log(`[SPAWNER] Attempting version: ${altVersion}`);
           const bot = await createBotWithVersion(altVersion);
           console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
+
+          // Load pathfinder plugin for spawned bot
+          try {
+            bot.loadPlugin(pathfinder);
+            console.log(`[SPAWNER] ✅ Pathfinder plugin loaded for proxy bot: ${username}`);
+          } catch (err) {
+            console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
+          }
+
           this.registerBot(bot, username, 'proxy', options.role);
           return bot;
         } catch (altError) {
@@ -26201,11 +26228,20 @@ class BotSpawner {
     };
 
     try {
-      const bot = await createBotWithVersion(version);
-      this.registerBot(bot, username, 'local', options.role);
-      return bot;
-    } catch (error) {
-      console.error(`[SPAWNER] Failed with version ${version}: ${error.message}`);
+       const bot = await createBotWithVersion(version);
+
+       // Load pathfinder plugin for spawned bot
+       try {
+         bot.loadPlugin(pathfinder);
+         console.log(`[SPAWNER] ✅ Pathfinder plugin loaded for local bot: ${username}`);
+       } catch (err) {
+         console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
+       }
+
+       this.registerBot(bot, username, 'local', options.role);
+       return bot;
+     } catch (error) {
+       console.error(`[SPAWNER] Failed with version ${version}: ${error.message}`);
       
       // Extract version from error
       const { version: extractedVersion, meta: extractionMeta } = extractVersionSafely(error.message, 'local bot creation failure');
@@ -26221,35 +26257,53 @@ class BotSpawner {
         try {
           const bot = await createBotWithVersion(extractedVersion);
           console.log(`[SPAWNER] ✓ Success with extracted version: ${extractedVersion}`);
+
+          // Load pathfinder plugin for spawned bot
+          try {
+            bot.loadPlugin(pathfinder);
+            console.log(`[SPAWNER] ✅ Pathfinder plugin loaded for local bot: ${username}`);
+          } catch (err) {
+            console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
+          }
+
           this.registerBot(bot, username, 'local', options.role);
           return bot;
         } catch (retryError) {
           console.error(`[SPAWNER] Retry failed: ${retryError.message}`);
         }
-      }
-      
-      // Try alternative versions
-      console.log('[SPAWNER] Trying alternative versions...');
-      
-      const supportedVersions = (config.bot && Array.isArray(config.bot.supportedVersions)) ? config.bot.supportedVersions : ['1.19.2', '1.20', '1.20.1', '1.20.4', '1.21', '1.21.1', '1.21.4'];
-      for (const altVersion of supportedVersions) {
-        if (altVersion === version || altVersion === extractedVersion) continue;
-        
-        try {
-          console.log(`[SPAWNER] Attempting version: ${altVersion}`);
-          const bot = await createBotWithVersion(altVersion);
-          console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
-          this.registerBot(bot, username, 'local', options.role);
-          return bot;
-        } catch (altError) {
-          console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
-          continue;
         }
+
+        // Try alternative versions
+        console.log('[SPAWNER] Trying alternative versions...');
+
+        const supportedVersions = (config.bot && Array.isArray(config.bot.supportedVersions)) ? config.bot.supportedVersions : ['1.19.2', '1.20', '1.20.1', '1.20.4', '1.21', '1.21.1', '1.21.4'];
+        for (const altVersion of supportedVersions) {
+          if (altVersion === version || altVersion === extractedVersion) continue;
+
+          try {
+            console.log(`[SPAWNER] Attempting version: ${altVersion}`);
+            const bot = await createBotWithVersion(altVersion);
+            console.log(`[SPAWNER] ✓ Success with version: ${altVersion}`);
+
+            // Load pathfinder plugin for spawned bot
+            try {
+              bot.loadPlugin(pathfinder);
+              console.log(`[SPAWNER] ✅ Pathfinder plugin loaded for local bot: ${username}`);
+            } catch (err) {
+              console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
+            }
+
+            this.registerBot(bot, username, 'local', options.role);
+            return bot;
+          } catch (altError) {
+            console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
+            continue;
+          }
+        }
+
+        throw error;
       }
-      
-      throw error;
     }
-  }
   
   registerBot(bot, username, type, role = null) {
     const entry = {
