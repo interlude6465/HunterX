@@ -11082,6 +11082,28 @@ class CombatAI {
     return this.crystalPvP;
   }
   
+  enableCombatSprint() {
+    // Check if bot can sprint (needs at least 6 hunger in Minecraft)
+    if (!this.bot) return false;
+    
+    const foodLevel = this.bot.food || 0;
+    if (foodLevel < 6) {
+      if (this.shouldLogError('Cannot sprint - low food', 5000)) {
+        console.log(`[COMBAT] Cannot sprint - food level too low (${foodLevel}/20)`);
+      }
+      return false;
+    }
+    
+    // Enable sprint
+    this.bot.setControlState('sprint', true);
+    return true;
+  }
+  
+  disableCombatSprint() {
+    if (!this.bot) return;
+    this.bot.setControlState('sprint', false);
+  }
+  
   async executeSmartCombat(attacker) {
     // Smart weapon switching logic
     try {
@@ -11153,7 +11175,8 @@ class CombatAI {
       // Position for optimal attack
       const distance = this.bot.entity.position.distanceTo(attacker.position);
       if (distance > 4) {
-        // Move closer
+        // Move closer with sprint
+        this.enableCombatSprint();
         await this.bot.pathfinder.goto(new goals.GoalNear(attacker.position.x, attacker.position.y, attacker.position.z, 3));
       }
       
@@ -11234,6 +11257,9 @@ class CombatAI {
     this.inCombat = false;
     this.isCurrentlyFighting = false;
 
+    // Disable sprint when combat ends
+    this.disableCombatSprint();
+
     if (this.combatLogger) {
       this.combatLogger.stopMonitoring(reason);
     }
@@ -11247,6 +11273,9 @@ class CombatAI {
     
     this.inCombat = false;
     this.currentTarget = null;
+    
+    // Disable sprint when combat is aborted
+    this.disableCombatSprint();
     
     if (this.combatLogger) {
       this.combatLogger.stopMonitoring(reason);
@@ -11390,6 +11419,12 @@ class CombatAI {
               await this.toolSelector.equipFullGear('combat');
             }
 
+            // Enable sprint for faster pursuit
+            const sprintEnabled = this.enableCombatSprint();
+            if (sprintEnabled) {
+              console.log('[COMBAT] 🏃 Sprint activated for combat pursuit!');
+            }
+
             // Initialize crystal PvP if we have resources and target is player
             const useCrystalPvP = this.hasCrystalResources() && isPlayer;
             let crystalPvP = null;
@@ -11450,16 +11485,23 @@ class CombatAI {
           await this.raiseShield();
         }
 
-        if (botHealth !== null && botHealth < 10 && bot && bot.inventory && typeof bot.inventory.items === 'function') {
-          const food = bot.inventory.items().find(i => i && i.foodProperty);
-          if (food) {
-            await this.eatFood(food);
+        // Eat food if health is low or if food level is too low to sprint
+        const foodLevel = bot.food || 0;
+        if (botHealth !== null && bot && bot.inventory && typeof bot.inventory.items === 'function') {
+          if (botHealth < 10 || foodLevel < 6) {
+            const food = bot.inventory.items().find(i => i && i.foodProperty);
+            if (food) {
+              await this.eatFood(food);
+            }
           }
         }
 
         if (distance > 3) {
           console.log(`[COMBAT] Moving closer (${distance.toFixed(1)}m)`);
           await this.moveToward(attacker);
+        } else {
+          // If we're close, maintain sprint for better combat mobility
+          this.enableCombatSprint();
         }
 
         await this.executeSmartCombat(attacker);
@@ -11509,6 +11551,9 @@ class CombatAI {
   
   async moveToward(target) {
     try {
+      // Enable sprint while chasing target
+      this.enableCombatSprint();
+      
       await this.bot.pathfinder.goto(new goals.GoalNear(
         target.position.x,
         target.position.y,
@@ -11517,6 +11562,7 @@ class CombatAI {
       ));
     } catch (e) {
       // Couldn't pathfind, use direct movement as fallback
+      this.enableCombatSprint();
       const dir = target.position.minus(this.bot.entity.position).normalize();
       this.bot.setControlState('forward', true);
       await sleep(100);
