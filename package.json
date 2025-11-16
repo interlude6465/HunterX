@@ -1,4 +1,4 @@
-{
+ {
   "name": "hunterx-minecraft-bot",
   "version": "22.0.0",
   "description": "Advanced Minecraft automation bot with PvP, dupe testing, stash hunting, and schematic building capabilities",
@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node HunterX.js",
+    "install-deps": "npm install --no-optional",
     "postinstall": "npm run check-optional-deps",
     "check-optional-deps": "node -e \"let libs=[]; try{require('brain.js'); libs.push('brain.js')}catch(e){}; try{require('ml5'); libs.push('ml5')}catch(e){}; try{require('synaptic'); libs.push('synaptic')}catch(e){}; try{require('@tensorflow/tfjs-node'); libs.push('@tensorflow/tfjs-node')}catch(e){}; console.log('[INFO] Neural libraries available: ' + (libs.length ? libs.join(', ') : 'none - bot will use fallback AI'))\""
   },
@@ -27,11 +28,30 @@
     "prismarine-nbt": "^2.0.0",
     "socks": "^2.7.0",
     "vec3": "^0.1.8",
-    "ws": "^8.0.0",
+    "ws": "^8.0.0"
+  },
+  "optionalDependencies": {
     "@tensorflow/tfjs": "^4.22.0",
     "@tensorflow/tfjs-node": "^4.0.0",
     "brain.js": "^2.0.0-beta.24",
     "ml5": "^0.12.2",
     "synaptic": "^1.1.4"
+  },
+  "optionalDependenciesMeta": {
+    "brain.js": {
+      "optional": true
+    },
+    "ml5": {
+      "optional": true
+    },
+    "synaptic": {
+      "optional": true
+    },
+    "@tensorflow/tfjs-node": {
+      "optional": true
+    },
+    "@tensorflow/tfjs": {
+      "optional": true
+    }
   }
 }
