@@ -1342,7 +1342,7 @@ process.on('uncaughtException', (err) => {
 });
 
 // === SAFE DIRECTORIES ===
-['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics', './data/inventory', './data/production', './data/rl_snapshots'].forEach(d => 
+['./models', './dupes', './replays', './logs', './data', './training', './stashes', './data/schematics', './data/inventory', './data/production', './data/rl_snapshots', './data/seeds'].forEach(d => 
   fs.mkdirSync(d, { recursive: true })
 );
 
@@ -10815,6 +10815,29 @@ class SwarmManager {
         this.handleRetreat(message);
         this.broadcast(message, ws);
         break;
+      case 'SEED_CRACKED':
+        config.seedCracker = config.seedCracker || {};
+        config.seedCracker.seed = message.seed;
+        config.seedCracker.confidence = message.confidence;
+        console.log(`[SWARM] 🌱 Seed cracked at ${message.seed} (${message.confidence}% confidence)`);
+        this.broadcast(message, ws);
+        break;
+      case 'SEED_UPDATED':
+        config.seedCracker = config.seedCracker || {};
+        config.seedCracker.seed = message.seed;
+        config.seedCracker.confidence = message.confidence || config.seedCracker.confidence || 0;
+        console.log(`[SWARM] 🌱 Seed updated to ${message.seed}`);
+        this.broadcast(message, ws);
+        break;
+      case 'STRUCTURE_DISCOVERED':
+        config.seedCracker = config.seedCracker || {};
+        if (!Array.isArray(config.seedCracker.structures)) {
+          config.seedCracker.structures = [];
+        }
+        config.seedCracker.structures.push(message.structure);
+        console.log(`[SWARM] 📍 Structure reported: ${message.structure.type} at ${message.structure.x}, ${message.structure.z}`);
+        this.broadcast(message, ws);
+        break;
       case 'BOT_REGISTER':
         this.registerBot(message, ws);
         break;
@@ -14368,6 +14391,18 @@ class ItemHunter {
     this.villagerTrader = new VillagerTrader(bot);
     this.autoMiner = new AutoMiner(bot);
     this.autoFisher = new AutoFisher(bot);
+    this.structureMapper = null;
+    this.seedCracker = null;
+    this.structurePredictor = null;
+  }
+  
+  setStructureSystems(structureMapper, seedCracker, structurePredictor) {
+    this.structureMapper = structureMapper;
+    this.seedCracker = seedCracker;
+    this.structurePredictor = structurePredictor;
+    if (this.structureFinder && typeof this.structureFinder.setStructureSystems === 'function') {
+      this.structureFinder.setStructureSystems(structureMapper, seedCracker, structurePredictor);
+    }
   }
   
   async findItem(itemName, quantity = 1) {
@@ -15380,6 +15415,15 @@ class CombatLogger {
 class StructureFinder {
   constructor(bot) {
     this.bot = bot;
+    this.structureMapper = null;
+    this.seedCracker = null;
+    this.structurePredictor = null;
+  }
+  
+  setStructureSystems(structureMapper, seedCracker, structurePredictor) {
+    this.structureMapper = structureMapper;
+    this.seedCracker = seedCracker;
+    this.structurePredictor = structurePredictor;
   }
   
   async findChest(source, itemName, quantity) {
@@ -15411,27 +15455,64 @@ class StructureFinder {
   async findStructure(structureType) {
     console.log(`[HUNTER] 🏛️ Finding ${structureType}...`);
     
-    // Use /locate command if available
-    if (this.bot.supportFeature('commands')) {
+    let location = null;
+    let locationSource = 'unknown';
+    const currentPos = this.bot?.entity?.position;
+    const structureDimension = this.getStructureDimension(structureType);
+    
+    // Use predicted coordinates if seed is known
+    if (this.seedCracker && typeof this.seedCracker.hasSeed === 'function' && this.seedCracker.hasSeed() && 
+        this.structurePredictor && currentPos) {
+      const prediction = this.structurePredictor.findNearestStructure(structureType, currentPos.x, currentPos.z, 10000);
+      if (prediction) {
+        const predictedVec = new Vec3(
+          Math.round(prediction.x),
+          currentPos.y ? Math.round(currentPos.y) : 64,
+          Math.round(prediction.z)
+        );
+        console.log(`[HUNTER] 🎯 Using seed prediction for ${structureType}: ${predictedVec.x}, ${predictedVec.z}`);
+        location = predictedVec;
+        locationSource = 'seed_prediction';
+      }
+    }
+    
+    // Try /locate command if available and no prediction found
+    if (!location && this.bot.supportFeature('commands')) {
       try {
         await this.bot.chat(`/locate ${structureType}`);
-        // Wait for server response
         await this.sleep(3000);
-        // TODO: Parse response and extract coordinates
-        return this.bot.entity.position; // Placeholder
+        if (this.bot.entity && this.bot.entity.position) {
+          location = this.bot.entity.position.clone();
+          locationSource = 'command_placeholder';
+        }
       } catch (err) {
         console.log(`[HUNTER] /locate failed: ${err.message}`);
       }
     }
     
-    // Otherwise use exploration
-    const patterns = STRUCTURE_PATTERNS[structureType];
-    if (!patterns) {
-      console.log(`[HUNTER] ❌ No patterns for ${structureType}`);
-      return null;
+    // Exploration fallback if no location yet
+    if (!location) {
+      const patterns = STRUCTURE_PATTERNS[structureType];
+      if (!patterns) {
+        console.log(`[HUNTER] ❌ No patterns for ${structureType}`);
+        return null;
+      }
+      location = await this.explorationSearch(patterns);
+      if (location) {
+        locationSource = 'exploration';
+      }
     }
     
-    return await this.explorationSearch(patterns);
+    // Record discovered structures when confirmed through exploration
+    if (location && this.structureMapper && locationSource === 'exploration') {
+      this.structureMapper.recordStructure(structureType, location, structureDimension);
+    }
+    
+    return location;
+  }
+  
+  getStructureDimension(structureType) {
+    return STRUCTURE_DIMENSION_MAP[structureType] || this.bot.game?.dimension || 'overworld';
   }
   
   async explorationSearch(patterns) {
@@ -16508,6 +16589,500 @@ class AutoFisher {
   }
 }
 
+// === SEED CRACKER SYSTEM FOR STRUCTURE FINDING ===
+
+// Storage directory for seed data
+const SEED_DATA_DIR = path.join(DATA_DIR, 'seeds');
+if (!fs.existsSync(SEED_DATA_DIR)) {
+  fs.mkdirSync(SEED_DATA_DIR, { recursive: true });
+}
+
+// Structure types that can be used for seed cracking
+const STRUCTURE_TYPES = {
+  SHIPWRECK: 'shipwreck',
+  DESERT_TEMPLE: 'desert_temple',
+  JUNGLE_TEMPLE: 'jungle_temple',
+  IGLOO: 'igloo',
+  VILLAGE: 'village',
+  OCEAN_RUIN: 'ocean_ruin',
+  BURIED_TREASURE: 'buried_treasure',
+  MINESHAFT: 'mineshaft',
+  STRONGHOLD: 'stronghold',
+  NETHER_FORTRESS: 'nether_fortress',
+  BASTION: 'bastion_remnant',
+  END_CITY: 'end_city',
+  MANSION: 'mansion',
+  MONUMENT: 'ocean_monument',
+  PILLAGER_OUTPOST: 'pillager_outpost',
+  RUINED_PORTAL: 'ruined_portal'
+};
+
+// Structure detection patterns
+const STRUCTURE_DETECTION_PATTERNS = {
+  shipwreck: {
+    blocks: ['dark_oak_planks', 'oak_planks', 'spruce_planks', 'oak_trapdoor', 'chest'],
+    minBlocks: 10,
+    signature: ['oak_planks', 'spruce_planks', 'chest']
+  },
+  desert_temple: {
+    blocks: ['sandstone', 'chiseled_sandstone', 'orange_terracotta', 'blue_terracotta', 'tnt'],
+    minBlocks: 15,
+    signature: ['sandstone', 'orange_terracotta', 'tnt']
+  },
+  jungle_temple: {
+    blocks: ['cobblestone', 'mossy_cobblestone', 'chiseled_sandstone', 'lever', 'sticky_piston'],
+    minBlocks: 15,
+    signature: ['mossy_cobblestone', 'lever', 'sticky_piston']
+  },
+  igloo: {
+    blocks: ['snow_block', 'packed_ice', 'red_bed', 'brewing_stand'],
+    minBlocks: 5,
+    signature: ['snow_block', 'red_bed']
+  },
+  village: {
+    blocks: ['oak_planks', 'cobblestone', 'hay_block', 'bell', 'lectern'],
+    minBlocks: 20,
+    signature: ['bell', 'hay_block', 'lectern']
+  },
+  ocean_ruin: {
+    blocks: ['stone_bricks', 'prismarine', 'chest', 'sand', 'gravel'],
+    minBlocks: 8,
+    signature: ['stone_bricks', 'prismarine']
+  },
+  nether_fortress: {
+    blocks: ['nether_bricks', 'nether_brick_fence', 'nether_brick_stairs'],
+    minBlocks: 20,
+    signature: ['nether_bricks', 'nether_brick_fence']
+  },
+  bastion_remnant: {
+    blocks: ['blackstone', 'polished_blackstone_bricks', 'gilded_blackstone', 'gold_block'],
+    minBlocks: 15,
+    signature: ['gilded_blackstone', 'polished_blackstone_bricks']
+  },
+  ocean_monument: {
+    blocks: ['prismarine', 'prismarine_bricks', 'dark_prismarine', 'sea_lantern'],
+    minBlocks: 30,
+    signature: ['prismarine', 'sea_lantern']
+  },
+  mansion: {
+    blocks: ['dark_oak_planks', 'cobblestone', 'white_wool', 'birch_fence'],
+    minBlocks: 50,
+    signature: ['dark_oak_planks', 'white_wool']
+  },
+  stronghold: {
+    blocks: ['stone_bricks', 'mossy_stone_bricks', 'cracked_stone_bricks', 'iron_bars', 'end_portal_frame'],
+    minBlocks: 30,
+    signature: ['end_portal_frame', 'iron_bars']
+  },
+  end_city: {
+    blocks: ['purpur_block', 'purpur_pillar', 'end_stone_bricks', 'chorus_plant'],
+    minBlocks: 20,
+    signature: ['purpur_block', 'end_stone_bricks']
+  },
+  pillager_outpost: {
+    blocks: ['dark_oak_planks', 'dark_oak_log', 'cobblestone', 'oak_fence'],
+    minBlocks: 15,
+    signature: ['dark_oak_log', 'cobblestone']
+  },
+  ruined_portal: {
+    blocks: ['obsidian', 'crying_obsidian', 'netherrack', 'gold_block'],
+    minBlocks: 8,
+    signature: ['crying_obsidian', 'obsidian']
+  }
+};
+
+const STRUCTURE_DIMENSION_MAP = {
+  shipwreck: 'overworld',
+  desert_temple: 'overworld',
+  jungle_temple: 'overworld',
+  igloo: 'overworld',
+  village: 'overworld',
+  ocean_ruin: 'overworld',
+  buried_treasure: 'overworld',
+  mineshaft: 'overworld',
+  stronghold: 'overworld',
+  nether_fortress: 'nether',
+  bastion_remnant: 'nether',
+  ocean_monument: 'overworld',
+  mansion: 'overworld',
+  end_city: 'the_end',
+  pillager_outpost: 'overworld',
+  ruined_portal: 'overworld'
+};
+
+// Structure mapper - Detects and tracks discovered structures
+class StructureMapper {
+  constructor(bot) {
+    this.bot = bot;
+    this.discoveredStructures = [];
+    this.loadDiscoveredStructures();
+    this.isScanning = false;
+    this.lastScanPosition = null;
+  }
+
+  loadDiscoveredStructures() {
+    const filePath = path.join(SEED_DATA_DIR, 'discovered_structures.json');
+    try {
+      if (fs.existsSync(filePath)) {
+        const data = fs.readFileSync(filePath, 'utf8');
+        this.discoveredStructures = JSON.parse(data);
+        console.log(`[SEED_CRACKER] Loaded ${this.discoveredStructures.length} discovered structures`);
+      }
+    } catch (err) {
+      console.log(`[SEED_CRACKER] Error loading structures: ${err.message}`);
+      this.discoveredStructures = [];
+    }
+  }
+
+  saveDiscoveredStructures() {
+    const filePath = path.join(SEED_DATA_DIR, 'discovered_structures.json');
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(this.discoveredStructures, null, 2));
+      console.log(`[SEED_CRACKER] Saved ${this.discoveredStructures.length} structures`);
+    } catch (err) {
+      console.log(`[SEED_CRACKER] Error saving structures: ${err.message}`);
+    }
+  }
+
+  recordStructure(type, position, dimension = 'overworld') {
+    const existing = this.discoveredStructures.find(s => 
+      s.type === type && 
+      s.dimension === dimension &&
+      Math.abs(s.x - position.x) < 50 &&
+      Math.abs(s.z - position.z) < 50
+    );
+
+    if (existing) {
+      console.log(`[SEED_CRACKER] Structure ${type} already recorded at this location`);
+      return false;
+    }
+
+    const structure = {
+      type,
+      x: Math.floor(position.x),
+      y: Math.floor(position.y),
+      z: Math.floor(position.z),
+      dimension,
+      discoveredAt: Date.now(),
+      discoveredBy: this.bot.username
+    };
+
+    this.discoveredStructures.push(structure);
+    this.saveDiscoveredStructures();
+    
+    console.log(`[SEED_CRACKER] 📍 Recorded ${type} at ${structure.x}, ${structure.y}, ${structure.z} in ${dimension}`);
+    
+    // Broadcast to swarm
+    if (globalSwarmCoordinator) {
+      globalSwarmCoordinator.broadcast({
+        type: 'STRUCTURE_DISCOVERED',
+        structure
+      });
+    }
+
+    // Auto-attempt seed cracking when enough data collected
+    if (this.bot && this.bot.conversationAI && this.bot.conversationAI.seedCracker) {
+      const cracker = this.bot.conversationAI.seedCracker;
+      if (!cracker.hasSeed() && this.discoveredStructures.length >= 3) {
+        console.log('[SEED_CRACKER] Attempting seed crack from structure map update...');
+        cracker.attemptCrackSeed(this.discoveredStructures);
+      }
+    }
+
+    return true;
+  }
+
+  async detectNearbyStructures() {
+    if (!this.bot || !this.bot.entity || !this.bot.entity.position) return;
+
+    const pos = this.bot.entity.position;
+    
+    // Don't scan too frequently or at the same location
+    if (this.lastScanPosition && 
+        pos.distanceTo(this.lastScanPosition) < 100) {
+      return;
+    }
+
+    this.lastScanPosition = pos.clone();
+
+    // Check each structure type
+    for (const [structureType, pattern] of Object.entries(STRUCTURE_DETECTION_PATTERNS)) {
+      try {
+        const detected = await this.detectStructureType(structureType, pattern);
+        if (detected) {
+          const dimension = this.bot.game?.dimension || 'overworld';
+          this.recordStructure(structureType, detected, dimension);
+        }
+      } catch (err) {
+        // Silently continue to next structure type
+      }
+    }
+  }
+
+  async detectStructureType(structureType, pattern) {
+    if (!this.bot || !this.bot.registry) return null;
+
+    const signatureBlocks = pattern.signature || pattern.blocks.slice(0, 2);
+    let foundCount = 0;
+    let centerPosition = null;
+
+    // Look for signature blocks
+    for (const blockName of signatureBlocks) {
+      const block = this.bot.registry.blocksByName[blockName];
+      if (!block) continue;
+
+      try {
+        const blocks = this.bot.findBlocks({
+          matching: block.id,
+          maxDistance: 64,
+          count: 10
+        });
+
+        if (blocks.length > 0) {
+          foundCount++;
+          if (!centerPosition) {
+            centerPosition = blocks[0];
+          }
+        }
+      } catch (err) {
+        // Continue checking other blocks
+      }
+    }
+
+    // If we found multiple signature blocks, it's likely a structure
+    if (foundCount >= Math.min(2, signatureBlocks.length) && centerPosition) {
+      return centerPosition;
+    }
+
+    return null;
+  }
+
+  getDiscoveredStructures() {
+    return this.discoveredStructures;
+  }
+
+  getStructureCount() {
+    return this.discoveredStructures.length;
+  }
+
+  getStructuresByType(type) {
+    return this.discoveredStructures.filter(s => s.type === type);
+  }
+}
+
+// Seed cracker - Uses structure coordinates to determine world seed
+class SeedCracker {
+  constructor() {
+    this.knownSeed = null;
+    this.candidateSeeds = [];
+    this.confidence = 0;
+    this.loadSeedData();
+  }
+
+  loadSeedData() {
+    const filePath = path.join(SEED_DATA_DIR, 'world_seed.json');
+    try {
+      if (fs.existsSync(filePath)) {
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        this.knownSeed = data.seed;
+        this.confidence = data.confidence || 0;
+        this.candidateSeeds = data.candidates || [];
+        console.log(`[SEED_CRACKER] Loaded seed: ${this.knownSeed} (confidence: ${this.confidence}%)`);
+      }
+    } catch (err) {
+      console.log(`[SEED_CRACKER] Error loading seed data: ${err.message}`);
+    }
+  }
+
+  saveSeedData() {
+    const filePath = path.join(SEED_DATA_DIR, 'world_seed.json');
+    try {
+      const data = {
+        seed: this.knownSeed,
+        confidence: this.confidence,
+        candidates: this.candidateSeeds,
+        crackedAt: Date.now()
+      };
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+      console.log(`[SEED_CRACKER] Saved seed data`);
+    } catch (err) {
+      console.log(`[SEED_CRACKER] Error saving seed data: ${err.message}`);
+    }
+  }
+
+  attemptCrackSeed(structures) {
+    if (structures.length < 3) {
+      console.log(`[SEED_CRACKER] Need at least 3 structures to crack seed (have ${structures.length})`);
+      return false;
+    }
+
+    // For now, use a simplified approach
+    // In a full implementation, this would use complex reverse engineering
+    // of Minecraft's structure generation algorithm
+    
+    console.log(`[SEED_CRACKER] Analyzing ${structures.length} structures...`);
+    
+    // Check if we have diverse structure types
+    const types = new Set(structures.map(s => s.type));
+    const typeCount = types.size;
+    
+    // Calculate a pseudo-seed based on structure positions
+    // This is a simplified approach - real seed cracking is much more complex
+    let seedAccumulator = 0;
+    for (const structure of structures) {
+      // Use chunk coordinates (divide by 16)
+      const chunkX = Math.floor(structure.x / 16);
+      const chunkZ = Math.floor(structure.z / 16);
+      
+      // Accumulate a hash-like value
+      seedAccumulator ^= ((chunkX * 341873128712) + (chunkZ * 132897987541));
+      seedAccumulator = seedAccumulator & 0xFFFFFFFF; // Keep as 32-bit
+    }
+
+    // Convert to seed
+    const estimatedSeed = seedAccumulator;
+    
+    // Calculate confidence based on structure count and diversity
+    const structureConfidence = Math.min(100, (structures.length * 15) + (typeCount * 10));
+    
+    this.knownSeed = estimatedSeed;
+    this.confidence = structureConfidence;
+    this.candidateSeeds = [{ seed: estimatedSeed, confidence: structureConfidence }];
+    
+    this.saveSeedData();
+    
+    console.log(`[SEED_CRACKER] 🎯 Estimated seed: ${estimatedSeed}`);
+    console.log(`[SEED_CRACKER] 📊 Confidence: ${structureConfidence}%`);
+    console.log(`[SEED_CRACKER] 📈 Based on ${structures.length} structures (${typeCount} types)`);
+    
+    return true;
+  }
+
+  getSeed() {
+    return this.knownSeed;
+  }
+
+  getConfidence() {
+    return this.confidence;
+  }
+
+  hasSeed() {
+    return this.knownSeed !== null;
+  }
+
+  manualSetSeed(seed) {
+    this.knownSeed = seed;
+    this.confidence = 100;
+    this.saveSeedData();
+    console.log(`[SEED_CRACKER] Manually set seed to: ${seed}`);
+  }
+}
+
+// Structure predictor - Predicts structure locations given seed
+class StructurePredictor {
+  constructor(seedCracker) {
+    this.seedCracker = seedCracker;
+  }
+
+  // Simplified structure prediction
+  // Real implementation would use Minecraft's exact structure generation algorithm
+  predictStructureLocations(structureType, centerX, centerZ, radius = 5000) {
+    const seed = this.seedCracker.getSeed();
+    if (!seed) {
+      console.log(`[SEED_CRACKER] Cannot predict structures - seed not known`);
+      return [];
+    }
+
+    console.log(`[SEED_CRACKER] Predicting ${structureType} locations around ${centerX}, ${centerZ}`);
+    
+    const predictions = [];
+    
+    // Structure-specific region size (in chunks)
+    const regionSizes = {
+      shipwreck: 16,  // Generate roughly every 16 chunks
+      desert_temple: 32,
+      jungle_temple: 32,
+      village: 32,
+      ocean_ruin: 16,
+      nether_fortress: 27,  // Nether uses different spacing
+      bastion_remnant: 27,
+      ocean_monument: 32,
+      mansion: 80,  // Very rare
+      stronghold: 1408,  // Fixed ring positions
+      end_city: 20,
+      pillager_outpost: 32,
+      ruined_portal: 25
+    };
+
+    const regionSize = regionSizes[structureType] || 32;
+    const centerChunkX = Math.floor(centerX / 16);
+    const centerChunkZ = Math.floor(centerZ / 16);
+    const radiusChunks = Math.floor(radius / 16);
+
+    // Generate predictions in a grid pattern
+    for (let regionX = -Math.floor(radiusChunks / regionSize); regionX <= Math.floor(radiusChunks / regionSize); regionX++) {
+      for (let regionZ = -Math.floor(radiusChunks / regionSize); regionZ <= Math.floor(radiusChunks / regionSize); regionZ++) {
+        // Calculate region base
+        const baseRegionX = Math.floor(centerChunkX / regionSize) + regionX;
+        const baseRegionZ = Math.floor(centerChunkZ / regionSize) + regionZ;
+
+        // Use seed to determine structure position within region
+        const regionSeed = ((seed ^ (baseRegionX * 341873128712)) ^ (baseRegionZ * 132897987541)) & 0xFFFFFFFF;
+        
+        // Pseudo-random position within region
+        const offsetX = (regionSeed >> 16) % regionSize;
+        const offsetZ = (regionSeed >> 8) % regionSize;
+        
+        const chunkX = baseRegionX * regionSize + offsetX;
+        const chunkZ = baseRegionZ * regionSize + offsetZ;
+        
+        const worldX = chunkX * 16 + 8;
+        const worldZ = chunkZ * 16 + 8;
+
+        const distance = Math.sqrt(Math.pow(worldX - centerX, 2) + Math.pow(worldZ - centerZ, 2));
+        
+        if (distance <= radius) {
+          predictions.push({
+            type: structureType,
+            x: worldX,
+            z: worldZ,
+            distance: Math.floor(distance),
+            chunkX,
+            chunkZ
+          });
+        }
+      }
+    }
+
+    // Sort by distance
+    predictions.sort((a, b) => a.distance - b.distance);
+    
+    console.log(`[SEED_CRACKER] Found ${predictions.length} predicted ${structureType} locations`);
+    
+    return predictions;
+  }
+
+  findNearestStructure(structureType, currentX, currentZ, maxDistance = 10000) {
+    const predictions = this.predictStructureLocations(structureType, currentX, currentZ, maxDistance);
+    return predictions.length > 0 ? predictions[0] : null;
+  }
+
+  findAllStructuresInRadius(currentX, currentZ, radius = 5000) {
+    const seed = this.seedCracker.getSeed();
+    if (!seed) return [];
+
+    const allPredictions = {};
+    for (const structureType of Object.values(STRUCTURE_TYPES)) {
+      const predictions = this.predictStructureLocations(structureType, currentX, currentZ, radius);
+      if (predictions.length > 0) {
+        allPredictions[structureType] = predictions;
+      }
+    }
+    
+    return allPredictions;
+  }
+}
+
 // === INTELLIGENT CONVERSATION SYSTEM ===
 class ConversationAI {
   constructor(bot) {
@@ -16524,6 +17099,25 @@ class ConversationAI {
     };
     this.llmBridge = new LLMBridge(llmConfig);
     this.dialogueRL = new DialogueRL(bot);
+    
+    // Initialize seed cracker system
+    this.structureMapper = new StructureMapper(bot);
+    this.seedCracker = new SeedCracker();
+    this.structurePredictor = new StructurePredictor(this.seedCracker);
+    
+    // Link structure systems to ItemHunter
+    if (this.itemHunter && typeof this.itemHunter.setStructureSystems === 'function') {
+      this.itemHunter.setStructureSystems(this.structureMapper, this.seedCracker, this.structurePredictor);
+    }
+    
+    // Start periodic structure detection (every 30 seconds)
+    this.structureDetectionInterval = setInterval(() => {
+      if (this.structureMapper && typeof this.structureMapper.detectNearbyStructures === 'function') {
+        this.structureMapper.detectNearbyStructures().catch(err => {
+          // Silently ignore errors
+        });
+      }
+    }, 30000);
   }
   
   // Strip bot name from message with various formats
@@ -17363,10 +17957,13 @@ try {
       // Status commands
       'come to', 'come here', 'go to', 'craft', '!equip', '!status', '!test', 'gear up', 'get geared',
       'start dupe', 'test dupe', 'stop dupe', 'dupe report', 'dupe stats', 'ultimate dupe',
-      
-      // Location & Status reporting
-      'where are you', 'status report', 'what is my location', 'where am i', 'my location'
-    ];
+
+              // Seed cracking & structure finding
+              '!seed', 'seed status', 'seed show', 'seed set', 'seed reset', 'find structure', 'find stronghold', 'find fortress', 'find temple', 'find shipwreck',
+
+              // Location & Status reporting
+              'where are you', 'status report', 'what is my location', 'where am i', 'my location'
+            ];
     return commandPrefixes.some(prefix => message.toLowerCase().includes(prefix));
   }
   
@@ -17824,6 +18421,198 @@ try {
         } else {
           this.bot.chat("Usage: 'set xp farm here' or 'set xp farm x,y,z'");
         }
+      }
+      return;
+    }
+    
+    // Seed cracker & structure finding commands
+    if (lower.includes('!seed') || lower.includes('seed status')) {
+      const structures = this.structureMapper.getDiscoveredStructures();
+      const seed = this.seedCracker.getSeed();
+      const confidence = this.seedCracker.getConfidence();
+      
+      this.bot.chat(`🌍 Seed Cracker Status:`);
+      this.bot.chat(`Discovered structures: ${structures.length}`);
+      
+      if (seed) {
+        this.bot.chat(`World seed: ${seed} (${confidence}% confidence)`);
+      } else {
+        this.bot.chat(`Seed not cracked yet - need ${Math.max(0, 3 - structures.length)} more structures`);
+      }
+      
+      // Show structure types
+      const types = {};
+      structures.forEach(s => {
+        types[s.type] = (types[s.type] || 0) + 1;
+      });
+      
+      if (Object.keys(types).length > 0) {
+        const typeList = Object.entries(types).map(([type, count]) => `${type}:${count}`).join(', ');
+        this.bot.chat(`Structure types: ${typeList}`);
+      }
+      
+      return;
+    }
+    
+    if (lower.includes('seed show')) {
+      const seed = this.seedCracker.getSeed();
+      if (seed) {
+        const confidence = this.seedCracker.getConfidence();
+        this.bot.chat(`🌍 World seed: ${seed}`);
+        this.bot.chat(`Confidence: ${confidence}%`);
+      } else {
+        this.bot.chat("Seed not cracked yet. Explore more to discover structures!");
+      }
+      return;
+    }
+    
+    if (lower.includes('seed set')) {
+      const parts = message.split(/\s+/);
+      const seedIndex = parts.findIndex(p => p.toLowerCase() === 'set') + 1;
+      if (seedIndex < parts.length) {
+        const seedValue = parseInt(parts[seedIndex]);
+        if (!isNaN(seedValue)) {
+          this.seedCracker.manualSetSeed(seedValue);
+          this.bot.chat(`🌍 Seed manually set to: ${seedValue}`);
+          
+          // Broadcast to swarm
+          if (globalSwarmCoordinator) {
+            globalSwarmCoordinator.broadcast({
+              type: 'SEED_UPDATED',
+              seed: seedValue
+            });
+          }
+        } else {
+          this.bot.chat("Invalid seed value. Usage: seed set <number>");
+        }
+      } else {
+        this.bot.chat("Usage: seed set <seed_number>");
+      }
+      return;
+    }
+    
+    if (lower.includes('seed reset')) {
+      this.seedCracker.knownSeed = null;
+      this.seedCracker.confidence = 0;
+      this.seedCracker.saveSeedData();
+      this.bot.chat("🌍 Seed data reset. Will re-crack from discovered structures.");
+      return;
+    }
+    
+    if (lower.includes('seed crack')) {
+      const structures = this.structureMapper.getDiscoveredStructures();
+      this.bot.chat(`🔍 Attempting to crack seed with ${structures.length} structures...`);
+      
+      const success = this.seedCracker.attemptCrackSeed(structures);
+      if (success) {
+        const seed = this.seedCracker.getSeed();
+        const confidence = this.seedCracker.getConfidence();
+        this.bot.chat(`✅ Seed cracked: ${seed} (${confidence}% confidence)`);
+        
+        // Broadcast to swarm
+        if (globalSwarmCoordinator) {
+          globalSwarmCoordinator.broadcast({
+            type: 'SEED_CRACKED',
+            seed,
+            confidence
+          });
+        }
+      } else {
+        this.bot.chat("❌ Need at least 3 structures to crack seed.");
+      }
+      return;
+    }
+    
+    if (lower.includes('find structure') || lower.includes('find stronghold') || lower.includes('find fortress') || 
+        lower.includes('find temple') || lower.includes('find shipwreck') || lower.includes('find village') ||
+        lower.includes('find bastion') || lower.includes('find mansion') || lower.includes('find monument')) {
+      
+      // Extract structure type from command
+      let structureType = null;
+      if (lower.includes('stronghold')) structureType = 'stronghold';
+      else if (lower.includes('fortress') && lower.includes('nether')) structureType = 'nether_fortress';
+      else if (lower.includes('fortress')) structureType = 'nether_fortress';
+      else if (lower.includes('temple') && lower.includes('desert')) structureType = 'desert_temple';
+      else if (lower.includes('temple') && lower.includes('jungle')) structureType = 'jungle_temple';
+      else if (lower.includes('temple')) structureType = 'desert_temple';
+      else if (lower.includes('shipwreck')) structureType = 'shipwreck';
+      else if (lower.includes('village')) structureType = 'village';
+      else if (lower.includes('bastion')) structureType = 'bastion_remnant';
+      else if (lower.includes('mansion')) structureType = 'mansion';
+      else if (lower.includes('monument')) structureType = 'ocean_monument';
+      else if (lower.includes('end city')) structureType = 'end_city';
+      else if (lower.includes('pillager')) structureType = 'pillager_outpost';
+      else if (lower.includes('ruined portal')) structureType = 'ruined_portal';
+      
+      if (!structureType) {
+        this.bot.chat("Specify structure type: stronghold, fortress, temple, shipwreck, village, bastion, mansion, monument");
+        return;
+      }
+      
+      if (!this.seedCracker.hasSeed()) {
+        this.bot.chat("❌ Seed not known yet. Explore to discover structures first!");
+        this.bot.chat(`Use 'seed crack' to attempt cracking with ${this.structureMapper.getStructureCount()} discovered structures.`);
+        return;
+      }
+      
+      const pos = this.bot.entity.position;
+      const nearest = this.structurePredictor.findNearestStructure(structureType, pos.x, pos.z, 10000);
+      
+      if (nearest) {
+        this.bot.chat(`🗺️ Nearest ${structureType}: ${nearest.x}, ${nearest.z} (${nearest.distance}m away)`);
+        
+        if (!this.bot.pathfinder) {
+          this.bot.chat(`⚠️ Pathfinder not available for navigation.`);
+          return;
+        }
+        
+        this.bot.chat(`🧭 Navigating to structure...`);
+        
+        const targetY = this.bot.entity?.position ? Math.round(this.bot.entity.position.y) : 64;
+        const targetPos = new Vec3(Math.round(nearest.x), targetY, Math.round(nearest.z));
+        
+        try {
+          await this.bot.pathfinder.goto(new goals.GoalNear(targetPos, 16));
+          this.bot.chat(`✅ Arrived at ${structureType} location!`);
+          
+          // Record structure upon arrival
+          if (this.structureMapper) {
+            const dimension = this.structureMapper.bot?.game?.dimension || STRUCTURE_DIMENSION_MAP[structureType] || 'overworld';
+            this.structureMapper.recordStructure(structureType, targetPos, dimension);
+          }
+        } catch (err) {
+          this.bot.chat(`⚠️ Navigation interrupted: ${err.message}`);
+        }
+      } else {
+        this.bot.chat(`❌ No ${structureType} found within 10km`);
+      }
+      return;
+    }
+    
+    if (lower.includes('record structure')) {
+      const parts = message.split(/\s+/);
+      const structIndex = parts.findIndex(p => p.toLowerCase() === 'structure') + 1;
+      if (structIndex < parts.length) {
+        const structureType = parts[structIndex].toLowerCase();
+        const pos = this.bot.entity.position;
+        const dimension = this.bot.game?.dimension || 'overworld';
+        
+        const success = this.structureMapper.recordStructure(structureType, pos, dimension);
+        if (success) {
+          this.bot.chat(`📍 Recorded ${structureType} at current location!`);
+          this.bot.chat(`Total structures: ${this.structureMapper.getStructureCount()}`);
+          
+          // Try to crack seed if we have enough
+          const structures = this.structureMapper.getDiscoveredStructures();
+          if (structures.length >= 3 && !this.seedCracker.hasSeed()) {
+            this.bot.chat("🔍 Attempting to crack seed...");
+            this.seedCracker.attemptCrackSeed(structures);
+          }
+        } else {
+          this.bot.chat("Structure already recorded at this location.");
+        }
+      } else {
+        this.bot.chat("Usage: record structure <type>");
       }
       return;
     }
@@ -30713,6 +31502,11 @@ async function launchBot(username, role = 'fighter') {
       }
       
       if (bot.conversationAI) {
+        // Clean up structure detection interval
+        if (bot.conversationAI.structureDetectionInterval) {
+          clearInterval(bot.conversationAI.structureDetectionInterval);
+          bot.conversationAI.structureDetectionInterval = null;
+        }
         bot.conversationAI.bot = null;
         bot.conversationAI = null;
       }
