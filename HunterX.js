@@ -6813,7 +6813,7 @@ class DefenseOperation {
     
     // Navigate to home base
     try {
-      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
         this.homeBase.x, this.homeBase.y, this.homeBase.z), this.getRoleDistance()
       ));
       
@@ -6891,7 +6891,7 @@ class DefenseOperation {
     );
     
     try {
-      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(flankPos.x, flankPos.y, flankPos.z), 5));
+      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(flankPos.x, flankPos.y, flankPos.z), 5));
       this.sendStatus('engaged');
       
       // Attack from flank
@@ -7025,7 +7025,7 @@ class EnderChestManager {
     }
     
     try {
-      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
         enderChestBlock.position.x, enderChestBlock.position.y, enderChestBlock.position.z), 3
       ));
       
@@ -7194,7 +7194,7 @@ class AutoRepair {
         new Vec3(this.xpFarmLocation.x, this.xpFarmLocation.y, this.xpFarmLocation.z),
         2
       );
-      await this.bot.ashfinder.goto(goal);
+      await this.bot.pathfinder.goto(goal);
       console.log('[REPAIR] Arrived at XP farm');
       return true;
     } catch (err) {
@@ -7326,7 +7326,7 @@ class ElytraManager {
           new Vec3(config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z),
           10
         );
-        await this.bot.ashfinder.goto(goal);
+        await this.bot.pathfinder.goto(goal);
         return true;
       } catch (err) {
         console.log(`[ELYTRA] Failed to reach home base: ${err.message}`);
@@ -7802,7 +7802,7 @@ class BuilderWorker {
     try {
       const targetPos = block.position;
       
-      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
         targetPos.x, targetPos.y, targetPos.z), 4
       ), { timeout: 5000 });
       
@@ -7969,7 +7969,7 @@ class StashBackup {
           return;
         }
       }
-      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
         stashLocation.x, stashLocation.y, stashLocation.z
       ), 2)).catch(() => {});
       const containers = await this.findNearbyContainers(32);
@@ -8124,7 +8124,7 @@ class StashBackup {
     }
     const { x, y, z } = config.homeBase.coords;
     try {
-      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2));
+      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2));
     } catch (err) {
       console.log(`[BACKUP] Path to home base failed: ${err.message}`);
     }
@@ -8325,14 +8325,14 @@ class StashScanner {
         await sleep(500);
       }
       
-      this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(escapePos.x, escapePos.y, escapePos.z), 10)).catch(() => {});
+      this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(escapePos.x, escapePos.y, escapePos.z), 10)).catch(() => {});
       await sleep(5000);
     } else {
       // Ground escape
       const escapePos = this.bot.entity.position.offset(
         Math.random() * 100 - 50, 0, Math.random() * 100 - 50
       );
-      this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(escapePos.x, escapePos.y, escapePos.z), 5)).catch(() => {});
+      this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(escapePos.x, escapePos.y, escapePos.z), 5)).catch(() => {});
       await sleep(3000);
     }
   }
@@ -8436,7 +8436,7 @@ class StashScanner {
         
         if (config.homeBase.coords) {
           console.log('[STASH] 🏠 Heading home with loot');
-          this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+          this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
             config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 10
           )).catch(() => {});
         }
@@ -8543,7 +8543,7 @@ class StashScanner {
   }
   
   async navigateToStash(pos) {
-    this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(pos.x, pos.y, pos.z), 3)).catch(() => {});
+    this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(pos.x, pos.y, pos.z), 3)).catch(() => {});
     await sleep(2000);
   }
   
@@ -8673,7 +8673,7 @@ class GuardMode {
       const targetPoint = this.perimeter[this.currentSector];
       
       try {
-        this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(targetPoint.x, targetPoint.y, targetPoint.z), 2)).catch(() => {});
+        this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(targetPoint.x, targetPoint.y, targetPoint.z), 2)).catch(() => {});
         await sleep(3000);
         
         // Scan for threats at this position
@@ -8817,7 +8817,7 @@ class CoordinatedAttack {
       );
       
       // Navigate to position
-      bot.ashfinder.goto(new goals.GoalNear(new Vec3(targetPos.x, targetPos.y, targetPos.z), 1)).catch(() => {});
+      bot.pathfinder.goto(new goals.GoalNear(new Vec3(targetPos.x, targetPos.y, targetPos.z), 1)).catch(() => {});
       
       // Delay attack slightly to stagger
       setTimeout(() => {
@@ -8835,7 +8835,7 @@ class CoordinatedAttack {
     
     // Baiter approaches from front
     const frontPos = this.target.position.offset(2, 0, 0);
-    baiter.ashfinder.goto(new goals.GoalNear(new Vec3(frontPos.x, frontPos.y, frontPos.z), 1)).catch(() => {});
+    baiter.pathfinder.goto(new goals.GoalNear(new Vec3(frontPos.x, frontPos.y, frontPos.z), 1)).catch(() => {});
     
     // Wait a moment
     await sleep(1000);
@@ -8843,7 +8843,7 @@ class CoordinatedAttack {
     // Strikers attack from behind
     for (const striker of strikers) {
       const behindPos = this.target.position.offset(-2, 0, 0);
-      striker.ashfinder.goto(new goals.GoalNear(new Vec3(behindPos.x, behindPos.y, behindPos.z), 1)).catch(() => {});
+      striker.pathfinder.goto(new goals.GoalNear(new Vec3(behindPos.x, behindPos.y, behindPos.z), 1)).catch(() => {});
       
       setTimeout(() => {
         if (striker.pvp) {
@@ -9347,7 +9347,7 @@ class MaceWeaponAI {
     } else {
       const climbPos = this.bot.entity.position.offset(0, targetHeight - this.bot.entity.position.y, 0);
       try {
-        this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(climbPos.x, climbPos.y, climbPos.z), 3)).catch(() => {});
+        this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(climbPos.x, climbPos.y, climbPos.z), 3)).catch(() => {});
         await sleep(3000);
       } catch (err) {}
     }
@@ -9371,7 +9371,7 @@ class MaceWeaponAI {
     
     await this.bot.look(horizontalAngle, diveAngle, true);
     
-    this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(targetPos.x, targetPos.y, targetPos.z), 1)).catch(() => {});
+    this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(targetPos.x, targetPos.y, targetPos.z), 1)).catch(() => {});
     
     await sleep(2000);
     
@@ -9404,7 +9404,7 @@ class MaceWeaponAI {
       const targetPos = target.position.clone();
       const launchPos = targetPos.offset(0, -2, 0);
       
-      this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(launchPos.x, launchPos.y, launchPos.z), 2)).catch(() => {});
+      this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(launchPos.x, launchPos.y, launchPos.z), 2)).catch(() => {});
       await sleep(2000);
       
       await this.bot.equip(windCharge, 'hand');
@@ -9452,7 +9452,7 @@ class MaceWeaponAI {
     await this.equipMace();
     
     const targetPos = target.position.clone();
-    this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(targetPos.x, targetPos.y, targetPos.z), 2)).catch(() => {});
+    this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(targetPos.x, targetPos.y, targetPos.z), 2)).catch(() => {});
     await sleep(1000);
     
     if (this.bot.entity.position.distanceTo(targetPos) < 3) {
@@ -9760,7 +9760,7 @@ class GearUpSystem {
       
       try {
         const block = this.bot.blockAt(closestOre);
-        await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(closestOre.x, closestOre.y, closestOre.z), 3));
+        await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(closestOre.x, closestOre.y, closestOre.z), 3));
         
         const pickaxe = this.bot.inventory.items().find(i => 
           i.name.includes('pickaxe') && !i.name.includes('wood')
@@ -9791,7 +9791,7 @@ class GearUpSystem {
     console.log(`[GEAR-UP] Exploring to ${explorePos.toString()}...`);
     
     try {
-      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(explorePos.x, explorePos.y, explorePos.z), 3));
+      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(explorePos.x, explorePos.y, explorePos.z), 3));
     } catch (err) {
       console.log(`[GEAR-UP] Exploration move failed: ${err.message}`);
     }
@@ -9852,7 +9852,7 @@ class GearUpSystem {
         if (logs.length > 0) {
           try {
             const logPos = logs[0];
-            await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(logPos.x, logPos.y, logPos.z), 3));
+            await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(logPos.x, logPos.y, logPos.z), 3));
             const block = this.bot.blockAt(logPos);
             await this.bot.dig(block);
             gathered++;
@@ -9906,7 +9906,7 @@ class GearUpSystem {
       
       const animal = animals[0];
       try {
-        await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(animal.position.x, animal.position.y, animal.position.z), 2));
+        await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(animal.position.x, animal.position.y, animal.position.z), 2));
         await this.bot.attack(animal);
         collected++;
         console.log(`[GEAR-UP] Hunted animal (${collected}/${quantity})`);
@@ -9939,7 +9939,7 @@ class GearUpSystem {
             if (gathered >= sugarCaneNeeded) break;
             
             try {
-              await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(canePos.x, canePos.y, canePos.z), 3));
+              await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(canePos.x, canePos.y, canePos.z), 3));
               const block = this.bot.blockAt(canePos);
               await this.bot.dig(block);
               gathered++;
@@ -10050,7 +10050,7 @@ class AutoCrafter {
     try {
       const craftingTable = await this.findOrPlaceCraftingTable();
       if (craftingTable) {
-        await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+        await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
           craftingTable.position.x, craftingTable.position.y, craftingTable.position.z), 3
         ));
       }
@@ -10299,7 +10299,7 @@ class XPFarmer {
         if (ores.length > 0) {
           try {
             const orePos = ores[0];
-            await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(orePos.x, orePos.y, orePos.z), 3));
+            await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(orePos.x, orePos.y, orePos.z), 3));
             const block = this.bot.blockAt(orePos);
             await this.bot.dig(block);
             minedCount++;
@@ -10321,7 +10321,7 @@ class XPFarmer {
         );
         
         try {
-          await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(explorePos.x, explorePos.y, explorePos.z), 3));
+          await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(explorePos.x, explorePos.y, explorePos.z), 3));
         } catch (err) {
           break;
         }
@@ -10347,7 +10347,7 @@ class XPFarmer {
         const mob = hostileMobs[0];
         
         try {
-          await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(mob.position.x, mob.position.y, mob.position.z), 2));
+          await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(mob.position.x, mob.position.y, mob.position.z), 2));
           await this.bot.attack(mob);
           kills++;
           console.log(`[XP] Killed mob (${kills})`);
@@ -10422,7 +10422,7 @@ class NetheriteUpgrader {
           if (mined >= quantity) break;
           
           try {
-            await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(debrisPos.x, debrisPos.y, debrisPos.z), 3));
+            await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(debrisPos.x, debrisPos.y, debrisPos.z), 3));
             
             const pickaxe = this.bot.inventory.items().find(i => 
               i.name === 'diamond_pickaxe' || i.name === 'netherite_pickaxe'
@@ -10460,7 +10460,7 @@ class NetheriteUpgrader {
     );
     
     try {
-      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(minePos.x, minePos.y, minePos.z), 2));
+      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(minePos.x, minePos.y, minePos.z), 2));
     } catch (err) {
       console.log(`[UPGRADE] Strip mining move failed: ${err.message}`);
     }
@@ -10620,7 +10620,7 @@ class DefenseCoordinator {
     console.log(`[DEFENSE] ${bot.username} responding (ETA: ${eta}s)`);
     
     // Navigate to threat location
-    bot.ashfinder.goto(new goals.GoalNear(new Vec3(alert.location.x, alert.location.y, alert.location.z), 5)).catch(() => {});
+    bot.pathfinder.goto(new goals.GoalNear(new Vec3(alert.location.x, alert.location.y, alert.location.z), 5)).catch(() => {});
     
     // Set up combat when arriving
     setTimeout(async () => {
@@ -10664,7 +10664,7 @@ class DefenseCoordinator {
     
     // All bots retreat to regroup point
     for (const bot of bots) {
-      bot.ashfinder.goto(new goals.GoalNear(new Vec3(regroupPoint.x, regroupPoint.y, regroupPoint.z), 3)).catch(() => {});
+      bot.pathfinder.goto(new goals.GoalNear(new Vec3(regroupPoint.x, regroupPoint.y, regroupPoint.z), 3)).catch(() => {});
       
       // Stop attacking
       if (bot.pvp && bot.pvp.target) {
@@ -10840,7 +10840,7 @@ class SwarmManager {
     
     for (const guard of guards.slice(0, 2)) { // Send 2 additional guards
       if (guard.username !== alert.guardBot) {
-        guard.ashfinder.goto(new goals.GoalNear(new Vec3(alert.location.x, alert.location.y, alert.location.z), 10)).catch(() => {});
+        guard.pathfinder.goto(new goals.GoalNear(new Vec3(alert.location.x, alert.location.y, alert.location.z), 10)).catch(() => {});
       }
     }
   }
@@ -11541,11 +11541,11 @@ class CombatAI {
       
       for (const item of items) {
         try {
-          if (!item.position || !this.bot.ashfinder) {
+          if (!item.position || !this.bot.pathfinder) {
             continue;
           }
           const goal = new goals.GoalNear(new Vec3(item.position.x, item.position.y, item.position.z), 1);
-          this.bot.ashfinder.goto(goal).catch(() => {});
+          this.bot.pathfinder.goto(goal).catch(() => {});
           await sleep(1000);
           
           // Auto-equip better items
@@ -11687,7 +11687,7 @@ class CombatAI {
         
       case 'approach':
         console.log('[COMBAT] 🏃 Closing distance');
-        this.bot.ashfinder.goto(new goals.GoalNear(target.position, 3)).catch(() => {});
+        this.bot.pathfinder.goto(new goals.GoalNear(target.position, 3)).catch(() => {});
         await sleep(500);
         return await this.executeOptimalAttack(target);
         
@@ -11769,7 +11769,7 @@ class CombatAI {
 
   async approachTarget(target) {
     const goal = new goals.GoalNear(new Vec3(target.position.x, target.position.y, target.position.z), 3);
-    this.bot.ashfinder.goto(goal).catch(() => {});
+    this.bot.pathfinder.goto(goal).catch(() => {});
     await sleep(500);
   }
 
@@ -12477,7 +12477,7 @@ class CrystalPvP {
       -enemy.position.z + this.bot.entity.position.z
     ).normalize().scaled(10).plus(this.bot.entity.position);
     
-    this.bot.ashfinder.setGoal(
+    this.bot.pathfinder.setGoal(
       new goals.GoalNear(new Vec3(escapePos.x, escapePos.y, escapePos.z), 3)
     );
     
@@ -17426,7 +17426,7 @@ try {
     if (lower.includes('go home') || lower.includes('head home')) {
       if (config.homeBase.coords) {
         this.bot.chat(`🏠 Heading home to ${config.homeBase.coords.toString()}`);
-        this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+        this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
           config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 5
         )).catch(() => {});
       } else {
@@ -17838,7 +17838,7 @@ try {
         const player = this.bot.players[username];
         if (player) {
           this.bot.chat(`Coming to you, ${username}!`);
-          this.bot.ashfinder.goto(new goals.GoalNear(player.entity.position, 2)).catch(() => {});
+          this.bot.pathfinder.goto(new goals.GoalNear(player.entity.position, 2)).catch(() => {});
         }
       }
       return;
@@ -18022,8 +18022,8 @@ try {
         this.bot.chat(`🚶 Heading to ${coords.x} ${coords.y} ${coords.z}`);
         
         try {
-          if (this.bot.ashfinder) {
-            await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(coords.x, coords.y, coords.z), 2));
+          if (this.bot.pathfinder) {
+            await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(coords.x, coords.y, coords.z), 2));
           } else if (this.bot.pathfinder) {
             await this.bot.pathfinder.goto(new goals.GoalBlock(coords.x, coords.y, coords.z));
           } else {
@@ -18049,8 +18049,8 @@ try {
       if (this.bot.pathfinder) {
         this.bot.pathfinder.stop();
       }
-      if (this.bot.ashfinder) {
-        this.bot.ashfinder.stop();
+      if (this.bot.pathfinder) {
+        this.bot.pathfinder.stop();
       }
       if (this.bot.combatAI && this.bot.combatAI.isCurrentlyFighting) {
         this.bot.combatAI.isCurrentlyFighting = false;
@@ -18140,7 +18140,7 @@ try {
       const tests = [];
       
       // Test pathfinder availability
-      if (this.bot.pathfinder || this.bot.ashfinder) {
+      if (this.bot.pathfinder || this.bot.pathfinder) {
         tests.push('✅ Pathfinding available');
       } else {
         tests.push('❌ Pathfinding not available');
@@ -19205,8 +19205,8 @@ try {
       
       try {
         // Pathfind to player
-        if (this.bot.ashfinder) {
-          await this.bot.ashfinder.goto(new goals.GoalFollow(player.entity, 2));
+        if (this.bot.pathfinder) {
+          await this.bot.pathfinder.goto(new goals.GoalFollow(player.entity, 2));
         } else if (this.bot.pathfinder) {
           await this.bot.pathfinder.goto(new goals.GoalFollow(player.entity, 2));
         }
@@ -19351,8 +19351,8 @@ try {
     if (this.bot.pathfinder) {
       this.bot.pathfinder.stop();
     }
-    if (this.bot.ashfinder) {
-      this.bot.ashfinder.stop();
+    if (this.bot.pathfinder) {
+      this.bot.pathfinder.stop();
     }
 
     if (globalSwarmCoordinator) {
@@ -22307,7 +22307,7 @@ class HighwayNavigator {
     console.log(`[HIGHWAY] Moving to highway entrance at ${snapPos.toString()}`);
     
     try {
-      this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(snapPos.x, snapPos.y, snapPos.z), 2)).catch(() => {});
+      this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(snapPos.x, snapPos.y, snapPos.z), 2)).catch(() => {});
       await sleep(5000);
     } catch (err) {
       console.log(`[HIGHWAY] Warning: Could not reach exact highway position: ${err.message}`);
@@ -22365,7 +22365,7 @@ class HighwayNavigator {
     this.startMonitoring(session);
     
     // Navigate to destination
-    this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+    this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
       this.destination.x, this.destination.y, this.destination.z), 5
     )).catch(() => {});
   }
@@ -22507,11 +22507,11 @@ class HighwayNavigator {
     }
     
     try {
-      this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(alternatePos.x, alternatePos.y, alternatePos.z), 2)).catch(() => {});
+      this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(alternatePos.x, alternatePos.y, alternatePos.z), 2)).catch(() => {});
       await sleep(5000);
       
       // Resume highway travel
-      this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+      this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
         this.destination.x, this.destination.y, this.destination.z), 5
       )).catch(() => {});
       
@@ -22667,7 +22667,7 @@ class MovementModeManager {
       }
 
       // Default: use standard pathfinder
-      this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2)).catch(() => {});
+      this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2)).catch(() => {});
 
       // Record outcome after movement attempt
       const travelTime = Date.now() - this.travelStartTime;
@@ -23368,14 +23368,18 @@ class DupeTestingFramework {
       },
       async () => {
         // Walk a few blocks
-        const randomOffset = new Vec3(
-          Math.random() * 10 - 5,
-          0,
-          Math.random() * 10 - 5
-        );
-        const target = this.bot.entity.position.plus(randomOffset);
-        this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(target.x, target.y, target.z), 1)).catch(() => {});
-        await sleep(2000);
+        if (this.bot && this.bot.pathfinder) {
+          const randomOffset = new Vec3(
+            Math.random() * 10 - 5,
+            0,
+            Math.random() * 10 - 5
+          );
+          const target = this.bot.entity.position.plus(randomOffset);
+          this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(target.x, target.y, target.z), 1)).catch(() => {});
+          await sleep(2000);
+        } else {
+          await sleep(500);
+        }
       },
       async () => {
         // Jump
@@ -23384,7 +23388,7 @@ class DupeTestingFramework {
         this.bot.setControlState('jump', false);
       }
     ];
-    
+
     const behavior = behaviors[Math.floor(Math.random() * behaviors.length)];
     await behavior();
   }
@@ -23620,7 +23624,7 @@ class LagExploiter {
         const startPos = this.bot.entity.position;
         for (let i = 0; i < 5; i++) {
           const offset = 100 * (i + 1);
-          this.bot.ashfinder.setGoal(
+          this.bot.pathfinder.setGoal(
             new goals.GoalNear(new Vec3(startPos.x + offset, startPos.y, startPos.z), 1)
           );
           await sleep(500);
@@ -23808,7 +23812,7 @@ class ChunkBoundaryTester {
     
     // Navigate to boundary
     try {
-      this.bot.ashfinder.setGoal(
+      this.bot.pathfinder.setGoal(
         new goals.GoalNear(new Vec3(boundary.x, this.bot.entity.position.y, boundary.z), 1)
       );
       await sleep(3000);
@@ -23840,7 +23844,7 @@ class ChunkBoundaryTester {
       
       // Move across boundary
       const currentPos = this.bot.entity.position;
-      this.bot.ashfinder.setGoal(
+      this.bot.pathfinder.setGoal(
         new goals.GoalNear(new Vec3(currentPos.x + 2, currentPos.y, currentPos.z), 0.5)
       );
       await sleep(500);
@@ -29335,10 +29339,10 @@ async function launchBot(username, role = 'fighter') {
                   // Attack the attacker directly
                   console.log(`[SWARM] 🎯 Found backup target ${message.attacker} - ENGAGING!`);
                   await combatAI.handleCombat(backupAttacker);
-                } else if (!backupAttacker && bot.ashfinder) {
+                } else if (!backupAttacker && bot.pathfinder) {
                   // If we can't find the attacker, navigate to the victim's location
                   console.log(`[SWARM] Could not find ${message.attacker}, moving to support location`);
-                  bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+                  bot.pathfinder.goto(new goals.GoalNear(new Vec3(
                     message.position.x, message.position.y, message.position.z), 10
                   )).catch(() => {});
                 }
@@ -29438,10 +29442,10 @@ async function launchBot(username, role = 'fighter') {
                     // Attack the attacker
                     console.log(`[SWARM] 🎯 Found attacker ${message.attacker} at ${attacker.position.x.toFixed(0)}, ${attacker.position.y.toFixed(0)}, ${attacker.position.z.toFixed(0)}`);
                     await combatAI.handleCombat(attacker);
-                  } else if (!attacker && bot.ashfinder) {
+                  } else if (!attacker && bot.pathfinder) {
                     // If we can't find the attacker, navigate to victim's location for support
                     console.log(`[SWARM] Could not find attacker ${message.attacker}, moving to support ${message.victim}`);
-                    bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+                    bot.pathfinder.goto(new goals.GoalNear(new Vec3(
                       message.location.x, message.location.y, message.location.z), 5
                     )).catch(() => {});
                   }
@@ -29453,7 +29457,7 @@ async function launchBot(username, role = 'fighter') {
               console.log(`[SWARM] 🚨 Intruder ${message.intruder} detected in ${message.zone}!`);
               // Guards respond to intruder alerts
               if (role === 'guard') {
-                bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+                bot.pathfinder.goto(new goals.GoalNear(new Vec3(
                   message.location.x, message.location.y, message.location.z), 10
                 )).catch(() => {});
               }
@@ -29516,7 +29520,7 @@ async function launchBot(username, role = 'fighter') {
               
             case 'REGROUP':
               console.log(`[SWARM] 📍 Regrouping at ${message.location.x}, ${message.location.y}, ${message.location.z}`);
-              bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+              bot.pathfinder.goto(new goals.GoalNear(new Vec3(
                 message.location.x, message.location.y, message.location.z), 5
               )).catch(() => {});
               break;
@@ -29524,8 +29528,8 @@ async function launchBot(username, role = 'fighter') {
             case 'GUARD_POSITION':
               console.log(`[SWARM] 🛡️ Guard duty initiated at ${message.position.x}, ${message.position.y}, ${message.position.z}`);
               bot.chat(`🛡️ Starting guard duty at ${message.position.x}, ${message.position.y}, ${message.position.z}!`);
-              if (bot.ashfinder) {
-                bot.ashfinder.goto(new goals.GoalNear(new Vec3(
+              if (bot.pathfinder) {
+                bot.pathfinder.goto(new goals.GoalNear(new Vec3(
                   message.position.x, message.position.y, message.position.z), 3
                 )).then(() => {
                   console.log(`[SWARM] Arrived at guard position, beginning patrol`);
@@ -29564,8 +29568,8 @@ async function launchBot(username, role = 'fighter') {
                 }
               }, 5 * 60 * 1000);
               
-              if (bot.ashfinder) {
-                bot.ashfinder.goto(new goals.GoalNear(helpTarget, 3))
+              if (bot.pathfinder) {
+                bot.pathfinder.goto(new goals.GoalNear(helpTarget, 3))
                   .then(() => {
                     console.log(`[SWARM] Arrived at help location`);
                     bot.chat(`Arrived to help! Ready for combat.`);
@@ -29590,8 +29594,8 @@ async function launchBot(username, role = 'fighter') {
                 if (combatAI && typeof combatAI.setAggressiveMode === 'function') {
                   combatAI.setAggressiveMode(false);
                 }
-                if (bot.ashfinder) {
-                  try { bot.ashfinder.stop(); } catch (err) {}
+                if (bot.pathfinder) {
+                  try { bot.pathfinder.stop(); } catch (err) {}
                 }
                 bot.chat('Help operation complete. Returning to normal tasks.');
                 bot.currentHelpOperation = null;
@@ -32701,7 +32705,7 @@ class SafeLogoutFinder {
     const safeSpot = await this.searchForSafeSpot(currentPos, 50);
     
     if (safeSpot) {
-      await this.bot.ashfinder.goto(safeSpot);
+      await this.bot.pathfinder.goto(safeSpot);
       return safeSpot;
     }
     
@@ -32774,7 +32778,7 @@ class DeathRecovery {
     console.log(`[DEATH] Returning to death location: ${deathLocation}`);
     
     try {
-      await this.bot.ashfinder.goto(new goals.GoalNear(new Vec3(deathLocation.x, deathLocation.y, deathLocation.z), 1));
+      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(deathLocation.x, deathLocation.y, deathLocation.z), 1));
       
       await this.collectNearbyItems();
       
