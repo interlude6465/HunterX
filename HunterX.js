@@ -14392,6 +14392,447 @@ const CHEST_LOCATIONS = {
   gold_nugget: ['bastion_remnant', 'ruined_portal']
 };
 
+const CHEST_ONLY_ITEMS = new Set([
+  'heart_of_the_sea',
+  'mending_book',
+  'enchanted_book',
+  'elytra',
+  'enchanted_golden_apple',
+  'music_disc',
+  'saddle',
+  'nametag'
+]);
+
+const DIRECT_GATHER_MAPPINGS = {
+  diamond: ['diamond_ore', 'deepslate_diamond_ore'],
+  redstone: ['redstone_ore', 'deepslate_redstone_ore'],
+  lapis_lazuli: ['lapis_ore', 'deepslate_lapis_ore'],
+  emerald: ['emerald_ore', 'deepslate_emerald_ore'],
+  coal: ['coal_ore', 'deepslate_coal_ore'],
+  iron_ingot: ['iron_ore', 'deepslate_iron_ore'],
+  gold_ingot: ['gold_ore', 'deepslate_gold_ore'],
+  copper_ingot: ['copper_ore', 'deepslate_copper_ore'],
+  netherite_scrap: ['ancient_debris'],
+  ancient_debris: ['ancient_debris'],
+  quartz: ['nether_quartz_ore'],
+  obsidian: ['obsidian'],
+  deepslate: ['deepslate'],
+  stone: ['stone'],
+  cobblestone: ['stone', 'cobblestone'],
+  gravel: ['gravel'],
+  sand: ['sand'],
+  red_sand: ['red_sand'],
+  glowstone: ['glowstone'],
+  raw_iron: ['iron_ore', 'deepslate_iron_ore'],
+  raw_gold: ['gold_ore', 'deepslate_gold_ore'],
+  raw_copper: ['copper_ore', 'deepslate_copper_ore'],
+  glowstone_dust: ['glowstone']
+};
+
+const OVERWORLD_WOOD_TYPES = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove', 'cherry'];
+const NETHER_WOOD_TYPES = [
+  { base: 'crimson', stem: 'crimson_stem', wood: 'crimson_hyphae' },
+  { base: 'warped', stem: 'warped_stem', wood: 'warped_hyphae' }
+];
+
+const WOOD_BLOCK_ALIASES = {};
+
+const DIRECT_GATHER_INVENTORY_ALIASES = {
+  iron_ingot: ['iron_ingot', 'raw_iron'],
+  gold_ingot: ['gold_ingot', 'raw_gold'],
+  copper_ingot: ['copper_ingot', 'raw_copper'],
+  netherite_scrap: ['netherite_scrap', 'ancient_debris'],
+  ancient_debris: ['ancient_debris'],
+  stone: ['stone', 'cobblestone'],
+  deepslate: ['deepslate', 'cobbled_deepslate'],
+  cobblestone: ['cobblestone'],
+  diamond: ['diamond'],
+  emerald: ['emerald'],
+  coal: ['coal'],
+  redstone: ['redstone'],
+  lapis_lazuli: ['lapis_lazuli'],
+  quartz: ['quartz'],
+  obsidian: ['obsidian'],
+  gravel: ['gravel'],
+  sand: ['sand'],
+  red_sand: ['red_sand'],
+  glowstone: ['glowstone_dust', 'glowstone'],
+  raw_iron: ['raw_iron'],
+  raw_gold: ['raw_gold'],
+  raw_copper: ['raw_copper'],
+  glowstone_dust: ['glowstone_dust', 'glowstone']
+};
+
+for (const type of OVERWORLD_WOOD_TYPES) {
+  const logName = `${type}_log`;
+  const woodName = `${type}_wood`;
+  WOOD_BLOCK_ALIASES[logName] = [logName];
+  WOOD_BLOCK_ALIASES[woodName] = [woodName, logName];
+  DIRECT_GATHER_INVENTORY_ALIASES[logName] = [logName];
+  DIRECT_GATHER_INVENTORY_ALIASES[woodName] = [woodName, logName];
+  DIRECT_GATHER_MAPPINGS[logName] = [logName];
+  DIRECT_GATHER_MAPPINGS[woodName] = [woodName, logName];
+}
+
+for (const { base, stem, wood } of NETHER_WOOD_TYPES) {
+  const stemName = `${base}_stem`;
+  const woodName = `${base}_wood`;
+  const hyphaeName = `${base}_hyphae`;
+  WOOD_BLOCK_ALIASES[stemName] = [stem];
+  WOOD_BLOCK_ALIASES[woodName] = [wood, stem];
+  WOOD_BLOCK_ALIASES[hyphaeName] = [wood];
+  DIRECT_GATHER_INVENTORY_ALIASES[stemName] = [stem];
+  DIRECT_GATHER_INVENTORY_ALIASES[woodName] = [wood, stem];
+  DIRECT_GATHER_INVENTORY_ALIASES[hyphaeName] = [wood];
+  DIRECT_GATHER_MAPPINGS[stemName] = [stem];
+  DIRECT_GATHER_MAPPINGS[woodName] = [wood, stem];
+  DIRECT_GATHER_MAPPINGS[hyphaeName] = [wood];
+}
+
+const ORE_ALIAS_MAP = [
+  { blocks: ['iron_ore', 'deepslate_iron_ore'], drops: ['raw_iron'] },
+  { blocks: ['gold_ore', 'deepslate_gold_ore'], drops: ['raw_gold'] },
+  { blocks: ['copper_ore', 'deepslate_copper_ore'], drops: ['raw_copper'] },
+  { blocks: ['diamond_ore', 'deepslate_diamond_ore'], drops: ['diamond'] },
+  { blocks: ['emerald_ore', 'deepslate_emerald_ore'], drops: ['emerald'] },
+  { blocks: ['lapis_ore', 'deepslate_lapis_ore'], drops: ['lapis_lazuli'] },
+  { blocks: ['redstone_ore', 'deepslate_redstone_ore'], drops: ['redstone'] },
+  { blocks: ['coal_ore', 'deepslate_coal_ore'], drops: ['coal'] },
+  { blocks: ['nether_quartz_ore'], drops: ['quartz'] }
+];
+
+for (const { blocks, drops } of ORE_ALIAS_MAP) {
+  for (const blockName of blocks) {
+    DIRECT_GATHER_INVENTORY_ALIASES[blockName] = Array.from(new Set([...drops, blockName]));
+  }
+}
+
+WOOD_BLOCK_ALIASES['bamboo'] = ['bamboo'];
+DIRECT_GATHER_INVENTORY_ALIASES['bamboo'] = ['bamboo'];
+DIRECT_GATHER_MAPPINGS['bamboo'] = ['bamboo'];
+
+function resolveBlockGatherTargets(bot, itemName) {
+  if (!bot || !bot.registry || !bot.registry.blocksByName || !itemName) {
+    return null;
+  }
+
+  const direct = DIRECT_GATHER_MAPPINGS[itemName];
+  if (direct) {
+    const resolved = direct.filter(name => bot.registry.blocksByName[name]);
+    if (resolved.length > 0) {
+      return resolved;
+    }
+  }
+
+  if (WOOD_BLOCK_ALIASES[itemName]) {
+    const resolved = WOOD_BLOCK_ALIASES[itemName].filter(name => bot.registry.blocksByName[name]);
+    if (resolved.length > 0) {
+      return resolved;
+    }
+  }
+
+  if (itemName.endsWith('_ore') && bot.registry.blocksByName[itemName]) {
+    return [itemName];
+  }
+
+  if (itemName.endsWith('_block') && bot.registry.blocksByName[itemName]) {
+    return [itemName];
+  }
+
+  if (bot.registry.blocksByName[itemName]) {
+    return [itemName];
+  }
+
+  if (itemName.endsWith('_ingot')) {
+    const base = itemName.replace('_ingot', '');
+    const oreNames = [`${base}_ore`, `deepslate_${base}_ore`].filter(name => bot.registry.blocksByName[name]);
+    if (oreNames.length > 0) {
+      return oreNames;
+    }
+  }
+
+  if (itemName === 'netherite_scrap' && bot.registry.blocksByName['ancient_debris']) {
+    return ['ancient_debris'];
+  }
+
+  if (itemName === 'redstone' && bot.registry.blocksByName['redstone_ore']) {
+    return ['redstone_ore', 'deepslate_redstone_ore'].filter(name => bot.registry.blocksByName[name]);
+  }
+
+  if (itemName === 'lapis_lazuli' && bot.registry.blocksByName['lapis_ore']) {
+    return ['lapis_ore', 'deepslate_lapis_ore'].filter(name => bot.registry.blocksByName[name]);
+  }
+
+  return null;
+}
+
+function normalizeDimensionName(dimension) {
+  if (!dimension) return 'overworld';
+  if (typeof dimension === 'string') {
+    if (dimension.includes('nether')) return 'nether';
+    if (dimension.includes('end')) return 'end';
+  }
+  if (dimension === 'nether') return 'nether';
+  if (dimension === 'end') return 'end';
+  return 'overworld';
+}
+
+class WorldKnowledge {
+  constructor(bot) {
+    this.bot = bot;
+    this.knownBlocks = new Map();
+    this.chunkSummaries = new Map();
+    this.scannedChunks = new Map();
+    this.trackedBlocks = new Set();
+    this.maxEntriesPerBlock = 256;
+
+    this.registerListeners();
+  }
+
+  registerListeners() {
+    if (!this.bot || !this.bot.on) return;
+
+    this.bot.on('chunkColumnLoad', (chunkX, chunkZ) => {
+      const dimension = this.currentDimension();
+      this.ensureChunkSummary(chunkX, chunkZ, dimension);
+    });
+
+    this.bot.on('blockUpdate', (oldBlock, newBlock) => {
+      this.handleBlockUpdate(oldBlock, newBlock);
+    });
+
+    this.bot.on('diggingCompleted', (block) => {
+      if (!block) return;
+      this.forgetBlock(block.name, block.position, this.currentDimension());
+    });
+  }
+
+  currentDimension() {
+    return normalizeDimensionName(this.bot?.game?.dimension);
+  }
+
+  positionKey(position, dimension) {
+    const x = Math.floor(position.x);
+    const y = Math.floor(position.y);
+    const z = Math.floor(position.z);
+    return `${dimension}:${x},${y},${z}`;
+  }
+
+  chunkKey(position, dimension) {
+    const chunkX = Math.floor(position.x / 16);
+    const chunkZ = Math.floor(position.z / 16);
+    return `${dimension}:${chunkX},${chunkZ}`;
+  }
+
+  ensureBlockMap(blockName) {
+    if (!this.knownBlocks.has(blockName)) {
+      this.knownBlocks.set(blockName, new Map());
+    }
+    return this.knownBlocks.get(blockName);
+  }
+
+  ensureChunkSummary(chunkX, chunkZ, dimension) {
+    const key = `${dimension}:${chunkX},${chunkZ}`;
+    let summary = this.chunkSummaries.get(key);
+    if (!summary) {
+      summary = {
+        dimension,
+        chunk: { x: chunkX, z: chunkZ },
+        lastScanned: Date.now(),
+        blockCounts: {}
+      };
+      this.chunkSummaries.set(key, summary);
+    } else {
+      summary.lastScanned = Date.now();
+    }
+    return summary;
+  }
+
+  updateChunkSummary(blockName, position, dimension) {
+    const chunkX = Math.floor(position.x / 16);
+    const chunkZ = Math.floor(position.z / 16);
+    const summary = this.ensureChunkSummary(chunkX, chunkZ, dimension);
+    summary.blockCounts[blockName] = (summary.blockCounts[blockName] || 0) + 1;
+  }
+
+  recordBlock(blockName, position, dimension = this.currentDimension()) {
+    if (!blockName || !position) return;
+
+    const map = this.ensureBlockMap(blockName);
+    const key = this.positionKey(position, dimension);
+    const storedPosition = position.clone ? position.clone() : new Vec3(position.x, position.y, position.z);
+
+    if (map.has(key)) {
+      const entry = map.get(key);
+      entry.lastSeen = Date.now();
+    } else {
+      map.set(key, {
+        blockName,
+        position: storedPosition,
+        dimension,
+        lastSeen: Date.now()
+      });
+    }
+
+    this.pruneEntries(map);
+    this.updateChunkSummary(blockName, storedPosition, dimension);
+  }
+
+  pruneEntries(map) {
+    if (map.size <= this.maxEntriesPerBlock) return;
+
+    const entries = Array.from(map.entries()).sort((a, b) => a[1].lastSeen - b[1].lastSeen);
+    while (map.size > this.maxEntriesPerBlock && entries.length > 0) {
+      const [oldKey] = entries.shift();
+      map.delete(oldKey);
+    }
+  }
+
+  forgetBlock(blockName, position, dimension = this.currentDimension()) {
+    if (!blockName || !position) return;
+
+    const map = this.knownBlocks.get(blockName);
+    if (!map) return;
+
+    const key = this.positionKey(position, dimension);
+    map.delete(key);
+
+    const chunkKey = this.chunkKey(position, dimension);
+    const summary = this.chunkSummaries.get(chunkKey);
+    if (summary && summary.blockCounts[blockName]) {
+      summary.blockCounts[blockName] = Math.max(0, summary.blockCounts[blockName] - 1);
+    }
+  }
+
+  ensureTracking(blockNames) {
+    if (!Array.isArray(blockNames)) return;
+    for (const name of blockNames) {
+      if (name) {
+        this.trackedBlocks.add(name);
+      }
+    }
+  }
+
+  handleBlockUpdate(oldBlock, newBlock) {
+    const dimension = this.currentDimension();
+
+    if (oldBlock && this.trackedBlocks.has(oldBlock.name) &&
+        (!newBlock || newBlock.name !== oldBlock.name)) {
+      this.forgetBlock(oldBlock.name, oldBlock.position, dimension);
+    }
+
+    if (newBlock && this.trackedBlocks.has(newBlock.name)) {
+      this.recordBlock(newBlock.name, newBlock.position, dimension);
+    }
+  }
+
+  markScannedArea(maxDistance) {
+    if (!this.bot?.entity?.position) return;
+
+    const dimension = this.currentDimension();
+    const center = this.bot.entity.position;
+    const chunkRadius = Math.max(1, Math.ceil((maxDistance || 32) / 16));
+    const centerChunkX = Math.floor(center.x / 16);
+    const centerChunkZ = Math.floor(center.z / 16);
+
+    for (let dx = -chunkRadius; dx <= chunkRadius; dx++) {
+      for (let dz = -chunkRadius; dz <= chunkRadius; dz++) {
+        this.ensureChunkSummary(centerChunkX + dx, centerChunkZ + dz, dimension);
+      }
+    }
+  }
+
+  async scanForBlocks(blockNames, maxDistance = 48) {
+    if (!this.bot?.entity?.position) return 0;
+
+    const targets = Array.isArray(blockNames) ? blockNames.filter(Boolean) : [];
+    if (targets.length === 0) {
+      return 0;
+    }
+
+    this.ensureTracking(targets);
+    this.markScannedArea(maxDistance);
+
+    const targetSet = new Set(targets);
+    let positions = [];
+    try {
+      positions = this.bot.findBlocks({
+        matching: (block) => block && targetSet.has(block.name),
+        maxDistance,
+        count: 256
+      }) || [];
+    } catch (err) {
+      console.log(`[WORLD_KNOWLEDGE] Scan failed: ${err.message}`);
+      return 0;
+    }
+
+    let found = 0;
+    const dimension = this.currentDimension();
+
+    for (const pos of positions) {
+      const block = this.bot.blockAt(pos);
+      if (block && targetSet.has(block.name)) {
+        this.recordBlock(block.name, block.position, dimension);
+        found++;
+      }
+    }
+
+    return found;
+  }
+
+  getKnownBlocks(blockNames, dimension = this.currentDimension()) {
+    const targets = Array.isArray(blockNames) ? blockNames : [blockNames];
+    const matches = [];
+
+    for (const name of targets) {
+      const map = this.knownBlocks.get(name);
+      if (!map) continue;
+
+      for (const entry of map.values()) {
+        if (entry.dimension !== dimension) continue;
+        matches.push({
+          blockName: entry.blockName,
+          position: entry.position.clone ? entry.position.clone() : new Vec3(entry.position.x, entry.position.y, entry.position.z),
+          dimension: entry.dimension,
+          lastSeen: entry.lastSeen
+        });
+      }
+    }
+
+    return matches;
+  }
+
+  getNearestBlock(blockNames, fromPosition, dimension = this.currentDimension()) {
+    if (!fromPosition) return null;
+
+    const candidates = this.getKnownBlocks(blockNames, dimension);
+    let nearest = null;
+    let nearestDistance = Infinity;
+
+    for (const entry of candidates) {
+      const block = this.bot.blockAt(entry.position);
+      if (!block || block.name !== entry.blockName) {
+        this.forgetBlock(entry.blockName, entry.position, entry.dimension);
+        continue;
+      }
+
+      const distance = entry.position.distanceTo(fromPosition);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = {
+          blockName: entry.blockName,
+          position: entry.position.clone ? entry.position.clone() : new Vec3(entry.position.x, entry.position.y, entry.position.z),
+          dimension: entry.dimension,
+          lastSeen: entry.lastSeen,
+          distance
+        };
+      }
+    }
+
+    return nearest;
+  }
+}
+
 // Natural Language Parser for item requests
 class ItemRequestParser {
   parseRequest(message) {
@@ -14561,6 +15002,7 @@ class ItemHunter {
     this.bot = bot;
     this.activeQuests = [];
     this.parser = new ItemRequestParser();
+    this.worldKnowledge = new WorldKnowledge(bot);
     this.mobHunter = new MobHunter(bot);
     this.structureFinder = new StructureFinder(bot);
     this.villagerTrader = new VillagerTrader(bot);
@@ -14584,17 +15026,220 @@ class ItemHunter {
     console.log(`[HUNTER] 🔍 Starting hunt for ${quantity}x ${itemName}`);
     
     const knowledge = ITEM_KNOWLEDGE[itemName];
-    if (!knowledge) {
+    
+    if (this.shouldUseDirectGather(itemName, knowledge)) {
+      const directSuccess = await this.directGatherItem(itemName, quantity);
+      if (directSuccess) {
+        return true;
+      }
+      console.log(`[HUNTER] ⚠️ Direct gather attempt for ${itemName} incomplete, falling back to strategy system`);
+    }
+    
+    return await this.findItemViaStrategies(itemName, quantity, knowledge);
+  }
+  
+  shouldUseDirectGather(itemName, knowledge) {
+    if (!itemName) return false;
+    if (this.isChestOnlyItem(itemName, knowledge)) {
+      return false;
+    }
+    
+    const gatherTargets = this.resolveGatherTargets(itemName);
+    return !!(gatherTargets && gatherTargets.blockNames.length > 0);
+  }
+  
+  isChestOnlyItem(itemName, knowledge) {
+    if (CHEST_ONLY_ITEMS.has(itemName)) {
+      return true;
+    }
+    
+    if (!knowledge || !Array.isArray(knowledge.sources) || knowledge.sources.length === 0) {
+      return false;
+    }
+    
+    return knowledge.sources.every(source =>
+      source && ['loot_chest', 'loot_structure'].includes(source.type)
+    );
+  }
+  
+  resolveGatherTargets(itemName) {
+    const blockNames = resolveBlockGatherTargets(this.bot, itemName);
+    if (!blockNames || blockNames.length === 0) {
+      return null;
+    }
+    
+    const inventoryItems = this.getInventoryAliases(itemName);
+    const toolAction = blockNames.some(name =>
+      name.includes('log') ||
+      name.includes('wood') ||
+      name.includes('stem') ||
+      name.includes('hyphae')
+    ) ? 'logging' : 'mining';
+    
+    return {
+      blockNames: Array.from(new Set(blockNames)),
+      inventoryItems,
+      toolAction
+    };
+  }
+  
+  getInventoryAliases(itemName) {
+    const aliases = DIRECT_GATHER_INVENTORY_ALIASES[itemName];
+    if (aliases && aliases.length > 0) {
+      return Array.from(new Set(aliases));
+    }
+    return [itemName];
+  }
+  
+  countInventoryItems(itemNames) {
+    const targets = Array.isArray(itemNames) ? itemNames : [itemNames];
+    const validTargets = new Set(targets.filter(Boolean));
+    if (validTargets.size === 0 || !this.bot?.inventory) {
+      return 0;
+    }
+    
+    const items = this.bot.inventory.items();
+    let total = 0;
+    
+    for (const item of items) {
+      if (item && validTargets.has(item.name)) {
+        total += item.count;
+      }
+    }
+    
+    return total;
+  }
+  
+  getCurrentDimension() {
+    return normalizeDimensionName(this.bot?.game?.dimension);
+  }
+  
+  async directGatherItem(itemName, quantity) {
+    if (!this.worldKnowledge) {
+      return false;
+    }
+    
+    if (!this.bot?.entity?.position) {
+      console.log(`[HUNTER] ⚠️ Bot position unavailable for direct gathering`);
+      return false;
+    }
+    
+    const targets = this.resolveGatherTargets(itemName);
+    if (!targets) {
+      return false;
+    }
+    
+    console.log(`[HUNTER] 🗺️ Using world knowledge for direct gathering of ${itemName}`);
+    
+    this.worldKnowledge.ensureTracking(targets.blockNames);
+    await this.worldKnowledge.scanForBlocks(targets.blockNames, 48);
+    
+    const startCount = this.countInventoryItems(targets.inventoryItems);
+    if (startCount >= quantity) {
+      console.log(`[HUNTER] ✅ Already carrying ${startCount}x ${itemName}`);
+      return true;
+    }
+    
+    let attempts = 0;
+    let scanRadius = 48;
+    const requiredAmount = Math.max(quantity - startCount, 1);
+    const maxAttempts = Math.max(requiredAmount * 6, 12);
+    const dimension = this.getCurrentDimension();
+    
+    while (attempts < maxAttempts) {
+      const currentCount = this.countInventoryItems(targets.inventoryItems);
+      if (currentCount >= quantity) {
+        console.log(`[HUNTER] ✅ Direct gather completed for ${itemName} (${currentCount}/${quantity})`);
+        return true;
+      }
+      
+      let entry = this.worldKnowledge.getNearestBlock(targets.blockNames, this.bot.entity.position, dimension);
+      
+      if (!entry) {
+        await this.worldKnowledge.scanForBlocks(targets.blockNames, scanRadius);
+        scanRadius = Math.min(scanRadius + 16, 160);
+        attempts++;
+        continue;
+      }
+      
+      const mined = await this.mineBlockEntry(entry, targets);
+      attempts++;
+      
+      if (!mined) {
+        this.worldKnowledge.forgetBlock(entry.blockName, entry.position, entry.dimension);
+        continue;
+      }
+      
+      await this.sleep(800);
+      await this.worldKnowledge.scanForBlocks(targets.blockNames, 24);
+    }
+    
+    const currentCount = this.countInventoryItems(targets.inventoryItems);
+    const collected = Math.max(0, currentCount - startCount);
+    
+    if (currentCount >= quantity) {
+      console.log(`[HUNTER] ✅ Direct gather completed for ${itemName} (${currentCount}/${quantity})`);
+      return true;
+    }
+    
+    console.log(`[HUNTER] ⚠️ Direct gather collected ${collected} (total ${currentCount}/${quantity}) ${itemName}`);
+    return false;
+  }
+  
+  async mineBlockEntry(entry, targets) {
+    if (!entry || !entry.position) {
+      return false;
+    }
+    
+    const position = entry.position.clone ? entry.position.clone() : new Vec3(entry.position.x, entry.position.y, entry.position.z);
+    let block = this.bot.blockAt(position);
+    
+    if (!block || block.name !== entry.blockName) {
+      this.worldKnowledge.forgetBlock(entry.blockName, position, entry.dimension);
+      return false;
+    }
+    
+    const action = targets.toolAction || 'mining';
+    if (this.bot.toolSelector) {
+      const equipped = await this.bot.toolSelector.equipToolForAction(action);
+      if (!equipped && action !== 'mining') {
+        await this.bot.toolSelector.equipToolForAction('mining');
+      }
+    }
+    
+    try {
+      await safeGoTo(this.bot, position, 60000);
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Failed to reach ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}: ${err.message}`);
+      return false;
+    }
+    
+    block = this.bot.blockAt(position);
+    if (!block || block.name !== entry.blockName) {
+      this.worldKnowledge.forgetBlock(entry.blockName, position, entry.dimension);
+      return false;
+    }
+    
+    try {
+      await this.bot.dig(block);
+      return true;
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Failed to mine ${entry.blockName}: ${err.message}`);
+      return false;
+    }
+  }
+  
+  async findItemViaStrategies(itemName, quantity, knowledge) {
+    const resolvedKnowledge = knowledge || ITEM_KNOWLEDGE[itemName];
+    if (!resolvedKnowledge) {
       return this.guessStrategy(itemName, quantity);
     }
     
-    // Check if crafted - get components first
-    if (knowledge.type === 'crafted') {
-      return this.recursiveGather(knowledge.recipe, quantity);
+    if (resolvedKnowledge.type === 'crafted') {
+      return this.recursiveGather(resolvedKnowledge.recipe, quantity);
     }
     
-    // Evaluate all source strategies
-    const strategies = knowledge.sources.map(source => ({
+    const strategies = resolvedKnowledge.sources.map(source => ({
       source,
       score: this.scoreStrategy(source),
       estimatedTime: this.estimateTime(source, quantity),
@@ -14602,7 +15247,6 @@ class ItemHunter {
       currentFeasibility: this.checkFeasibility(source)
     }));
     
-    // Pick best available strategy
     const availableStrategies = strategies.filter(s => s.currentFeasibility);
     if (availableStrategies.length === 0) {
       console.log(`[HUNTER] ❌ No feasible strategies found for ${itemName}`);
@@ -20155,11 +20799,11 @@ try {
     }
     
     const { itemName, quantity } = request;
-    
-    // Check if we have knowledge about this item
     const knowledge = ITEM_KNOWLEDGE[itemName];
-    if (!knowledge) {
-      // Find similar items
+    const canDirectGather = this.itemHunter.shouldUseDirectGather(itemName, knowledge);
+    
+    if (!knowledge && !canDirectGather) {
+      // Find similar items when we can't directly gather it
       const similarItems = Object.keys(ITEM_KNOWLEDGE).filter(key => 
         key.toLowerCase().includes(itemName.toLowerCase()) || 
         itemName.toLowerCase().includes(key.toLowerCase())
@@ -20174,12 +20818,14 @@ try {
       return;
     }
     
+    const strategyText = knowledge?.optimal_strategy || `Direct pathfinding to known ${itemName} locations`;
+    
     // Announce the hunt
     this.bot.chat(`[HUNTER] 🔍 Starting hunt for ${quantity}x ${itemName} for ${username}!`);
-    this.bot.chat(`[HUNTER] 📋 Strategy: ${knowledge.optimal_strategy}`);
+    this.bot.chat(`[HUNTER] 📋 Strategy: ${strategyText}`);
     
     // Start the hunt in background
-    this.huntForItem(username, itemName, quantity, knowledge);
+    this.huntForItem(username, itemName, quantity, knowledge || null);
   }
   
   async huntForItem(requester, itemName, quantity, knowledge) {
@@ -20195,11 +20841,11 @@ try {
          this.bot.chat(`[HUNTER] ✅ Success! Found ${count}x ${itemName} for ${requester}`);
 
          // If crafted item, announce crafting completion
-         if (knowledge.type === 'crafted') {
+         if (knowledge && knowledge.type === 'crafted') {
            this.bot.chat(`[HUNTER] 🎨 Successfully crafted ${itemName}!`);
          }
        } else {
-         this.bot.chat(`[HUNTER] ⚠️ Hunt completed but only found ${count}/${quantity} ${itemName}`);
+
        }
      } else {
        this.bot.chat(`[HUNTER] ❌ Failed to find ${itemName} for ${requester}. Try a different approach?`);
