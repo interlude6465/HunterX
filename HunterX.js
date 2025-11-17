@@ -7653,9 +7653,19 @@ class DefenseOperation {
     
     // Navigate to home base
     try {
+      // Record action start for loop detection
+      if (this.bot.loopDetector) {
+        this.bot.loopDetector.recordAction('pathfinding_home', true, { destination: 'home_base' });
+      }
+      
       await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
         this.homeBase.x, this.homeBase.y, this.homeBase.z), this.getRoleDistance()
       ));
+      
+      // Record action success
+      if (this.bot.loopDetector) {
+        this.bot.loopDetector.recordAction('pathfinding_home', true, { status: 'arrived' });
+      }
       
       this.sendStatus('arrived');
       
@@ -7672,6 +7682,11 @@ class DefenseOperation {
           break;
       }
     } catch (err) {
+      // Record action failure for loop detection
+      if (this.bot.loopDetector) {
+        this.bot.loopDetector.recordAction('pathfinding_home', false, { error: err.message });
+      }
+      
       console.log(`[DEFENSE] Navigation error: ${err.message}`);
       this.sendStatus('failed');
     }
@@ -7731,7 +7746,18 @@ class DefenseOperation {
     );
     
     try {
+      // Record action start for loop detection
+      if (this.bot.loopDetector) {
+        this.bot.loopDetector.recordAction('pathfinding_flank', true, { destination: 'flank_position' });
+      }
+      
       await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(flankPos.x, flankPos.y, flankPos.z), 5));
+      
+      // Record action success
+      if (this.bot.loopDetector) {
+        this.bot.loopDetector.recordAction('pathfinding_flank', true, { status: 'arrived_flank' });
+      }
+      
       this.sendStatus('engaged');
       
       // Attack from flank
@@ -7743,6 +7769,11 @@ class DefenseOperation {
       
       await this.monitorCombat(attacker);
     } catch (err) {
+      // Record action failure for loop detection
+      if (this.bot.loopDetector) {
+        this.bot.loopDetector.recordAction('pathfinding_flank', false, { error: err.message });
+      }
+      
       console.log(`[DEFENSE] Flanking error: ${err.message}`);
     }
   }
@@ -18374,6 +18405,11 @@ class BaritoneMiner {
     }
     
     try {
+      // Record action start for loop detection
+      if (this.bot.loopDetector) {
+        this.bot.loopDetector.recordAction('mining', true, { block: block.name, position: blockPos });
+      }
+      
       // Equip best tool for the block
       await this.equipBestTool(block);
       
@@ -18383,9 +18419,19 @@ class BaritoneMiner {
       // Mine it
       await this.bot.dig(block, true); // true = force dig even if no tool
       
+      // Record action success
+      if (this.bot.loopDetector) {
+        this.bot.loopDetector.recordAction('mining', true, { status: 'success', block: block.name });
+      }
+      
       console.log(`[MINE] ✓ Mined ${block.name}`);
       return true;
     } catch (error) {
+      // Record action failure for loop detection
+      if (this.bot.loopDetector) {
+        this.bot.loopDetector.recordAction('mining', false, { block: block.name, error: error.message });
+      }
+      
       console.log(`[MINE] Failed to mine: ${error.message}`);
       return false;
     }
@@ -20668,6 +20714,67 @@ try {
       const behavior = shouldEnable ? 'will NOT leave' : 'will leave';
       this.bot.chat(`[STAY] Stay mode ${status} - Bot ${behavior} when in danger`);
       console.log(`[STAY] Stay mode ${status} by ${username}`);
+      return;
+    }
+    
+    // Loop Detection Commands
+    if (lower.startsWith('!loop')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        denyCommand("Only trusted+ can control loop detection!", 'blocked_loop_permissions');
+        return;
+      }
+      
+      const match = lower.match(/^!loop\s+(on|off|status|stats|reset)\b/);
+      if (!match) {
+        this.bot.chat("Usage: !loop on|off|status|stats|reset");
+        return;
+      }
+      
+      const action = match[1];
+      
+      if (!this.bot.loopDetector) {
+        this.bot.chat("[LOOP_DETECT] Loop detection system not available!");
+        return;
+      }
+      
+      switch (action) {
+        case 'status':
+          const enabled = this.bot.loopDetector.enabled;
+          const status = enabled ? 'ENABLED' : 'DISABLED';
+          this.bot.chat(`[LOOP_DETECT] Loop detection: ${status}`);
+          break;
+          
+        case 'on':
+          this.bot.loopDetector.setEnabled(true);
+          this.bot.chat("[LOOP_DETECT] Loop detection ENABLED");
+          console.log(`[LOOP_DETECT] Enabled by ${username}`);
+          break;
+          
+        case 'off':
+          this.bot.loopDetector.setEnabled(false);
+          this.bot.chat("[LOOP_DETECT] Loop detection DISABLED");
+          console.log(`[LOOP_DETECT] Disabled by ${username}`);
+          break;
+          
+        case 'stats':
+          const stats = this.bot.loopDetector.getStats();
+          this.bot.chat(`[LOOP_DETECT] Statistics:`);
+          this.bot.chat(`  Loops detected: ${stats.loopsDetected}`);
+          this.bot.chat(`  Spinning: ${stats.spinningDetected}`);
+          this.bot.chat(`  Stuck: ${stats.stuckDetected}`);
+          this.bot.chat(`  Repeating failures: ${stats.repeatingFailures}`);
+          this.bot.chat(`  Recovery attempts: ${stats.recoveryAttempts}`);
+          this.bot.chat(`  Successful recoveries: ${stats.successfulRecoveries}`);
+          this.bot.chat(`  Current action: ${stats.currentAction || 'none'}`);
+          this.bot.chat(`  Failure count: ${stats.failureCount}`);
+          break;
+          
+        case 'reset':
+          this.bot.loopDetector.resetTracking();
+          this.bot.chat("[LOOP_DETECT] Loop detection tracking reset");
+          console.log(`[LOOP_DETECT] Tracking reset by ${username}`);
+          break;
+      }
       return;
     }
     
@@ -29909,13 +30016,31 @@ class BotSpawner {
            ...options,
            username: username
          });
-         this.reconnectManagers.set(username, reconnectManager);
-         console.log(`[SPAWNER] AutoReconnectManager initialized for ${username}`);
-       }
-     }
+          this.reconnectManagers.set(username, reconnectManager);
+          console.log(`[SPAWNER] AutoReconnectManager initialized for ${username}`);
+        }
+      }
 
-     // Handle disconnect with auto-reconnect
-     const handleDisconnect = async (reason) => {
+      // Initialize LoopDetector for this bot
+      const loopDetector = new LoopDetector(bot);
+      bot.loopDetector = loopDetector; // Attach to bot instance for easy access
+      
+      // Start loop detection when bot spawns
+      bot.once('spawn', () => {
+        console.log(`[LOOP_DETECT] Initializing loop detection for ${username}`);
+        loopDetector.start();
+      });
+
+      // Stop loop detection when bot disconnects
+      bot.once('end', () => {
+        if (loopDetector) {
+          loopDetector.stop();
+          console.log(`[LOOP_DETECT] Loop detection stopped for ${username}`);
+        }
+      });
+
+      // Handle disconnect with auto-reconnect
+      const handleDisconnect = async (reason) => {
        console.log(`[RECONNECT] ${username} disconnected: ${reason}`);
 
        // Save bot state before disconnect
@@ -30494,6 +30619,424 @@ class AutoReconnectManager {
       lastPosition: this.lastPosition,
       lastHealth: this.lastHealth
     };
+  }
+}
+
+// === INFINITE LOOP DETECTION SYSTEM ===
+class LoopDetector {
+  constructor(bot) {
+    this.bot = bot;
+    this.positionHistory = [];
+    this.actionHistory = [];
+    this.velocityHistory = [];
+    this.maxHistorySize = 20;
+    this.stuckThreshold = 5; // seconds
+    this.stuckDistance = 1; // blocks
+    this.spinThreshold = 5; // blocks radius for circular movement
+    this.failureThreshold = 3; // consecutive failures
+    this.velocityThreshold = 0.1; // near-zero velocity
+    this.noProgressTime = 3000; // 3 seconds of no progress
+    this.lastSignificantMovement = Date.now();
+    this.retryCount = 0;
+    this.maxRetries = 3;
+    this.currentAction = null;
+    this.lastFailedAction = null;
+    this.failureCount = 0;
+    this.tickInterval = null;
+    this.enabled = true;
+    
+    // Statistics
+    this.stats = {
+      loopsDetected: 0,
+      spinningDetected: 0,
+      stuckDetected: 0,
+      repeatingFailures: 0,
+      recoveryAttempts: 0,
+      successfulRecoveries: 0
+    };
+  }
+
+  // Start the loop detection system
+  start() {
+    if (this.tickInterval) return;
+    
+    this.tickInterval = setInterval(() => {
+      if (this.enabled && this.bot.entity) {
+        this.tick();
+      }
+    }, 100); // Check every 100ms for responsive detection
+    
+    console.log('[LOOP_DETECT] Loop detection system started');
+  }
+
+  // Stop the loop detection system
+  stop() {
+    if (this.tickInterval) {
+      clearInterval(this.tickInterval);
+      this.tickInterval = null;
+    }
+    console.log('[LOOP_DETECT] Loop detection system stopped');
+  }
+
+  // Enable/disable detection
+  setEnabled(enabled) {
+    this.enabled = enabled;
+    console.log(`[LOOP_DETECT] Loop detection ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  // Main detection tick
+  tick() {
+    try {
+      // Record current state
+      this.recordPosition();
+      this.recordVelocity();
+      
+      // Check for various loop conditions
+      if (this.isSpinning()) {
+        this.handleSpinning();
+        return;
+      }
+      
+      if (this.isStuck()) {
+        this.handleStuck();
+        return;
+      }
+      
+      if (this.isRepeatingFailure()) {
+        this.handleRepeatingFailure();
+        return;
+      }
+      
+      // Check for lack of progress
+      if (this.hasNoProgress()) {
+        this.handleNoProgress();
+      }
+      
+    } catch (error) {
+      console.error('[LOOP_DETECT] Error in detection tick:', error.message);
+    }
+  }
+
+  // Record current position
+  recordPosition() {
+    if (!this.bot.entity || !this.bot.entity.position) return;
+    
+    const position = this.bot.entity.position.clone();
+    this.positionHistory.push(position);
+    
+    if (this.positionHistory.length > this.maxHistorySize) {
+      this.positionHistory.shift();
+    }
+  }
+
+  // Record current velocity
+  recordVelocity() {
+    if (!this.bot.entity || !this.bot.entity.velocity) return;
+    
+    const velocity = this.bot.entity.velocity.clone();
+    this.velocityHistory.push(velocity);
+    
+    if (this.velocityHistory.length > this.maxHistorySize) {
+      this.velocityHistory.shift();
+    }
+  }
+
+  // Record action attempt
+  recordAction(actionType, success = true, details = null) {
+    const action = {
+      type: actionType,
+      success: success,
+      timestamp: Date.now(),
+      details: details
+    };
+    
+    this.actionHistory.push(action);
+    if (this.actionHistory.length > this.maxHistorySize) {
+      this.actionHistory.shift();
+    }
+    
+    this.currentAction = actionType;
+    
+    if (!success) {
+      if (this.lastFailedAction === actionType) {
+        this.failureCount++;
+      } else {
+        this.lastFailedAction = actionType;
+        this.failureCount = 1;
+      }
+    } else {
+      this.failureCount = 0;
+      this.retryCount = 0;
+    }
+  }
+
+  // Detect spinning/circular movement
+  isSpinning() {
+    if (this.positionHistory.length < 10) return false;
+    
+    const recent = this.positionHistory.slice(-10);
+    const center = this.calculateCenter(recent);
+    
+    // Check if positions form a circle (all within threshold radius from center)
+    const maxDistance = Math.max(...recent.map(pos => pos.distanceTo(center)));
+    const minDistance = Math.min(...recent.map(pos => pos.distanceTo(center)));
+    
+    // Spinning if moving in a small circular pattern
+    return maxDistance < this.spinThreshold && minDistance > 0.5 && 
+           recent.some((pos, i) => i > 0 && pos.distanceTo(recent[i-1]) > 0.1);
+  }
+
+  // Detect stuck position (no movement)
+  isStuck() {
+    if (this.positionHistory.length < 50) return false; // Need 5 seconds of data (50 * 100ms)
+    
+    const recent = this.positionHistory.slice(-50);
+    const oldest = recent[0];
+    
+    // Check if hasn't moved more than stuckDistance
+    const maxDistance = Math.max(...recent.map(pos => pos.distanceTo(oldest)));
+    return maxDistance < this.stuckDistance;
+  }
+
+  // Detect repeating action failures
+  isRepeatingFailure() {
+    return this.failureCount >= this.failureThreshold;
+  }
+
+  // Detect lack of forward progress
+  hasNoProgress() {
+    if (this.velocityHistory.length < 30) return false; // Need 3 seconds of data
+    
+    const recent = this.velocityHistory.slice(-30);
+    const avgVelocity = recent.reduce((sum, vel) => 
+      sum + Math.sqrt(vel.x * vel.x + vel.z * vel.z), 0) / recent.length;
+    
+    return avgVelocity < this.velocityThreshold;
+  }
+
+  // Calculate center point of positions
+  calculateCenter(positions) {
+    const sum = positions.reduce((acc, pos) => ({
+      x: acc.x + pos.x,
+      y: acc.y + pos.y,
+      z: acc.z + pos.z
+    }), { x: 0, y: 0, z: 0 });
+    
+    return new Vec3(
+      sum.x / positions.length,
+      sum.y / positions.length,
+      sum.z / positions.length
+    );
+  }
+
+  // Handle spinning detection
+  handleSpinning() {
+    this.stats.spinningDetected++;
+    this.stats.loopsDetected++;
+    
+    console.log('[LOOP_DETECT] 🌀 Spinning detected! Bot is moving in circles.');
+    console.log(`[LOOP_DETECT] Position: ${this.bot.entity.position.toString()}`);
+    
+    this.attemptRecovery('spinning');
+  }
+
+  // Handle stuck detection
+  handleStuck() {
+    this.stats.stuckDetected++;
+    this.stats.loopsDetected++;
+    
+    console.log('[LOOP_DETECT] 🚫 Bot stuck! No significant movement for 5+ seconds.');
+    console.log(`[LOOP_DETECT] Position: ${this.bot.entity.position.toString()}`);
+    
+    this.attemptRecovery('stuck');
+  }
+
+  // Handle repeating failure detection
+  handleRepeatingFailure() {
+    this.stats.repeatingFailures++;
+    this.stats.loopsDetected++;
+    
+    console.log(`[LOOP_DETECT] ❌ Repeating failure detected! Action "${this.lastFailedAction}" failed ${this.failureCount} times.`);
+    
+    this.attemptRecovery('failure');
+  }
+
+  // Handle no progress detection
+  handleNoProgress() {
+    console.log('[LOOP_DETECT] ⏸️ No forward progress detected for 3+ seconds.');
+    
+    this.attemptRecovery('no_progress');
+  }
+
+  // Attempt recovery from detected loop
+  async attemptRecovery(type) {
+    this.stats.recoveryAttempts++;
+    
+    try {
+      console.log(`[LOOP_DETECT] 🔄 Attempting recovery for: ${type}`);
+      
+      // Stop current pathfinder goal
+      if (this.bot.pathfinder) {
+        this.bot.pathfinder.stop();
+      }
+      
+      // Stop any current controls
+      this.bot.clearControlStates();
+      
+      switch (type) {
+        case 'spinning':
+          await this.recoverFromSpinning();
+          break;
+        case 'stuck':
+          await this.recoverFromStuck();
+          break;
+        case 'failure':
+          await this.recoverFromFailure();
+          break;
+        case 'no_progress':
+          await this.recoverFromNoProgress();
+          break;
+      }
+      
+      this.stats.successfulRecoveries++;
+      console.log('[LOOP_DETECT] ✅ Recovery completed successfully');
+      
+    } catch (error) {
+      console.error('[LOOP_DETECT] ❌ Recovery failed:', error.message);
+      
+      // If recovery fails, try more drastic measures
+      if (this.retryCount < this.maxRetries) {
+        this.retryCount++;
+        console.log(`[LOOP_DETECT] 🔄 Retrying recovery (${this.retryCount}/${this.maxRetries})`);
+        
+        setTimeout(() => {
+          this.attemptRecovery(type);
+        }, 1000);
+      } else {
+        console.log('[LOOP_DETECT] ❌ Max retries reached, aborting current task');
+        this.abortCurrentTask();
+      }
+    }
+  }
+
+  // Recover from spinning
+  async recoverFromSpinning() {
+    console.log('[LOOP_DETECT] Recovering from spin: Jump and move in random direction');
+    
+    // Jump to unstick
+    this.bot.setControlState('jump', true);
+    await this.sleep(200);
+    this.bot.setControlState('jump', false);
+    
+    // Move in random direction
+    const directions = ['forward', 'back', 'left', 'right'];
+    const randomDirection = directions[Math.floor(Math.random() * directions.length)];
+    
+    this.bot.setControlState(randomDirection, true);
+    await this.sleep(500);
+    this.bot.setControlState(randomDirection, false);
+  }
+
+  // Recover from being stuck
+  async recoverFromStuck() {
+    console.log('[LOOP_DETECT] Recovering from stuck: Jump and move sideways');
+    
+    // Jump multiple times
+    for (let i = 0; i < 3; i++) {
+      this.bot.setControlState('jump', true);
+      await this.sleep(300);
+      this.bot.setControlState('jump', false);
+      await this.sleep(200);
+    }
+    
+    // Try moving sideways and backward
+    this.bot.setControlState('right', true);
+    await this.sleep(300);
+    this.bot.setControlState('right', false);
+    
+    this.bot.setControlState('back', true);
+    await this.sleep(500);
+    this.bot.setControlState('back', false);
+  }
+
+  // Recover from repeating failure
+  async recoverFromFailure() {
+    console.log('[LOOP_DETECT] Recovering from failure: Changing strategy');
+    
+    // Abort current task if it exists
+    if (this.bot.currentTask) {
+      console.log(`[LOOP_DETECT] Aborting task: ${this.bot.currentTask.type || 'unknown'}`);
+      this.bot.currentTask.abort();
+    }
+    
+    // Reset failure tracking
+    this.failureCount = 0;
+    this.lastFailedAction = null;
+    
+    // Move away from current position
+    await this.recoverFromStuck();
+  }
+
+  // Recover from no progress
+  async recoverFromNoProgress() {
+    console.log('[LOOP_DETECT] Recovering from no progress: Sprint forward');
+    
+    // Try sprinting forward
+    this.bot.setControlState('sprint', true);
+    this.bot.setControlState('forward', true);
+    
+    await this.sleep(1000);
+    
+    this.bot.setControlState('sprint', false);
+    this.bot.setControlState('forward', false);
+  }
+
+  // Abort current task
+  abortCurrentTask() {
+    if (this.bot.currentTask) {
+      console.log('[LOOP_DETECT] 🛑 Aborting current task due to persistent loops');
+      
+      // Call task's abort method if available
+      if (typeof this.bot.currentTask.abort === 'function') {
+        this.bot.currentTask.abort();
+      }
+      
+      // Clear task reference
+      this.bot.currentTask = null;
+    }
+    
+    // Reset all tracking
+    this.resetTracking();
+  }
+
+  // Reset tracking variables
+  resetTracking() {
+    this.positionHistory = [];
+    this.actionHistory = [];
+    this.velocityHistory = [];
+    this.retryCount = 0;
+    this.currentAction = null;
+    this.lastFailedAction = null;
+    this.failureCount = 0;
+    this.lastSignificantMovement = Date.now();
+  }
+
+  // Get detection statistics
+  getStats() {
+    return {
+      ...this.stats,
+      enabled: this.enabled,
+      currentAction: this.currentAction,
+      failureCount: this.failureCount,
+      retryCount: this.retryCount,
+      positionHistorySize: this.positionHistory.length,
+      actionHistorySize: this.actionHistory.length
+    };
+  }
+
+  // Utility sleep function
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
