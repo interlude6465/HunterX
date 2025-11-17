@@ -16543,7 +16543,7 @@ const COMMAND_DEFINITIONS = [
   ...[
     { key: 'help', triggers: ['help', 'need help', 'help me', 'help at'], usage: '!help <x> <y> <z>', commandTemplate: '!help' },
     { key: 'swarmStatus', triggers: ['swarm status', 'swarm info'], usage: '!swarm status' },
-    { key: 'spawnBots', triggers: ['spawn', 'spawn bots', 'spawn more', 'spawn bot'], usage: '!spawn <count>', minTrust: 'admin' },
+    { key: 'spawnBots', triggers: ['spawn', 'spawn bots', 'spawn more', 'spawn bot'], usage: '!spawn <count>', minTrust: 'admin', commandTemplate: '!spawn bots' },
     { key: 'stopAction', triggers: ['stop', 'halt', 'cease'], usage: '!stop', commandTemplate: '!stop' },
     { key: 'statusReport', triggers: ['status report'], usage: 'status report', minTrust: 'trusted' },
     { key: 'swarmTest', triggers: ['test bot', 'test bots', 'swarm test'], usage: '!test bot', minTrust: 'admin', commandTemplate: '!test bot' }
@@ -17733,11 +17733,16 @@ try {
     const whitelistEntry = findWhitelistEntry(username);
     const trustLevel = whitelistEntry ? (whitelistEntry.level || 'guest') : (bypassTrust ? 'owner' : null);
     const sendReply = typeof options.reply === 'function' ? options.reply : null;
+    const parsedCommand = options.parsedCommand || null;
+    const commandDefinition = options.commandDefinition || (parsedCommand ? parsedCommand.definition : null);
+    const commandKey = commandDefinition ? commandDefinition.key : null;
+    let activeCommandKey = commandKey;
+    const matchesCommand = (...keys) => activeCommandKey && keys.some(key => key === activeCommandKey);
     let outcome = 'no_action';
     let error = null;
 
     const respond = (success, text) => {
-      if (!text) return;
+
       if (source === 'chat') {
         this.bot.chat(text);
       } else if (sendReply) {
@@ -17753,9 +17758,19 @@ try {
 
     console.log(`[CMD_DEBUG][COMMAND] (${source}) Processing command from ${username}: ${message} | trust=${trustLevel || 'none'} | bypass=${bypassTrust}`);
 
-    this._activeCommandContext = { username, bypassTrust, source, respond, setOutcome };
-    this._activeCommandContext.parsedCommand = options.parsedCommand || null;
-    this._activeCommandContext.commandDefinition = options.commandDefinition || null;
+    this._activeCommandContext = {
+      username,
+      bypassTrust,
+      source,
+      respond,
+      setOutcome,
+      parsedCommand,
+      commandDefinition
+    };
+
+    if (!activeCommandKey && commandDefinition) {
+      activeCommandKey = commandDefinition.key;
+    }
 
     const commandExecutor = async () => {
       if (!bypassTrust && !whitelistEntry) {
@@ -17776,7 +17791,7 @@ try {
       };
     
     // Status report command
-    if (lower.includes('status report')) {
+    if (matchesCommand('statusReport') || lower.includes('status report')) {
       console.log(`[CMD_DEBUG][COMMAND] Status report requested by ${username}`);
       const snapshot = await this.getBotStatusSnapshot(username);
       const report = this.formatStatusReport(snapshot, username);
@@ -17803,7 +17818,7 @@ try {
     }
     
     // Bot location command
-    if (lower.includes('where are you')) {
+    if (matchesCommand('botLocation') || lower.includes('where are you')) {
       console.log(`[CMD_DEBUG][COMMAND] Location request by ${username}`);
       const snapshot = await this.getBotStatusSnapshot(username);
       const report = this.formatLocationReport(snapshot, username);
@@ -17829,7 +17844,7 @@ try {
     }
     
     // Player location command
-    if (lower.includes('what is my location') || lower.includes('where am i') || lower.includes('my location')) {
+    if (matchesCommand('playerLocation') || lower.includes('what is my location') || lower.includes('where am i') || lower.includes('my location')) {
       console.log(`[CMD_DEBUG][COMMAND] Player location request by ${username}`);
       
       const player = this.bot.players[username];
@@ -17861,12 +17876,12 @@ try {
       return;
     }
     
-    if (lower.startsWith('!status')) {
+    if (matchesCommand('escapeStatus') || lower.startsWith('!status')) {
       this.broadcastEscapeStatus(true);
       return;
     }
     
-    if (lower.startsWith('!escape')) {
+    if (matchesCommand('escapeToggle') || lower.startsWith('!escape')) {
       if (!this.hasTrustLevel(username, 'trusted')) {
         denyCommand("Only trusted+ can modify escape behavior!", 'blocked_escape_permissions');
         return;
@@ -17892,7 +17907,7 @@ try {
       return;
     }
     
-    if (lower.startsWith('!stay') || lower.startsWith('!dontleave')) {
+    if (matchesCommand('stayToggle') || lower.startsWith('!stay') || lower.startsWith('!dontleave')) {
       if (!this.hasTrustLevel(username, 'trusted')) {
         denyCommand("Only trusted+ can modify escape behavior!", 'blocked_escape_permissions');
         return;
@@ -18188,7 +18203,7 @@ try {
     }
     
     // Help/Backup command
-    if (lower.includes('!help') || lower.includes('help at') || lower.includes('need help')) {
+    if (matchesCommand('help') || lower.includes('!help') || lower.includes('help at') || lower.includes('need help')) {
       const coords = this.extractCoords(message);
 
       if (coords) {
@@ -18215,7 +18230,7 @@ try {
     }
 
     // Spawn more bots command
-    if (lower.includes('spawn') && (lower.includes('bot') || lower.includes('more'))) {
+    if (matchesCommand('spawnBots') || (lower.includes('spawn') && (lower.includes('bot') || lower.includes('more')))) {
       if (!this.hasTrustLevel(username, 'admin')) {
         denyCommand("Only admin+ can spawn more bots!", 'blocked_bot_spawn');
         return;
@@ -18264,7 +18279,7 @@ try {
     }
     
     // Test spawned bots command
-    if (lower.includes('!test') && lower.includes('bot')) {
+    if (matchesCommand('swarmTest') || (lower.includes('!test') && lower.includes('bot'))) {
       if (!this.hasTrustLevel(username, 'admin')) {
         denyCommand("Only admin+ can test bots!", 'blocked_bot_test');
         return;
@@ -18291,7 +18306,7 @@ try {
     }
 
     // Swarm status command
-    if (lower.includes('!swarm status') || lower.includes('swarm info')) {
+    if (matchesCommand('swarmStatus') || lower.includes('!swarm status') || lower.includes('swarm info')) {
       if (globalSwarmCoordinator && globalBotSpawner) {
         const spawnerStatus = globalBotSpawner.getStatus();
         const swarmStatus = globalSwarmCoordinator.getSwarmStatus();
@@ -18608,7 +18623,7 @@ try {
     }
     
     // Attack command
-    if (lower.includes('!attack')) {
+    if (matchesCommand('attack') || lower.includes('!attack')) {
       const targetPlayer = this.extractPlayerName(message);
       if (targetPlayer) {
         const target = Object.values(this.bot.entities).find(e => 
@@ -18663,7 +18678,7 @@ try {
     }
     
     // Goto command
-    if (lower.includes('!goto')) {
+    if (matchesCommand('goto') || lower.includes('!goto')) {
       const coords = this.extractCoords(message);
       if (coords) {
         console.log(`[EXEC] Going to: ${coords.x} ${coords.y} ${coords.z}`);
@@ -18690,7 +18705,7 @@ try {
     }
     
     // Stop command
-    if (lower.includes('!stop')) {
+    if (matchesCommand('stopAction') || lower.includes('!stop')) {
       console.log(`[EXEC] Stopping current action`);
       this.bot.chat(`🛑 Stopping current action`);
       
