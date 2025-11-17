@@ -2576,6 +2576,272 @@ async function safeGoTo(bot, position, timeout = 60000) {
   }
 }
 
+// === SMART MINING NAVIGATION (Fix for underground ore pathfinding) ===
+async function smartMineGoTo(bot, targetPosition, timeout = 120000) {
+  if (!bot.pathfinder) {
+    throw new Error('Pathfinder plugin not loaded');
+  }
+  
+  if (!targetPosition || !targetPosition.x || !targetPosition.y || !targetPosition.z) {
+    throw new Error('Invalid target position');
+  }
+  
+  console.log(`[SMART_MINING] 🎯 Starting smart navigation to ${targetPosition.x}, ${targetPosition.y}, ${targetPosition.z}`);
+  
+  // First, try standard pathfinding
+  try {
+    console.log(`[SMART_MINING] 🚶 Trying standard pathfinding first...`);
+    await safeGoTo(bot, targetPosition, 30000); // 30 second timeout for standard pathfinding
+    console.log(`[SMART_MINING] ✅ Standard pathfinding successful`);
+    return true;
+  } catch (err) {
+    console.log(`[SMART_MINING] ⚠️ Standard pathfinding failed: ${err.message}`);
+    console.log(`[SMART_MINING] 🔨 Switching to mining mode - will tunnel to target`);
+  }
+  
+  // If standard pathfinding fails, use mining navigation
+  return await mineTunnelToTarget(bot, targetPosition, timeout);
+}
+
+async function mineTunnelToTarget(bot, targetPosition, timeout) {
+  const startPos = bot.entity.position.clone();
+  const targetPos = new Vec3(targetPosition.x, targetPosition.y, targetPosition.z);
+  
+  console.log(`[SMART_MINING] 📍 Starting tunnel from ${startPos.x.toFixed(1)}, ${startPos.y.toFixed(1)}, ${startPos.z.toFixed(1)} to ${targetPos.x.toFixed(1)}, ${targetPos.y.toFixed(1)}, ${targetPos.z.toFixed(1)}`);
+  
+  // Equip best available pickaxe
+  const pickaxe = bot.inventory.items().find(item => 
+    item.name.includes('pickaxe') && 
+    ((item.nbt && item.nbt.enchantments) || true) // Accept any pickaxe
+  );
+  
+  if (pickaxe) {
+    await bot.equip(pickaxe, 'hand');
+    console.log(`[SMART_MINING] ⛏️ Equipped ${pickaxe.name}`);
+  } else {
+    console.log(`[SMART_MINING] ⚠️ No pickaxe found, will try with hand`);
+  }
+  
+  const startTime = Date.now();
+  const maxDistance = startPos.distanceTo(targetPos);
+  let currentPos = startPos.clone();
+  
+  // Strategy 1: Try to get to same Y-level first, then tunnel horizontally
+  if (Math.abs(currentPos.y - targetPos.y) > 3) {
+    console.log(`[SMART_MINING] 📐 Adjusting Y-level from ${currentPos.y.toFixed(1)} to ${targetPos.y.toFixed(1)}`);
+    
+    // Dig down/up vertically first
+    const yDirection = targetPos.y > currentPos.y ? 1 : -1;
+    const yTarget = Math.floor(targetPos.y);
+    
+    while (Math.floor(currentPos.y) !== yTarget) {
+      if (Date.now() - startTime > timeout) {
+        throw new Error('Mining navigation timeout');
+      }
+      
+      const nextY = Math.floor(currentPos.y) + yDirection;
+      const digPos = new Vec3(Math.floor(currentPos.x), nextY, Math.floor(currentPos.z));
+      const block = bot.blockAt(digPos);
+      
+      if (block && block.name !== 'air' && !isFluidBlock(block.name)) {
+        console.log(`[SMART_MINING] 🔨 Mining ${block.name} at Y=${nextY}`);
+        await mineBlockSafely(bot, block);
+      }
+      
+      // Move to the new position
+      try {
+        await bot.pathfinder.goto(new goals.GoalNear(digPos, 1));
+        await sleep(200);
+        currentPos = bot.entity.position.clone();
+      } catch (moveErr) {
+        console.log(`[SMART_MINING] ⚠️ Movement error at Y adjustment: ${moveErr.message}`);
+        // Try to dig a wider path
+        await digWidePath(bot, digPos, bot.entity.position);
+      }
+    }
+  }
+  
+  // Strategy 2: Tunnel horizontally to target X,Z
+  console.log(`[SMART_MINING] 🚇 Tunneling horizontally to target...`);
+  
+  while (currentPos.distanceTo(targetPos) > 2) {
+    if (Date.now() - startTime > timeout) {
+      throw new Error('Mining navigation timeout');
+    }
+    
+    // Calculate next position towards target
+    const direction = targetPos.minus(currentPos).normalize();
+    const nextPos = currentPos.plus(direction.scale(1)); // Move 1 block at a time
+    
+    // Create 3x3 tunnel for head clearance
+    const tunnelPositions = getTunnelPositions(currentPos, nextPos);
+    let minedAny = false;
+    
+    for (const tunnelPos of tunnelPositions) {
+      const block = bot.blockAt(tunnelPos);
+      if (block && block.name !== 'air' && !isFluidBlock(block.name) && canMineBlock(block.name)) {
+        console.log(`[SMART_MINING] 🔨 Mining ${block.name} for tunnel clearance`);
+        await mineBlockSafely(bot, block);
+        minedAny = true;
+      }
+    }
+    
+    // Move forward after clearing path
+    try {
+      const moveGoal = new goals.GoalNear(
+        new Vec3(nextPos.x, nextPos.y, nextPos.z), 
+        1
+      );
+      await bot.pathfinder.goto(moveGoal);
+      await sleep(200);
+      currentPos = bot.entity.position.clone();
+      
+      if (minedAny) {
+        console.log(`[SMART_MINING] 📏 Progress: ${currentPos.distanceTo(targetPos).toFixed(1)}m remaining`);
+      }
+    } catch (moveErr) {
+      console.log(`[SMART_MINING] ⚠️ Movement error: ${moveErr.message}`);
+      console.log(`[SMART_MINING] 🔧 Attempting to clear wider path...`);
+      
+      // Try to clear wider area if stuck
+      const clearPos = new Vec3(
+        Math.floor(nextPos.x),
+        Math.floor(nextPos.y),
+        Math.floor(nextPos.z)
+      );
+      await digWidePath(bot, clearPos, currentPos);
+      
+      // Try movement again
+      try {
+        await bot.pathfinder.goto(new goals.GoalNear(clearPos, 1));
+        currentPos = bot.entity.position.clone();
+      } catch (retryErr) {
+        console.log(`[SMART_MINING] ❌ Still stuck, trying alternate approach...`);
+        
+        // Fallback: Try to approach from a different angle
+        const alternatePos = findAlternateApproach(currentPos, targetPos);
+        if (alternatePos) {
+          console.log(`[SMART_MINING] 🔄 Trying alternate approach via ${alternatePos.x.toFixed(1)}, ${alternatePos.y.toFixed(1)}, ${alternatePos.z.toFixed(1)}`);
+          try {
+            await smartMineGoTo(bot, alternatePos, timeout / 2);
+            await smartMineGoTo(bot, targetPos, timeout / 2);
+            return true;
+          } catch (altErr) {
+            console.log(`[SMART_MINING] ❌ Alternate approach failed: ${altErr.message}`);
+          }
+        }
+        
+        throw new Error(`Cannot reach target: ${moveErr.message}`);
+      }
+    }
+  }
+  
+  console.log(`[SMART_MINING] ✅ Successfully tunneled to target!`);
+  return true;
+}
+
+function getTunnelPositions(from, to) {
+  const positions = [];
+  const fromFloored = from.floored();
+  const toFloored = to.floored();
+  
+  // Create 3x3 tunnel (horizontal plane) + 1 block above for headroom
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = 0; dy <= 2; dy++) { // 0-2 for headroom
+      for (let dz = -1; dz <= 1; dz++) {
+        // Skip corners to make it more efficient (create + shape instead of full 3x3x3)
+        if (Math.abs(dx) === 1 && Math.abs(dz) === 1 && dy === 0) continue;
+        
+        const pos = new Vec3(
+          toFloored.x + dx,
+          toFloored.y + dy,
+          toFloored.z + dz
+        );
+        positions.push(pos);
+      }
+    }
+  }
+  
+  return positions;
+}
+
+function isFluidBlock(blockName) {
+  return ['water', 'lava', 'flowing_water', 'flowing_lava'].includes(blockName);
+}
+
+function canMineBlock(blockName) {
+  // List of blocks that should not be mined (bedrock, etc.)
+  const unmineable = [
+    'bedrock', 'end_portal', 'end_portal_frame', 'air', 
+    'water', 'lava', 'flowing_water', 'flowing_lava',
+    'fire', 'soul_fire'
+  ];
+  return !unmineable.includes(blockName);
+}
+
+async function mineBlockSafely(bot, block) {
+  if (!block || block.name === 'air') {
+    return true;
+  }
+  
+  try {
+    await bot.dig(block);
+    console.log(`[SMART_MINING] ✅ Mined ${block.name}`);
+    return true;
+  } catch (err) {
+    console.log(`[SMART_MINING] ⚠️ Failed to mine ${block.name}: ${err.message}`);
+    return false;
+  }
+}
+
+async function digWidePath(bot, targetPos, currentPos) {
+  console.log(`[SMART_MINING] 🔧 Digging wider path at ${targetPos.x}, ${targetPos.y}, ${targetPos.z}`);
+  
+  // Dig 5x5x5 area around target to clear obstacles
+  for (let dx = -2; dx <= 2; dx++) {
+    for (let dy = -1; dy <= 3; dy++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        const clearPos = new Vec3(
+          Math.floor(targetPos.x) + dx,
+          Math.floor(targetPos.y) + dy,
+          Math.floor(targetPos.z) + dz
+        );
+        
+        const block = bot.blockAt(clearPos);
+        if (block && block.name !== 'air' && !isFluidBlock(block.name) && canMineBlock(block.name)) {
+          await mineBlockSafely(bot, block);
+        }
+      }
+    }
+  }
+}
+
+function findAlternateApproach(currentPos, targetPos) {
+  // Try different approach angles
+  const angles = [45, 90, 135, 180, 225, 270, 315]; // degrees
+  const distance = 10; // Try to go around obstacle
+  
+  for (const angle of angles) {
+    const rad = (angle * Math.PI) / 180;
+    const alternatePos = currentPos.plus(new Vec3(
+      Math.cos(rad) * distance,
+      0, // Stay at same Y level
+      Math.sin(rad) * distance
+    ));
+    
+    // Check if this alternate position is closer to target
+    if (alternatePos.distanceTo(targetPos) < currentPos.distanceTo(targetPos)) {
+      return alternatePos;
+    }
+  }
+  
+  return null;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // === SECURITY HELPERS (Issue #13, #14) ===
 // sanitizeFileName and related helpers are provided by ./utils/pathSecurity
 
@@ -15459,7 +15725,7 @@ class ItemHunter {
     }
     
     try {
-      await safeGoTo(this.bot, position, 60000);
+      await smartMineGoTo(this.bot, position, 120000); // Use smart mining navigation with 2 minute timeout
     } catch (err) {
       console.log(`[HUNTER] ❌ Failed to reach ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}: ${err.message}`);
       return false;
@@ -15764,7 +16030,7 @@ class ItemHunter {
   async travelTo(position) {
     console.log(`[HUNTER] 🚶 Traveling to ${position.x}, ${position.y}, ${position.z}`);
     try {
-      await safeGoTo(this.bot, position, 120000); // 2 minute timeout
+      await smartMineGoTo(this.bot, position, 120000); // Use smart mining navigation
       console.log(`[HUNTER] ✅ Arrived at destination`);
       return true;
     } catch (err) {
@@ -19377,9 +19643,15 @@ try {
     if (lower.includes('go home') || lower.includes('head home')) {
       if (config.homeBase.coords) {
         this.bot.chat(`🏠 Heading home to ${config.homeBase.coords.toString()}`);
-        this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
-          config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 5
-        )).catch(() => {});
+        try {
+          await smartMineGoTo(this.bot, new Vec3(
+            config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 120000);
+        } catch (err) {
+          console.log(`[MOVEMENT] Smart navigation to home failed: ${err.message}`);
+          this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(
+            config.homeBase.coords.x, config.homeBase.coords.y, config.homeBase.coords.z), 5
+          )).catch(() => {});
+        }
       } else {
         this.bot.chat("No home base set! Use 'set home here' first.");
       }
@@ -24975,8 +25247,13 @@ class MovementModeManager {
         console.log('[MOVEMENT] 🔍 Pausing for environment scan');
       }
 
-      // Default: use standard pathfinder
-      this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2)).catch(() => {});
+      // Default: use smart mining navigation for underground targets
+             try {
+               await smartMineGoTo(this.bot, new Vec3(x, y, z), 120000);
+             } catch (err) {
+               console.log(`[MOVEMENT] Smart navigation failed, falling back to standard pathfinder: ${err.message}`);
+               this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2)).catch(() => {});
+             }
 
       // Record outcome after movement attempt
       const travelTime = Date.now() - this.travelStartTime;
