@@ -10611,8 +10611,16 @@ class GearUpSystem {
     const maxAttempts = 100;
     let attempts = 0;
     
+    // INVENTORY MANAGEMENT: Check and clear space before mining
+    await this.manageInventorySpace(5);
+    
     while (mined < quantity && attempts < maxAttempts) {
       attempts++;
+      
+      // INVENTORY MANAGEMENT: Check space every 5 attempts
+      if (attempts > 0 && attempts % 5 === 0) {
+        await this.manageInventorySpace(5);
+      }
       
       const oreBlocks = this.bot.findBlocks({
         matching: oreBlock.id,
@@ -10644,6 +10652,9 @@ class GearUpSystem {
         await this.bot.dig(block);
         mined++;
         console.log(`[GEAR-UP] Mined ${oreName} (${mined}/${quantity})`);
+        
+        // ITEM COLLECTION: Collect dropped items after mining
+        await this.collectNearbyItems(closestOre, 5, 3000);
       } catch (err) {
         console.log(`[GEAR-UP] Failed to mine ${oreName}: ${err.message}`);
       }
@@ -16539,11 +16550,19 @@ class ItemHunter {
     const maxAttempts = Math.max(requiredAmount * 6, 12);
     const dimension = this.getCurrentDimension();
     
+    // INVENTORY MANAGEMENT: Check and clear space before mining
+    await this.manageInventorySpace(5);
+    
     while (attempts < maxAttempts) {
       const currentCount = this.countInventoryItems(targets.inventoryItems);
       if (currentCount >= quantity) {
         console.log(`[HUNTER] ✅ Direct gather completed for ${itemName} (${currentCount}/${quantity})`);
         return true;
+      }
+      
+      // INVENTORY MANAGEMENT: Check space every 5 attempts
+      if (attempts > 0 && attempts % 5 === 0) {
+        await this.manageInventorySpace(5);
       }
       
       let entry = this.worldKnowledge.getNearestBlock(targets.blockNames, this.bot.entity.position, dimension);
@@ -16731,6 +16750,10 @@ class ItemHunter {
         const success = await this.speedOptimizer.mineBlockFast(block);
         if (success) {
           console.log(`[HUNTER] ✅ Successfully mined ${entry.blockName} (FAST MODE)`);
+          
+          // ITEM COLLECTION: Immediately collect dropped items after mining
+          await this.collectNearbyItems(position, 5, 3000);
+          
           return true;
         }
       }
@@ -16801,6 +16824,10 @@ class ItemHunter {
       }
       
       console.log(`[HUNTER] ✅ Successfully mined ${entry.blockName} with ${miningTool ? miningTool.name : 'unknown'}`);
+      
+      // ITEM COLLECTION: Immediately collect dropped items after mining
+      await this.collectNearbyItems(position, 5, 3000);
+      
       return true;
     } catch (err) {
       console.log(`[HUNTER] ❌ Failed to mine ${entry.blockName}: ${err.message}`);
@@ -16812,6 +16839,183 @@ class ItemHunter {
       
       return false;
     }
+  }
+  
+  async collectNearbyItems(position, maxDistance = 5, timeout = 3000) {
+    if (!position || !this.bot?.entity?.position) {
+      return false;
+    }
+    
+    try {
+      console.log(`[INVENTORY] 🔍 Looking for dropped items near mining location...`);
+      
+      // Find nearby item entities
+      const itemEntities = Object.values(this.bot.entities || {}).filter(entity => {
+        if (!entity || !entity.position || entity.type !== 'object') {
+          return false;
+        }
+        
+        // Check if entity is close to the mined block position
+        const dist = Math.sqrt(
+          Math.pow(entity.position.x - position.x, 2) +
+          Math.pow(entity.position.y - position.y, 2) +
+          Math.pow(entity.position.z - position.z, 2)
+        );
+        
+        return dist <= maxDistance;
+      });
+      
+      if (itemEntities.length === 0) {
+        console.log(`[INVENTORY] ℹ️ No dropped items found nearby`);
+        return true; // Not an error, just no items to collect
+      }
+      
+      console.log(`[INVENTORY] 📦 Found ${itemEntities.length} dropped item(s), moving to collect...`);
+      
+      // Move towards each item to pick it up
+      for (const itemEntity of itemEntities) {
+        try {
+          const distToItem = this.bot.entity.position.distanceTo(itemEntity.position);
+          
+          // If close enough, just wait for auto-pickup
+          if (distToItem < 1.5) {
+            console.log(`[INVENTORY] ✓ Item close enough (${distToItem.toFixed(1)}m), waiting for pickup...`);
+            await this.sleep(300); // Wait for auto-pickup
+            continue;
+          }
+          
+          // Move closer to the item
+          if (distToItem <= maxDistance) {
+            console.log(`[INVENTORY] 🏃 Moving to item (${distToItem.toFixed(1)}m away)...`);
+            
+            // Use pathfinder if available, otherwise just move close
+            if (this.bot.pathfinder) {
+              const { GoalNear } = require('mineflayer-pathfinder').goals;
+              const goal = new GoalNear(itemEntity.position.x, itemEntity.position.y, itemEntity.position.z, 1);
+              
+              // Set timeout for pathfinding
+              const startTime = Date.now();
+              this.bot.pathfinder.setGoal(goal);
+              
+              // Wait for bot to reach item or timeout
+              await new Promise((resolve) => {
+                const checkInterval = setInterval(() => {
+                  if (!this.bot?.entity?.position) {
+                    clearInterval(checkInterval);
+                    resolve();
+                    return;
+                  }
+                  
+                  const currentDist = this.bot.entity.position.distanceTo(itemEntity.position);
+                  if (currentDist < 1.5 || Date.now() - startTime > timeout) {
+                    this.bot.pathfinder.stop();
+                    clearInterval(checkInterval);
+                    resolve();
+                  }
+                }, 100);
+              });
+              
+              console.log(`[INVENTORY] ✓ Reached item, waiting for pickup...`);
+              await this.sleep(300); // Wait for auto-pickup
+            }
+          }
+        } catch (err) {
+          console.log(`[INVENTORY] ⚠️ Failed to collect item: ${err.message}`);
+        }
+      }
+      
+      console.log(`[INVENTORY] ✅ Item collection complete`);
+      return true;
+    } catch (err) {
+      console.log(`[INVENTORY] ❌ Error during item collection: ${err.message}`);
+      return false;
+    }
+  }
+  
+  async dropJunkItems() {
+    if (!this.bot?.inventory) {
+      return 0;
+    }
+    
+    try {
+      // Define junk items to drop (common, low-value blocks)
+      const junkItems = [
+        'cobblestone',
+        'cobbled_deepslate',
+        'dirt',
+        'coarse_dirt',
+        'diorite',
+        'andesite',
+        'granite',
+        'tuff',
+        'calcite',
+        'gravel',
+        'sand',
+        'netherrack',
+        'blackstone'
+      ];
+      
+      const inventory = this.bot.inventory.items();
+      let droppedCount = 0;
+      
+      for (const item of inventory) {
+        if (item && junkItems.includes(item.name)) {
+          try {
+            console.log(`[INVENTORY] 🗑️ Dropping ${item.count}x ${item.name}`);
+            await this.bot.tossStack(item);
+            droppedCount += item.count;
+            await this.sleep(100); // Small delay between drops
+          } catch (err) {
+            console.log(`[INVENTORY] ⚠️ Failed to drop ${item.name}: ${err.message}`);
+          }
+        }
+      }
+      
+      if (droppedCount > 0) {
+        console.log(`[INVENTORY] ✅ Dropped ${droppedCount} junk item(s)`);
+      }
+      
+      return droppedCount;
+    } catch (err) {
+      console.log(`[INVENTORY] ❌ Error dropping junk items: ${err.message}`);
+      return 0;
+    }
+  }
+  
+  checkInventorySpace() {
+    if (!this.bot?.inventory) {
+      return { total: 0, used: 0, free: 0, percentage: 0 };
+    }
+    
+    const inventory = this.bot.inventory.items();
+    const total = 36; // Main inventory slots (excluding armor, offhand, crafting)
+    const used = inventory.length;
+    const free = total - used;
+    const percentage = Math.round((used / total) * 100);
+    
+    return { total, used, free, percentage };
+  }
+  
+  async manageInventorySpace(minFreeSlots = 5) {
+    const space = this.checkInventorySpace();
+    
+    console.log(`[INVENTORY] 📊 Inventory: ${space.used}/${space.total} slots used (${space.percentage}%), ${space.free} free`);
+    
+    if (space.free < minFreeSlots) {
+      console.log(`[INVENTORY] ⚠️ Low inventory space! Only ${space.free} slots free, dropping junk...`);
+      const dropped = await this.dropJunkItems();
+      
+      if (dropped > 0) {
+        const newSpace = this.checkInventorySpace();
+        console.log(`[INVENTORY] ✓ Freed space: ${newSpace.free} slots now available`);
+        return true;
+      } else {
+        console.log(`[INVENTORY] ⚠️ No junk items to drop, inventory still full!`);
+        return false;
+      }
+    }
+    
+    return true;
   }
   
   getCandidateMiningPositions(position) {
@@ -18616,8 +18820,16 @@ class BaritoneMiner {
     const maxAttempts = 10;
     let attempts = 0;
     
+    // INVENTORY MANAGEMENT: Check and clear space before mining
+    await this.checkAndClearInventory();
+    
     while (collected < quantity && attempts < maxAttempts) {
       attempts++;
+      
+      // INVENTORY MANAGEMENT: Check space every 3 attempts
+      if (attempts > 0 && attempts % 3 === 0) {
+        await this.checkAndClearInventory();
+      }
       
       // Step 1: Search loaded chunks first (fast)
       let targetBlock = this.findInLoadedChunks(blockName);
@@ -18807,6 +19019,10 @@ class BaritoneMiner {
       }
       
       console.log(`[MINE] ✓ Mined ${block.name}`);
+      
+      // ITEM COLLECTION: Collect dropped items after mining
+      await this.collectDroppedItems(blockPos);
+      
       return true;
     } catch (error) {
       // Record action failure for loop detection
@@ -18914,6 +19130,100 @@ class BaritoneMiner {
     }
     
     return ids.filter(id => id !== undefined);
+  }
+  
+  async checkAndClearInventory() {
+    if (!this.bot?.inventory) {
+      return;
+    }
+    
+    try {
+      const inventory = this.bot.inventory.items();
+      const total = 36;
+      const used = inventory.length;
+      const free = total - used;
+      
+      if (free < 5) {
+        console.log(`[MINE] 📦 Low inventory space (${free} free), dropping junk...`);
+        
+        const junkItems = [
+          'cobblestone', 'cobbled_deepslate', 'dirt', 'coarse_dirt',
+          'diorite', 'andesite', 'granite', 'tuff', 'calcite',
+          'gravel', 'sand', 'netherrack', 'blackstone'
+        ];
+        
+        for (const item of inventory) {
+          if (item && junkItems.includes(item.name)) {
+            try {
+              await this.bot.tossStack(item);
+              await this.sleep(100);
+            } catch (err) {
+              // Continue even if drop fails
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // Inventory management errors are not critical
+    }
+  }
+  
+  async collectDroppedItems(blockPos) {
+    if (!blockPos || !this.bot?.entity?.position) {
+      return;
+    }
+    
+    try {
+      // Wait a moment for items to spawn
+      await this.sleep(300);
+      
+      // Find nearby item entities
+      const itemEntities = Object.values(this.bot.entities || {}).filter(entity => {
+        if (!entity || !entity.position || entity.type !== 'object') {
+          return false;
+        }
+        
+        const dist = Math.sqrt(
+          Math.pow(entity.position.x - blockPos.x, 2) +
+          Math.pow(entity.position.y - blockPos.y, 2) +
+          Math.pow(entity.position.z - blockPos.z, 2)
+        );
+        
+        return dist <= 5;
+      });
+      
+      if (itemEntities.length === 0) {
+        return;
+      }
+      
+      console.log(`[MINE] 📦 Collecting ${itemEntities.length} dropped item(s)...`);
+      
+      // Move to collect each item
+      for (const itemEntity of itemEntities) {
+        try {
+          const distToItem = this.bot.entity.position.distanceTo(itemEntity.position);
+          
+          if (distToItem < 1.5) {
+            await this.sleep(200);
+            continue;
+          }
+          
+          if (distToItem <= 5) {
+            await this.bot.pathfinder.goto(new goals.GoalNear(
+              itemEntity.position.x,
+              itemEntity.position.y,
+              itemEntity.position.z,
+              1
+            ), { timeout: 2000 });
+            await this.sleep(200);
+          }
+        } catch (err) {
+          // Item collection failure is not critical
+        }
+      }
+    } catch (err) {
+      // Item collection errors are not critical
+    }
   }
   
   sleep(ms) {
