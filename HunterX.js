@@ -2555,7 +2555,7 @@ async function safeGoTo(bot, position, timeout = 60000) {
     throw new Error('Pathfinder plugin not loaded');
   }
   
-  if (!position || !position.x || !position.y || !position.z) {
+  if (!position || typeof position.x !== 'number' || typeof position.y !== 'number' || typeof position.z !== 'number') {
     throw new Error('Invalid position');
   }
   
@@ -15825,7 +15825,13 @@ class ItemHunter {
       return false;
     }
     
-    const position = entry.position.clone ? entry.position.clone() : new Vec3(entry.position.x, entry.position.y, entry.position.z);
+    let position = entry.position.clone ? entry.position.clone() : new Vec3(entry.position.x, entry.position.y, entry.position.z);
+    if (position && typeof position.floored === 'function') {
+      position = position.floored();
+    } else {
+      position = new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+    }
+    
     let block = this.bot.blockAt(position);
     
     if (!block || block.name !== entry.blockName) {
@@ -15841,10 +15847,32 @@ class ItemHunter {
       }
     }
     
-    try {
-      await safeGoTo(this.bot, position, 60000);
-    } catch (err) {
-      console.log(`[HUNTER] ❌ Failed to reach ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}: ${err.message}`);
+    const approachPositions = this.getCandidateMiningPositions(position);
+    const hasOriginal = approachPositions.some(pos =>
+      (typeof pos.equals === 'function' && pos.equals(position)) ||
+      (pos.x === position.x && pos.y === position.y && pos.z === position.z)
+    );
+    if (!hasOriginal) {
+      const fallback = position.clone ? position.clone() : new Vec3(position.x, position.y, position.z);
+      approachPositions.push(fallback);
+    }
+    
+    const timeoutPerAttempt = Math.max(5000, Math.floor(60000 / Math.max(approachPositions.length, 1)));
+    let reached = false;
+    let lastError = null;
+    
+    for (const targetPos of approachPositions) {
+      try {
+        await safeGoTo(this.bot, targetPos, timeoutPerAttempt);
+        reached = true;
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    
+    if (!reached) {
+      console.log(`[HUNTER] ❌ Failed to reach ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}: ${lastError ? lastError.message : 'unknown error'}`);
       return false;
     }
     
@@ -15855,12 +15883,55 @@ class ItemHunter {
     }
     
     try {
+      if (typeof this.bot.lookAt === 'function') {
+        await this.bot.lookAt(position.offset(0.5, 0.5, 0.5)).catch(() => {});
+      }
       await this.bot.dig(block);
       return true;
     } catch (err) {
       console.log(`[HUNTER] ❌ Failed to mine ${entry.blockName}: ${err.message}`);
       return false;
     }
+  }
+  
+  getCandidateMiningPositions(position) {
+    if (!position || !this.bot || typeof this.bot.blockAt !== 'function') {
+      return [];
+    }
+    
+    const offsets = [
+      new Vec3(1, 0, 0),
+      new Vec3(-1, 0, 0),
+      new Vec3(0, 0, 1),
+      new Vec3(0, 0, -1),
+      new Vec3(0, 1, 0)
+    ];
+    
+    const origin = (this.bot.entity && this.bot.entity.position) ? this.bot.entity.position : position;
+    const candidates = [];
+    
+    for (const offset of offsets) {
+      const candidate = position.offset(offset.x, offset.y, offset.z);
+      const foot = this.bot.blockAt(candidate);
+      const head = this.bot.blockAt(candidate.offset(0, 1, 0));
+      const below = this.bot.blockAt(candidate.offset(0, -1, 0));
+      
+      const passableFoot = !foot || foot.boundingBox !== 'block';
+      const passableHead = !head || head.boundingBox !== 'block';
+      const hasSupport = below && below.boundingBox === 'block';
+      
+      if (passableFoot && passableHead && hasSupport) {
+        candidates.push(candidate);
+      }
+    }
+    
+    candidates.sort((a, b) => {
+      const da = Math.pow(origin.x - a.x, 2) + Math.pow(origin.y - a.y, 2) + Math.pow(origin.z - a.z, 2);
+      const db = Math.pow(origin.x - b.x, 2) + Math.pow(origin.y - b.y, 2) + Math.pow(origin.z - b.z, 2);
+      return da - db;
+    });
+    
+    return candidates;
   }
   
   async findItemViaStrategies(itemName, quantity, knowledge) {
