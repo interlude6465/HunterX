@@ -11858,6 +11858,85 @@ class ToolSelector {
     // Equip tool
     await this.equipToolForAction(action);
   }
+  
+  async verifyAndEnsurePickaxe() {
+    // Specialized method to ensure pickaxe is equipped for mining
+    console.log(`[TOOLS] Verifying pickaxe for mining operation`);
+    
+    const items = this.bot.inventory.items();
+    const pickaxeTypes = ['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe'];
+    
+    // Find best available pickaxe
+    let bestPickaxe = null;
+    for (const pickaxeType of pickaxeTypes) {
+      const pickaxe = items.find(i => i.name === pickaxeType && this.isToolGoodCondition(i));
+      if (pickaxe) {
+        bestPickaxe = pickaxe;
+        break;
+      }
+    }
+    
+    if (!bestPickaxe) {
+      console.log(`[TOOLS] ❌ No pickaxe available for mining`);
+      return false;
+    }
+    
+    // Check if already equipped
+    if (this.bot.heldItem && this.bot.heldItem.name === bestPickaxe.name) {
+      console.log(`[TOOLS] ✓ Pickaxe already equipped: ${bestPickaxe.name}`);
+      return true;
+    }
+    
+    // Equip the pickaxe
+    try {
+      console.log(`[TOOLS] Equipping pickaxe: ${bestPickaxe.name}`);
+      await this.bot.equip(bestPickaxe, 'hand');
+      console.log(`[TOOLS] ✓ Pickaxe equipped: ${bestPickaxe.name}`);
+      return true;
+    } catch (error) {
+      console.error(`[TOOLS] Failed to equip pickaxe:`, error.message);
+      return false;
+    }
+  }
+  
+  async ensureToolPersistency(expectedToolName, maxRetries = 3) {
+    // Ensure the specified tool stays equipped
+    console.log(`[TOOLS] Ensuring tool persistence: ${expectedToolName}`);
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      // Check current tool
+      const currentTool = this.bot.heldItem;
+      
+      if (currentTool && currentTool.name === expectedToolName) {
+        console.log(`[TOOLS] ✓ Tool persistence verified: ${expectedToolName}`);
+        return true;
+      }
+      
+      console.warn(`[TOOLS] ⚠️ Tool mismatch (attempt ${attempt}/${maxRetries}): Expected ${expectedToolName}, Found ${currentTool ? currentTool.name : 'none'}`);
+      
+      // Find and re-equip the correct tool
+      const items = this.bot.inventory.items();
+      const targetTool = items.find(i => i.name === expectedToolName && this.isToolGoodCondition(i));
+      
+      if (!targetTool) {
+        console.error(`[TOOLS] ❌ Target tool not found in inventory: ${expectedToolName}`);
+        return false;
+      }
+      
+      try {
+        await this.bot.equip(targetTool, 'hand');
+        console.log(`[TOOLS] ✓ Re-equipped: ${expectedToolName}`);
+      } catch (error) {
+        console.error(`[TOOLS] Failed to re-equip ${expectedToolName}:`, error.message);
+        if (attempt === maxRetries) return false;
+      }
+      
+      // Brief pause between attempts
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    return false;
+  }
 }
 
 // === HOSTILE MOB DETECTOR ===
@@ -15840,11 +15919,27 @@ class ItemHunter {
     }
     
     const action = targets.toolAction || 'mining';
+    let expectedTool = null;
+    
+    // Equip tool and get reference for verification
     if (this.bot.toolSelector) {
-      const equipped = await this.bot.toolSelector.equipToolForAction(action);
-      if (!equipped && action !== 'mining') {
-        await this.bot.toolSelector.equipToolForAction('mining');
+      if (action === 'mining') {
+        // Use specialized pickaxe verification for mining
+        const pickaxeEquipped = await this.bot.toolSelector.verifyAndEnsurePickaxe();
+        if (!pickaxeEquipped) {
+          console.error(`[TOOLS] ❌ Failed to equip pickaxe for mining`);
+          return false;
+        }
+      } else {
+        const equipped = await this.bot.toolSelector.equipToolForAction(action);
+        if (!equipped) {
+          await this.bot.toolSelector.equipToolForAction('mining');
+        }
       }
+      
+      // Store the expected tool for verification
+      expectedTool = this.bot.heldItem;
+      console.log(`[TOOLS] ✓ Equipped: ${expectedTool ? expectedTool.name : 'unknown'}`);
     }
     
     const approachPositions = this.getCandidateMiningPositions(position);
@@ -15906,6 +16001,48 @@ class ItemHunter {
         this.bot.pathfinder.stop();
       }
       
+      // TOOL VERIFICATION: Ensure correct tool is equipped before digging
+      if (expectedTool && (!this.bot.heldItem || this.bot.heldItem.name !== expectedTool.name)) {
+        console.warn(`[TOOLS] ⚠️ Tool was unequipped! Expected ${expectedTool.name}, found ${this.bot.heldItem ? this.bot.heldItem.name : 'none'}`);
+        
+        // Use enhanced tool persistence method
+        if (this.bot.toolSelector && expectedTool.name) {
+          const persistenceEnsured = await this.bot.toolSelector.ensureToolPersistency(expectedTool.name);
+          if (!persistenceEnsured) {
+            console.error(`[TOOLS] ❌ Failed to ensure tool persistence for ${expectedTool.name}`);
+            return false;
+          }
+          
+          // Update expected tool reference
+          expectedTool = this.bot.heldItem;
+          console.log(`[TOOLS] ✓ Tool persistence ensured: ${expectedTool ? expectedTool.name : 'unknown'}`);
+        }
+      }
+      
+      // SPECIALIZED MINING CHECK: Ensure pickaxe for mining operations
+      if (action === 'mining') {
+        if (!this.bot.heldItem || !this.bot.heldItem.name.includes('pickaxe')) {
+          console.warn(`[TOOLS] ⚠️ Non-pickaxe tool equipped for mining: ${this.bot.heldItem ? this.bot.heldItem.name : 'none'}`);
+          
+          // Force equip best pickaxe using specialized method
+          if (this.bot.toolSelector) {
+            const pickaxeEquipped = await this.bot.toolSelector.verifyAndEnsurePickaxe();
+            if (!pickaxeEquipped) {
+              console.error(`[TOOLS] ❌ Failed to equip pickaxe for mining`);
+              return false;
+            }
+            expectedTool = this.bot.heldItem;
+            console.log(`[TOOLS] ✓ Forced pickaxe equip: ${expectedTool ? expectedTool.name : 'unknown'}`);
+          }
+        }
+      }
+      
+      // FINAL TOOL CHECK: Verify we have the right tool
+      if (expectedTool && (!this.bot.heldItem || this.bot.heldItem.name !== expectedTool.name)) {
+        console.error(`[TOOLS] ❌ Final tool check failed! Expected: ${expectedTool.name}, Current: ${this.bot.heldItem ? this.bot.heldItem.name : 'none'}`);
+        return false;
+      }
+      
       if (typeof this.bot.lookAt === 'function') {
         try {
           await this.bot.lookAt(position.offset(0.5, 0.5, 0.5));
@@ -15913,11 +16050,27 @@ class ItemHunter {
         }
       }
       
+      // Lock tool during mining operation
+      const miningTool = this.bot.heldItem;
+      console.log(`[TOOLS] 🔒 Mining with locked tool: ${miningTool ? miningTool.name : 'none'}`);
+      
       await this.bot.dig(block);
-      console.log(`[HUNTER] ✅ Successfully mined ${entry.blockName}`);
+      
+      // Verify tool is still equipped after mining
+      if (miningTool && this.bot.heldItem && this.bot.heldItem.name !== miningTool.name) {
+        console.warn(`[TOOLS] ⚠️ Tool changed during mining! Was: ${miningTool.name}, Now: ${this.bot.heldItem.name}`);
+      }
+      
+      console.log(`[HUNTER] ✅ Successfully mined ${entry.blockName} with ${miningTool ? miningTool.name : 'unknown'}`);
       return true;
     } catch (err) {
       console.log(`[HUNTER] ❌ Failed to mine ${entry.blockName}: ${err.message}`);
+      
+      // Check if tool was the issue
+      if (this.bot.heldItem && expectedTool && this.bot.heldItem.name !== expectedTool.name) {
+        console.warn(`[TOOLS] ⚠️ Tool mismatch detected during error: Expected ${expectedTool.name}, Had ${this.bot.heldItem.name}`);
+      }
+      
       return false;
     }
   }
