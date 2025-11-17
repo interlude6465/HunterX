@@ -2754,7 +2754,7 @@ const MINECRAFT_KNOWLEDGE = {
   }
 };
 
-// LLM Bridge class for optional external AI integration
+// LLM Bridge class for external AI integration (OpenAI, Anthropic, Local LLMs)
 class LLMBridge {
   constructor(config) {
     this.config = config || {};
@@ -2765,9 +2765,45 @@ class LLMBridge {
     this.maxCacheSize = this.config.maxCacheSize || 100;
     this.rateLimitWindow = this.config.rateLimitWindow || 60000; // 1 minute
     this.rateLimitMax = this.config.rateLimitMax || 10; // 10 requests per minute
+    this.provider = this.config.provider || 'openai';
+    this.model = this.config.model || 'gpt-3.5-turbo';
+    this.apiKey = this.config.apiKey || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
+    this.endpoint = this.config.endpoint || null;
+    this.maxTokens = this.config.maxTokens || 150;
+    this.temperature = this.config.temperature || 0.7;
+    this.conversationHistory = new Map(); // username -> messages[]
+    this.maxHistoryPerUser = 10;
+    this.personality = this.config.personality || this.getDefaultPersonality();
   }
   
-  async query(prompt, username = null) {
+  getDefaultPersonality() {
+    return {
+      name: 'Hunter',
+      style: 'confident, aggressive, playful',
+      tone: 'casual, sometimes cocky, helpful',
+      interests: ['PvP', 'finding loot', 'building', 'causing chaos', 'hunting players'],
+      traits: [
+        'I love combat and PvP',
+        'I\'m always ready for action',
+        'I\'m skilled at finding items and resources',
+        'I can be a bit cocky but I back it up',
+        'I enjoy causing trouble but in a fun way',
+        'I\'m loyal to my friends and deadly to enemies'
+      ],
+      examplePhrases: [
+        'Yo! What\'s up?',
+        'Ready to cause some chaos?',
+        'Hell yeah, I do.',
+        'Easy. Give me a sec.',
+        'You in?',
+        'Let\'s do this.',
+        'Not bad, just vibing.',
+        'Looking for trouble or just hanging?'
+      ]
+    };
+  }
+  
+  async query(prompt, username = null, context = {}) {
     if (!this.enabled) {
       return null;
     }
@@ -2785,12 +2821,17 @@ class LLMBridge {
     // Check cache first
     const cacheKey = this.generateCacheKey(prompt);
     if (this.cache.has(cacheKey)) {
-      console.log(`[LLM] Cache hit for: ${prompt.substring(0, 50)}...`);
-      return this.cache.get(cacheKey);
+      const cached = this.cache.get(cacheKey);
+      if (Date.now() - cached.timestamp < (this.config.cacheTTL || 300000)) {
+        console.log(`[LLM] Cache hit for: ${prompt.substring(0, 50)}...`);
+        return cached.response;
+      } else {
+        this.cache.delete(cacheKey);
+      }
     }
     
     try {
-      const response = await this.makeRequest(prompt);
+      const response = await this.makeRequest(prompt, username, context);
       
       // Update rate limit
       if (!userLimit || now > userLimit.resetTime) {
@@ -2802,6 +2843,9 @@ class LLMBridge {
       // Cache response
       this.addToCache(cacheKey, response);
       
+      // Update conversation history
+      this.updateHistory(username, prompt, response);
+      
       return response;
     } catch (error) {
       console.warn(`[LLM] Query failed: ${error.message}`);
@@ -2809,20 +2853,332 @@ class LLMBridge {
     }
   }
   
-  async makeRequest(prompt) {
-    // This is a placeholder for actual LLM integration
-    // In a real implementation, this would make HTTP requests to OpenAI, Claude, etc.
+  async makeRequest(prompt, username, context = {}) {
+    // Build system prompt with personality
+    const systemPrompt = this.buildSystemPrompt(context);
+    
+    // Get conversation history for context
+    const history = this.getHistory(username);
+    
+    // Try different providers in order of preference
+    if (this.provider === 'openai' && this.apiKey && this.apiKey.startsWith('sk-')) {
+      return await this.queryOpenAI(systemPrompt, prompt, history);
+    } else if (this.provider === 'anthropic' && this.apiKey && this.apiKey.startsWith('sk-ant-')) {
+      return await this.queryAnthropic(systemPrompt, prompt, history);
+    } else if (this.provider === 'local' || this.endpoint) {
+      return await this.queryLocalLLM(systemPrompt, prompt, history);
+    } else {
+      // Fallback to personality-based templates
+      return this.generatePersonalityResponse(prompt, context);
+    }
+  }
+  
+  buildSystemPrompt(context = {}) {
+    const p = this.personality;
+    return `You are ${p.name}, a Minecraft bot with the following personality:
+- Style: ${p.style}
+- Tone: ${p.tone}
+- Interests: ${p.interests.join(', ')}
+
+Key traits:
+${p.traits.map(t => `- ${t}`).join('\n')}
+
+Current context:
+- Bot health: ${context.health || '20/20'}
+- Bot location: ${context.location || 'unknown'}
+- Current activity: ${context.activity || 'idle'}
+
+Guidelines:
+- Be natural and conversational like ChatGPT/Claude
+- Keep responses concise (1-3 sentences usually)
+- Stay in character as a Minecraft bot named ${p.name}
+- Use casual language, be friendly but confident
+- Show personality - be playful, cocky when appropriate
+- React naturally to greetings, questions, requests
+- Don't be robotic or scripted
+- Use phrases like: ${p.examplePhrases.slice(0, 3).join(', ')}
+
+Respond naturally to the user's message:`;
+  }
+  
+  async queryOpenAI(systemPrompt, userMessage, history = []) {
+    try {
+      const https = require('https');
+      
+      const messages = [
+        { role: 'system', content: systemPrompt }
+      ];
+      
+      // Add conversation history
+      history.forEach(msg => {
+        messages.push({ role: msg.role, content: msg.content });
+      });
+      
+      // Add current message
+      messages.push({ role: 'user', content: userMessage });
+      
+      const data = JSON.stringify({
+        model: this.model,
+        messages: messages,
+        max_tokens: this.maxTokens,
+        temperature: this.temperature
+      });
+      
+      const response = await this.httpsRequest('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Length': data.length
+        }
+      }, data);
+      
+      const result = JSON.parse(response);
+      return result.choices[0].message.content.trim();
+    } catch (error) {
+      console.error('[LLM] OpenAI request failed:', error.message);
+      throw error;
+    }
+  }
+  
+  async queryAnthropic(systemPrompt, userMessage, history = []) {
+    try {
+      const https = require('https');
+      
+      const messages = [];
+      
+      // Add conversation history
+      history.forEach(msg => {
+        messages.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content: msg.content });
+      });
+      
+      // Add current message
+      messages.push({ role: 'user', content: userMessage });
+      
+      const data = JSON.stringify({
+        model: this.model || 'claude-3-sonnet-20240229',
+        max_tokens: this.maxTokens,
+        temperature: this.temperature,
+        system: systemPrompt,
+        messages: messages
+      });
+      
+      const response = await this.httpsRequest('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Length': data.length
+        }
+      }, data);
+      
+      const result = JSON.parse(response);
+      return result.content[0].text.trim();
+    } catch (error) {
+      console.error('[LLM] Anthropic request failed:', error.message);
+      throw error;
+    }
+  }
+  
+  async queryLocalLLM(systemPrompt, userMessage, history = []) {
+    try {
+      const http = require('http');
+      const https = require('https');
+      
+      const endpoint = this.endpoint || 'http://localhost:11434/api/generate';
+      const isHttps = endpoint.startsWith('https://');
+      const httpModule = isHttps ? https : http;
+      
+      // Build prompt with history
+      let fullPrompt = `${systemPrompt}\n\n`;
+      history.forEach(msg => {
+        fullPrompt += `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}\n`;
+      });
+      fullPrompt += `User: ${userMessage}\nAssistant:`;
+      
+      const data = JSON.stringify({
+        model: this.model || 'llama2',
+        prompt: fullPrompt,
+        stream: false,
+        options: {
+          temperature: this.temperature,
+          num_predict: this.maxTokens
+        }
+      });
+      
+      const response = await this.httpsRequest(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': data.length
+        }
+      }, data);
+      
+      const result = JSON.parse(response);
+      return (result.response || result.text || '').trim();
+    } catch (error) {
+      console.error('[LLM] Local LLM request failed:', error.message);
+      throw error;
+    }
+  }
+  
+  httpsRequest(url, options, data) {
     return new Promise((resolve, reject) => {
+      const urlObj = new URL(url);
+      const isHttps = urlObj.protocol === 'https:';
+      const lib = isHttps ? require('https') : require('http');
+      
+      const reqOptions = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (isHttps ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        ...options
+      };
+      
       const timeout = setTimeout(() => {
+        req.destroy();
         reject(new Error('LLM request timeout'));
       }, this.timeout);
       
-      // Simulate LLM response (replace with actual API call)
-      setTimeout(() => {
+      const req = lib.request(reqOptions, (res) => {
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => {
+          clearTimeout(timeout);
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(body);
+          } else {
+            reject(new Error(`HTTP ${res.statusCode}: ${body}`));
+          }
+        });
+      });
+      
+      req.on('error', (err) => {
         clearTimeout(timeout);
-        resolve(`LLM Response to: "${prompt.substring(0, 100)}..."`);
-      }, 100);
+        reject(err);
+      });
+      
+      if (data) {
+        req.write(data);
+      }
+      req.end();
     });
+  }
+  
+  generatePersonalityResponse(message, context = {}) {
+    // Fallback: Generate response based on personality templates
+    const lower = message.toLowerCase();
+    const p = this.personality;
+    
+    // Greetings
+    if (/^(hi|hello|hey|yo|sup)$/i.test(lower.trim())) {
+      const greetings = [
+        'Yo! What\'s up?',
+        'Hey! Ready to cause some chaos?',
+        'Sup! Looking for trouble?',
+        'Hey there! What do you need?',
+        'Yo! Ready for action?'
+      ];
+      return greetings[Math.floor(Math.random() * greetings.length)];
+    }
+    
+    // How are you
+    if (lower.includes('how are you') || lower.includes('how\'s it going')) {
+      const responses = [
+        'Not bad, just vibing. Looking for trouble or just hanging?',
+        'Pretty good! Always ready for some PvP action.',
+        'Doing great! Just waiting for the next adventure.',
+        'Good! Just hunting for some loot. You need something?'
+      ];
+      return responses[Math.floor(Math.random() * responses.length)];
+    }
+    
+    // Combat/fighting related
+    if (lower.includes('fight') || lower.includes('pvp') || lower.includes('attack')) {
+      const responses = [
+        'Hell yeah, I do. Nothing beats a good PvP session. You in?',
+        'Love it! Combat is what I\'m built for. Let\'s go!',
+        'Always ready for a fight. Point me at the target!',
+        'PvP? That\'s my favorite thing. Who are we hunting?'
+      ];
+      return responses[Math.floor(Math.random() * responses.length)];
+    }
+    
+    // Item requests
+    if (lower.includes('get me') || lower.includes('find') || lower.includes('diamond')) {
+      const responses = [
+        'Easy. Give me a sec and I\'ll grab you some.',
+        'On it! I\'ll track that down for you.',
+        'No problem, I know where to look. Hold on.',
+        'Sure thing! I\'m on the hunt.'
+      ];
+      return responses[Math.floor(Math.random() * responses.length)];
+    }
+    
+    // Favorite/personality questions
+    if (lower.includes('favorite') || lower.includes('like to do')) {
+      const responses = [
+        'Honestly? Hunting players. But I\'m also down for mining, building, whatever keeps things interesting.',
+        'PvP for sure, but I also love finding rare loot. Keeps things exciting!',
+        'Combat is my thing, but I\'m versatile. Mining, building, exploring - I do it all.',
+        'I love the thrill of PvP, but finding hidden stashes is pretty awesome too.'
+      ];
+      return responses[Math.floor(Math.random() * responses.length)];
+    }
+    
+    // Thanks
+    if (lower.includes('thank') || lower === 'thanks' || lower === 'ty') {
+      const responses = [
+        'No problem!',
+        'Anytime!',
+        'You got it!',
+        'Happy to help!'
+      ];
+      return responses[Math.floor(Math.random() * responses.length)];
+    }
+    
+    // Default conversational
+    const defaults = [
+      'What do you need? I\'m ready for anything.',
+      'Just say the word and I\'ll make it happen.',
+      'I\'m all ears. What\'s the plan?',
+      'Talk to me. What are we doing?',
+      'Ready when you are. What\'s up?'
+    ];
+    return defaults[Math.floor(Math.random() * defaults.length)];
+  }
+  
+  updateHistory(username, userMessage, assistantResponse) {
+    if (!username) return;
+    
+    if (!this.conversationHistory.has(username)) {
+      this.conversationHistory.set(username, []);
+    }
+    
+    const history = this.conversationHistory.get(username);
+    history.push({ role: 'user', content: userMessage });
+    history.push({ role: 'assistant', content: assistantResponse });
+    
+    // Keep only recent history
+    if (history.length > this.maxHistoryPerUser * 2) {
+      history.splice(0, history.length - this.maxHistoryPerUser * 2);
+    }
+  }
+  
+  getHistory(username) {
+    if (!username || !this.conversationHistory.has(username)) {
+      return [];
+    }
+    return this.conversationHistory.get(username);
+  }
+  
+  clearHistory(username) {
+    if (username) {
+      this.conversationHistory.delete(username);
+    } else {
+      this.conversationHistory.clear();
+    }
   }
   
   generateCacheKey(prompt) {
@@ -2836,13 +3192,17 @@ class LLMBridge {
       const firstKey = this.cache.keys().next().value;
       this.cache.delete(firstKey);
     }
-    this.cache.set(key, value);
+    this.cache.set(key, { response: value, timestamp: Date.now() });
   }
   
   getStatus() {
     return {
       enabled: this.enabled,
+      provider: this.provider,
+      model: this.model,
+      hasApiKey: !!this.apiKey,
       cacheSize: this.cache.size,
+      activeConversations: this.conversationHistory.size,
       rateLimits: Array.from(this.rateLimit.entries()).map(([user, limit]) => ({
         user,
         count: limit.count,
@@ -2953,16 +3313,25 @@ config = {
     name: 'Hunter'
   },
   
-  // Conversational AI with intent classification and LLM support
+  // Conversational AI with intent classification, LLM, and personality support
   conversationalAI: {
     enabled: true,
-    useLLM: false, // Set to true to enable external LLM integration
-    llmConfig: {
-      timeout: 10000, // 10 seconds
-      maxCacheSize: 100,
-      rateLimitWindow: 60000, // 1 minute
-      rateLimitMax: 10 // 10 requests per minute per user
+    useLLM: false,
+    provider: {
+      name: 'openai', // openai, anthropic, local
+      model: 'gpt-3.5-turbo',
+      endpoint: null,
+      maxTokens: 200,
+      temperature: 0.7
     },
+    apiKey: '',
+    requestTimeout: 15000,
+    cacheTTL: 300000, // 5 minutes
+    rateLimit: {
+      maxRequests: 10,
+      windowMs: 60000
+    },
+    autoReplyPrefix: '[AI] ',
     metrics: {
       totalQueries: 0,
       knowledgeQueries: 0,
@@ -2981,7 +3350,7 @@ config = {
       llmFailures: 0,
       cacheHits: 0
     },
-    recentQA: [], // Store recent Q&A for monitoring
+    recentQA: [],
     maxRecentQA: 50
   },
   
@@ -3242,20 +3611,20 @@ config = {
     maxRetries: 3
   },
 
-  // Conversational AI settings
+  // Conversational AI settings with LLM support and natural personality
   conversationalAI: {
-    enabled: false,
-    useLLM: false,
+    enabled: true,
+    useLLM: false, // Set to true to enable OpenAI/Anthropic/Local LLM
     provider: {
-      name: 'openai', // openai, anthropic, google, local
-      model: 'gpt-3.5-turbo',
-      endpoint: null,
-      maxTokens: 150,
+      name: 'openai', // openai, anthropic, local
+      model: 'gpt-3.5-turbo', // or claude-3-sonnet-20240229, llama2, etc
+      endpoint: null, // For local LLM (e.g. http://localhost:11434/api/generate)
+      maxTokens: 200,
       temperature: 0.7
     },
-    apiKey: '', // Placeholder for API key
-    requestTimeout: 10000, // ms
-    cacheTTL: 300000, // 5 minutes in ms
+    apiKey: '', // Set OPENAI_API_KEY or ANTHROPIC_API_KEY env var, or put key here
+    requestTimeout: 15000,
+    cacheTTL: 300000, // 5 minutes
     timeZoneAliases: {
       'est': 'America/New_York',
       'edt': 'America/New_York',
@@ -3274,7 +3643,7 @@ config = {
     },
     rateLimit: {
       maxRequests: 10,
-      windowMs: 60000 // 1 minute
+      windowMs: 60000
     },
     autoReplyPrefix: '[AI] '
   },
@@ -18162,10 +18531,44 @@ class ConversationAI {
     this.trustLevels = ['guest', 'trusted', 'admin', 'owner'];
     this.itemHunter = new ItemHunter(bot);
     
-    // Initialize LLM bridge if enabled
+    // Initialize LLM bridge with full config
     const llmConfig = {
-      ...config.conversationalAI.llmConfig,
-      useLLM: config.conversationalAI.useLLM
+      useLLM: config.conversationalAI.useLLM,
+      provider: config.conversationalAI.provider?.name || 'openai',
+      model: config.conversationalAI.provider?.model || 'gpt-3.5-turbo',
+      endpoint: config.conversationalAI.provider?.endpoint || null,
+      maxTokens: config.conversationalAI.provider?.maxTokens || 150,
+      temperature: config.conversationalAI.provider?.temperature || 0.7,
+      apiKey: config.conversationalAI.apiKey || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY,
+      timeout: config.conversationalAI.requestTimeout || 10000,
+      maxCacheSize: 100,
+      cacheTTL: config.conversationalAI.cacheTTL || 300000,
+      rateLimitWindow: config.conversationalAI.rateLimit?.windowMs || 60000,
+      rateLimitMax: config.conversationalAI.rateLimit?.maxRequests || 10,
+      personality: {
+        name: config.personality?.name || 'Hunter',
+        style: 'confident, aggressive, playful',
+        tone: 'casual, sometimes cocky, helpful',
+        interests: ['PvP', 'finding loot', 'building', 'causing chaos', 'hunting players'],
+        traits: [
+          'I love combat and PvP',
+          'I\'m always ready for action',
+          'I\'m skilled at finding items and resources',
+          'I can be a bit cocky but I back it up',
+          'I enjoy causing trouble but in a fun way',
+          'I\'m loyal to my friends and deadly to enemies'
+        ],
+        examplePhrases: [
+          'Yo! What\'s up?',
+          'Ready to cause some chaos?',
+          'Hell yeah, I do.',
+          'Easy. Give me a sec.',
+          'You in?',
+          'Let\'s do this.',
+          'Not bad, just vibing.',
+          'Looking for trouble or just hanging?'
+        ]
+      }
     };
     this.llmBridge = new LLMBridge(llmConfig);
     this.dialogueRL = new DialogueRL(bot);
@@ -18247,33 +18650,71 @@ class ConversationAI {
   
   // Generate natural language response for non-commands
   generateResponse(username, message) {
-    const lower = message.toLowerCase();
+    const lower = message.toLowerCase().trim();
     
-    // Simple acknowledgments
-    if (lower.length < 10 || lower === 'hi' || lower === 'hello' || lower === 'hey') {
-      return `Hello ${username}! How can I help you?`;
+    // Casual greetings
+    if (lower.length < 10 || /^(hi|hello|hey|yo|sup)$/.test(lower)) {
+      const greetings = [
+        `Yo ${username}! What's good?`,
+        `Hey ${username}! Need something?`,
+        `Sup ${username}? I'm around.`,
+        `Yo! Ready when you are, ${username}.`
+      ];
+      return greetings[Math.floor(Math.random() * greetings.length)];
     }
     
-    if (lower === 'thanks' || lower === 'thank you') {
-      return `You're welcome ${username}!`;
+    // Thanks / appreciation
+    if (/(thanks|thank you|ty|appreciate)/.test(lower)) {
+      const responses = [
+        `Anytime, ${username}.`,
+        `You got it, ${username}.`,
+        `All good!`,
+        `No problem at all.`
+      ];
+      return responses[Math.floor(Math.random() * responses.length)];
     }
     
-    if (lower === 'bye' || lower === 'goodbye') {
-      return `Goodbye ${username}!`;
+    // Farewells
+    if (/(bye|goodbye|see you|later|cya)/.test(lower)) {
+      const farewells = [
+        `Catch you later, ${username}.`,
+        `Later ${username}! Stay sharp.`,
+        `See you around, ${username}.`,
+        `Take it easy. I'll be here.`
+      ];
+      return farewells[Math.floor(Math.random() * farewells.length)];
     }
     
-    // Check for status requests
-    if (lower.includes('status') || lower.includes('how are you')) {
-      return `I'm doing great ${username}! Ready to help with commands like "find", "build", "attack", etc.`;
+    // Status check / how are you
+    if (lower.includes('status') || lower.includes('how are you') || lower.includes('what are you doing')) {
+      const statuses = [
+        `Vibing out here with ${Math.round(this.bot.health || 20)} hearts. What's up?`,
+        `Doing fine—geared and ready. Need backup?`,
+        `Just hanging around waiting for action. Got a mission?`,
+        `All good on my end. You got something in mind?`
+      ];
+      return statuses[Math.floor(Math.random() * statuses.length)];
     }
     
-    // Check for help requests
-    if (lower.includes('help') || lower.includes('what can you do')) {
-      return `I can help with: finding items, building, combat, spawning bots, and more! Try "find me diamonds" or "attack playername"`;
+    // Help / capability requests
+    if (lower.includes('help') || lower.includes('what can you do') || lower.includes('can you')) {
+      const helpResponses = [
+        `I can scout, fight, build, grab loot—you name it. Toss me something like "find me diamonds" or "!attack player".`,
+        `Need resources, protection, or a build thrown up? Say the word.`,
+        `I'm your go-to for loot runs, combat, or automation. Just ask.`,
+        `If you need something done, try a command like "get me rockets" or "start build".`
+      ];
+      return helpResponses[Math.floor(Math.random() * helpResponses.length)];
     }
     
-    // Default response
-    return `I'm not sure what you mean ${username}. Try commands like "find me [item]", "attack [player]", or "help" for options!`;
+    // Default casual fallback
+    const fallbacks = [
+      `Not totally sure what you meant, but if you need something just say so.`,
+      `If you want me to do something, toss me a command like "find me diamonds" or "!attack player".`,
+      `Gotcha—if you want action, just be specific and I got you.`,
+      `Hmm, not sure on that one. Want me to run a task or grab something?`
+    ];
+    return fallbacks[Math.floor(Math.random() * fallbacks.length)];
   }
   
   // === INTENT-AWARE CONVERSATION METHODS ===
@@ -18440,123 +18881,169 @@ class ConversationAI {
     return `Current game time: ${timeString} (${gameTime})`;
   }
   
-  // Handle location requests
+  // Handle location requests with natural responses
   async handleLocationRequest(username, message) {
-    const lower = message.toLowerCase();
-    
-    if (this.bot.entity && this.bot.entity.position) {
-      const pos = this.bot.entity.position;
-      const location = `I'm at ${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)}`;
-      
-      // Add dimension info if available
-      const dimension = this.bot.game?.dimension || 'overworld';
-      const fullLocation = `${location} in the ${dimension}`;
-      
-      this.updateMetrics('locationRequests');
-      this.logQA(username, message, fullLocation, 'location');
-      return fullLocation;
-    }
-    
-    this.updateMetrics('locationRequests');
-    this.logQA(username, message, "I'm not sure of my current location!", 'location_fallback');
-    return "I'm not sure of my current location!";
-  }
-  
-  // Handle status requests
-  async handleStatusRequest(username, message) {
-    const lower = message.toLowerCase();
-    
-    const health = this.bot.health || 0;
-    const food = this.bot.food || 0;
-    const experience = this.bot.experience?.level || 0;
-    
-    let status = `Health: ${health}/20, Hunger: ${food}/20, Level: ${experience}`;
-    
-    // Add armor info if available
-    if (this.bot.inventory?.slots) {
-      const armorPieces = ['helmet', 'chestplate', 'leggings', 'boots'];
-      const wornArmor = armorPieces.filter(slot => this.bot.inventory.slots[slot]);
-      if (wornArmor.length > 0) {
-        status += `, Armor: ${wornArmor.length}/4 pieces`;
+    if (config.conversationalAI.useLLM) {
+      const llmResponse = await this.queryLLM(username, message);
+      if (llmResponse) {
+        this.updateMetrics('locationRequests');
+        this.updateMetrics('llmQueries');
+        this.logQA(username, message, llmResponse, 'llm_location');
+        return llmResponse;
       }
     }
     
-    // Add activity info
-    if (config.tasks.current) {
-      status += `, Currently: ${config.tasks.current.type || 'working'}`;
+    if (this.bot.entity && this.bot.entity.position) {
+      const pos = this.bot.entity.position;
+      const x = Math.floor(pos.x);
+      const y = Math.floor(pos.y);
+      const z = Math.floor(pos.z);
+      const dimension = this.bot.game?.dimension || 'overworld';
+      
+      const naturalLocations = [
+        `I'm chilling at ${x}, ${y}, ${z} in the ${dimension}.`,
+        `Right now I'm at coordinates ${x}, ${y}, ${z} (${dimension}).`,
+        `Currently posted up at ${x}, ${y}, ${z} in the ${dimension}. Need me somewhere?`,
+        `I'm at ${x}, ${y}, ${z} right now (${dimension}).`
+      ];
+      
+      const response = naturalLocations[Math.floor(Math.random() * naturalLocations.length)];
+      this.updateMetrics('locationRequests');
+      this.logQA(username, message, response, 'location_natural');
+      return response;
     }
     
+    this.updateMetrics('locationRequests');
+    this.logQA(username, message, "Not sure where I'm at right now—still loading in.", 'location_fallback');
+    return "Not sure where I'm at right now—still loading in.";
+  }
+  
+  // Handle status requests with natural responses
+  async handleStatusRequest(username, message) {
+    if (config.conversationalAI.useLLM) {
+      const llmResponse = await this.queryLLM(username, message);
+      if (llmResponse) {
+        this.updateMetrics('statusRequests');
+        this.updateMetrics('llmQueries');
+        this.logQA(username, message, llmResponse, 'llm_status');
+        return llmResponse;
+      }
+    }
+    
+    const health = Math.round(this.bot.health || 0);
+    const food = Math.round(this.bot.food || 0);
+    const experience = this.bot.experience?.level || 0;
+    
+    let armorStatus = '';
+    if (this.bot.inventory?.slots) {
+      const armorSlots = [5, 6, 7, 8]; // Helmet, chestplate, leggings, boots
+      const wornArmor = armorSlots.filter(slot => this.bot.inventory.slots[slot]).length;
+      if (wornArmor > 0) {
+        armorStatus = `, ${wornArmor}/4 armor pieces`;
+      }
+    }
+    
+    let activity = '';
+    if (config.tasks && config.tasks.current) {
+      const taskType = config.tasks.current.type || 'working';
+      activity = `. Currently ${taskType}`;
+    }
+    
+    const naturalStatuses = [
+      `I'm at ${health} hearts, ${food} hunger, level ${experience}${armorStatus}${activity}. All good here.`,
+      `Sitting at ${health} HP, ${food} food, level ${experience}${armorStatus}${activity}. Ready for action.`,
+      `Status check: ${health} health, ${food} hunger, level ${experience}${armorStatus}${activity}. What's next?`,
+      `${health} hearts, ${food} hunger, level ${experience}${armorStatus}${activity}. Doing fine—what do you need?`
+    ];
+    
+    const response = naturalStatuses[Math.floor(Math.random() * naturalStatuses.length)];
     this.updateMetrics('statusRequests');
-    this.logQA(username, message, status, 'status');
-    return status;
+    this.logQA(username, message, response, 'status_natural');
+    return response;
   }
   
   // Handle greetings
   async handleGreeting(username, message) {
-    const lower = message.toLowerCase();
-    
-    // Find matching greeting from knowledge base
-    for (const [greeting, responses] of Object.entries(MINECRAFT_KNOWLEDGE.general)) {
-      if (lower.includes(greeting)) {
-        const response = responses[Math.floor(Math.random() * responses.length)];
+    // Try LLM for natural greeting first
+    if (config.conversationalAI.useLLM) {
+      const llmResponse = await this.queryLLM(username, message);
+      if (llmResponse) {
         this.updateMetrics('greetings');
-        this.logQA(username, message, response, 'greeting');
-        return response;
+        this.updateMetrics('llmQueries');
+        this.logQA(username, message, llmResponse, 'llm_greeting');
+        return llmResponse;
       }
     }
     
-    // Default greeting
-    const defaultGreetings = ['Hello there!', 'Hey!', 'Hi! How can I help you?'];
-    const response = defaultGreetings[Math.floor(Math.random() * defaultGreetings.length)];
+    // Natural personality-based greetings (fallback)
+    const naturalGreetings = [
+      `Yo ${username}! What's up?`,
+      `Hey ${username}! Ready to cause some chaos?`,
+      `Sup ${username}! Looking for trouble or just hanging?`,
+      `Hey there ${username}! What do you need?`,
+      `Yo! Ready for action?`,
+      `Hey! What's the plan?`,
+      `Hi ${username}! Let's do this.`,
+      `Hello! Ready when you are.`
+    ];
     
+    const response = naturalGreetings[Math.floor(Math.random() * naturalGreetings.length)];
     this.updateMetrics('greetings');
-    this.logQA(username, message, response, 'greeting_default');
+    this.logQA(username, message, response, 'greeting_personality');
     return response;
   }
   
   // Handle farewells
   async handleFarewell(username, message) {
-    const lower = message.toLowerCase();
-    
-    // Find matching farewell from knowledge base
-    for (const [farewell, responses] of Object.entries(MINECRAFT_KNOWLEDGE.general)) {
-      if (lower.includes(farewell) && ['bye', 'goodbye'].includes(farewell)) {
-        const response = responses[Math.floor(Math.random() * responses.length)];
+    if (config.conversationalAI.useLLM) {
+      const llmResponse = await this.queryLLM(username, message);
+      if (llmResponse) {
         this.updateMetrics('farewells');
-        this.logQA(username, message, response, 'farewell');
-        return response;
+        this.updateMetrics('llmQueries');
+        this.logQA(username, message, llmResponse, 'llm_farewell');
+        return llmResponse;
       }
     }
     
-    // Default farewell
-    const defaultFarewells = ['Goodbye!', 'See you later!', 'Take care!'];
-    const response = defaultFarewells[Math.floor(Math.random() * defaultFarewells.length)];
+    const naturalFarewells = [
+      `Catch you later, ${username}. Stay sharp out there!`,
+      `Later ${username}! Ping me if you need backup.`,
+      `See you around, ${username}. I'll be here when you need me.`,
+      `Take it easy, ${username}. I'll keep watch.`,
+      `Later! I'm going to keep scouting.`,
+      `Peace out, ${username}. Let's run it back soon.`
+    ];
     
+    const response = naturalFarewells[Math.floor(Math.random() * naturalFarewells.length)];
     this.updateMetrics('farewells');
-    this.logQA(username, message, response, 'farewell_default');
+    this.logQA(username, message, response, 'farewell_personality');
     return response;
   }
   
   // Handle gratitude
   async handleGratitude(username, message) {
-    const lower = message.toLowerCase();
-    
-    // Find matching gratitude response from knowledge base
-    for (const [thanks, responses] of Object.entries(MINECRAFT_KNOWLEDGE.general)) {
-      if (lower.includes(thanks) && ['thanks', 'thank you'].includes(thanks)) {
-        const response = responses[Math.floor(Math.random() * responses.length)];
+    if (config.conversationalAI.useLLM) {
+      const llmResponse = await this.queryLLM(username, message);
+      if (llmResponse) {
         this.updateMetrics('gratitude');
-        this.logQA(username, message, response, 'gratitude');
-        return response;
+        this.updateMetrics('llmQueries');
+        this.logQA(username, message, llmResponse, 'llm_gratitude');
+        return llmResponse;
       }
     }
     
-    // Default gratitude response
-    const defaultGratitude = ['You\'re welcome!', 'No problem!', 'Happy to help!'];
-    const response = defaultGratitude[Math.floor(Math.random() * defaultGratitude.length)];
+    const naturalThanks = [
+      `Anytime, ${username}.`,
+      `You got it, ${username}.`,
+      `No problem at all!`,
+      `Happy to help.`,
+      `All good! Let me know what else you need.`,
+      `Always.`
+    ];
     
+    const response = naturalThanks[Math.floor(Math.random() * naturalThanks.length)];
     this.updateMetrics('gratitude');
-    this.logQA(username, message, response, 'gratitude_default');
+    this.logQA(username, message, response, 'gratitude_personality');
     return response;
   }
   
@@ -18578,7 +19065,7 @@ class ConversationAI {
     return helpText;
   }
   
-  // Handle small talk
+  // Handle small talk with natural personality
   async handleSmallTalk(username, message) {
     // Try LLM first if enabled for natural conversation
     if (config.conversationalAI.useLLM) {
@@ -18591,29 +19078,50 @@ class ConversationAI {
       }
     }
     
-    // Fallback small talk responses
-    const responses = [
-      "That's interesting! Is there something specific I can help you with in Minecraft?",
-      "I'm here to help with Minecraft tasks and commands. What would you like to do?",
-      "Cool! Try asking me about crafting, finding items, or Minecraft facts!",
-      "I'm focused on helping with Minecraft. Want to find some resources or build something?"
+    // Natural fallback responses with personality
+    const naturalResponses = [
+      `What do you need? I'm ready for anything.`,
+      `Just say the word and I'll make it happen.`,
+      `I'm all ears. What's the plan?`,
+      `Talk to me. What are we doing?`,
+      `Ready when you are. What's up?`,
+      `I'm here if you need me. Just give the order.`,
+      `Looking for trouble or need something specific?`,
+      `What's on your mind, ${username}?`
     ];
     
-    const response = responses[Math.floor(Math.random() * responses.length)];
-    
+    const response = naturalResponses[Math.floor(Math.random() * naturalResponses.length)];
     this.updateMetrics('smallTalk');
-    this.logQA(username, message, response, 'smalltalk_fallback');
+    this.logQA(username, message, response, 'smalltalk_personality');
     return response;
   }
   
-  // Query LLM with safe fallbacks
+  // Query LLM with safe fallbacks and context
   async queryLLM(username, message) {
     try {
-      const prompt = `As a helpful Minecraft bot named Hunter, respond naturally to: "${message}". Keep responses concise and Minecraft-related.`;
-      const response = await this.llmBridge.query(prompt, username);
+      // Build context for more natural responses
+      const context = {
+        health: `${this.bot.health || 20}/20`,
+        location: 'unknown',
+        activity: 'idle'
+      };
+      
+      // Add location if available
+      if (this.bot.entity && this.bot.entity.position) {
+        const pos = this.bot.entity.position;
+        const dimension = this.bot.game?.dimension || 'overworld';
+        context.location = `${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)} (${dimension})`;
+      }
+      
+      // Add current activity if known
+      if (config.tasks && config.tasks.current) {
+        context.activity = config.tasks.current.type || 'idle';
+      }
+      
+      // Query LLM with context - let it build the natural response
+      const response = await this.llmBridge.query(message, username, context);
       
       if (response) {
-        this.updateMetrics('cacheHits'); // Will be decremented if it was actually a cache hit
         return response;
       }
       
