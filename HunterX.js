@@ -15645,6 +15645,10 @@ class ItemHunter {
     this.structureMapper = null;
     this.seedCracker = null;
     this.structurePredictor = null;
+    
+    // OPTIMIZED: Initialize speed optimizer for faster operations
+    this.speedOptimizer = new SpeedOptimizer(bot);
+    console.log('[HUNTER] ⚡ Speed optimizer initialized for maximum performance');
   }
   
   setStructureSystems(structureMapper, seedCracker, structurePredictor) {
@@ -15804,7 +15808,8 @@ class ItemHunter {
         continue;
       }
       
-      await this.sleep(800);
+      // OPTIMIZED: Reduced delay from 800ms to 100ms for faster mining
+      await this.sleep(100);
       await this.worldKnowledge.scanForBlocks(targets.blockNames, 24);
     }
     
@@ -15902,6 +15907,16 @@ class ItemHunter {
     }
     
     try {
+      // OPTIMIZED: Use speed optimizer for faster mining
+      if (this.speedOptimizer) {
+        const success = await this.speedOptimizer.mineBlockFast(block);
+        if (success) {
+          console.log(`[HUNTER] ✅ Successfully mined ${entry.blockName} (FAST MODE)`);
+          return true;
+        }
+      }
+      
+      // Fallback to original method
       if (this.bot.pathfinder) {
         this.bot.pathfinder.stop();
       }
@@ -18044,8 +18059,8 @@ class AutoFisher {
       
       casts++;
       
-      // Short break between casts
-      await this.sleep(2000);
+      // OPTIMIZED: Reduced fishing delay from 2000ms to 500ms for faster fishing
+      await this.sleep(500);
     }
     
     if (collected >= quantity) {
@@ -18112,7 +18127,8 @@ class AutoFisher {
         0.2 // Look slightly down
       );
       
-      await this.sleep(500);
+      // OPTIMIZED: Reduced cast delay from 500ms to 100ms for faster casting
+      await this.sleep(100);
       await this.bot.activateItem(); // Cast line
       
       console.log(`[HUNTER] 🎣 Line cast`);
@@ -18156,7 +18172,8 @@ class AutoFisher {
               this.bot.deactivateItem(); // Reel in
               resolve('fish');
             } else {
-              setTimeout(checkBite, 100);
+              // OPTIMIZED: Reduced bite check interval from 100ms to 50ms for faster response
+              setTimeout(checkBite, 50);
             }
           };
           setTimeout(checkBite, 1000);
@@ -37769,8 +37786,8 @@ class DupeDiscoveryManager {
           };
         }
         
-        // Small delay between steps
-        await this.sleep(500);
+        // OPTIMIZED: Reduced step delay from 500ms to 100ms for faster execution
+        await this.sleep(100);
       }
       
       return {
@@ -38135,8 +38152,8 @@ class DupeDiscoveryManager {
     
     const activity = activities[Math.floor(Math.random() * activities.length)];
     
-    // Simplified activity execution
-    await this.sleep(2000);
+    // OPTIMIZED: Reduced normal activity delay from 2000ms to 500ms for faster blending
+    await this.sleep(500);
     console.log(`[DUPE_DISCOVERY] Performed: ${activity}`);
   }
   
@@ -38147,6 +38164,267 @@ class DupeDiscoveryManager {
     }
   }
   
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// === SPEED OPTIMIZATION SYSTEM ===
+// Optimized movement and action systems for maximum bot performance
+
+class SpeedOptimizer {
+  constructor(bot) {
+    this.bot = bot;
+    this.sprintEnabled = true;
+    this.actionBuffer = [];
+    this.processingActions = false;
+    
+    // Speed configuration
+    this.config = {
+      miningDelay: 50,        // Delay between mining blocks
+      bridgingDelay: 100,     // Delay between placing bridge blocks
+      movementDelay: 0,       // No delay between movements
+      sprintThreshold: 3,      // Start sprinting after 3 blocks
+      maxReachDistance: 5.5   // Maximum block reach distance
+    };
+  }
+
+  // Enable sprinting for fast movement
+  enableSprint() {
+    if (this.canSprint() && !this.bot.getControlState('sprint')) {
+      this.bot.setControlState('sprint', true);
+    }
+  }
+
+  // Disable sprinting for precise operations
+  disableSprint() {
+    if (this.bot.getControlState('sprint')) {
+      this.bot.setControlState('sprint', false);
+    }
+  }
+
+  // Check if bot can sprint
+  canSprint() {
+    return this.bot.food && this.bot.food >= 6;
+  }
+
+  // Optimized mining with minimal delays
+  async mineBlockFast(block) {
+    if (!block) return false;
+
+    try {
+      // Stop any current movement
+      if (this.bot.pathfinder) {
+        this.bot.pathfinder.stop();
+      }
+
+      // Look at block immediately
+      await this.bot.lookAt(block.position.offset(0.5, 0.5, 0.5));
+
+      // Start digging without delay
+      const startTime = Date.now();
+      await this.bot.dig(block);
+      const digTime = Date.now() - startTime;
+
+      console.log(`[SPEED] ⚡ Mined ${block.name} in ${digTime}ms`);
+      return true;
+
+    } catch (err) {
+      console.log(`[SPEED] ❌ Fast mine failed: ${err.message}`);
+      return false;
+    }
+  }
+
+  // Optimized bridging with continuous placement
+  async bridgeFast(distance, direction = 'forward') {
+    console.log(`[SPEED] 🌉 Starting fast bridge: ${distance} blocks`);
+    
+    if (!this.canSprint()) {
+      console.log(`[SPEED] ⚠️ Low food, bridging at normal speed`);
+    }
+
+    const startTime = Date.now();
+    let placed = 0;
+
+    try {
+      // Enable sprinting for fast bridging
+      this.enableSprint();
+
+      // Get appropriate block for bridging
+      const bridgeBlock = this.getBridgeBlock();
+      if (!bridgeBlock) {
+        console.log(`[SPEED] ❌ No blocks available for bridging`);
+        return false;
+      }
+
+      // Equip the block
+      await this.bot.equip(bridgeBlock, 'hand');
+
+      for (let i = 0; i < distance; i++) {
+        // Place block and move immediately (no waiting)
+        const placedBlock = await this.placeBridgeBlock(direction);
+        
+        if (placedBlock) {
+          placed++;
+          
+          // Move forward immediately after placing
+          this.bot.setControlState('forward', true);
+          
+          // Minimal delay between placements
+          await this.sleep(this.config.bridgingDelay);
+          
+          // Stop movement briefly for next placement
+          this.bot.setControlState('forward', false);
+          await this.sleep(20); // Tiny pause for block placement
+        } else {
+          console.log(`[SPEED] ⚠️ Failed to place bridge block at ${i + 1}/${distance}`);
+          break;
+        }
+      }
+
+      // Stop all movement
+      this.bot.setControlState('forward', false);
+      this.disableSprint();
+
+      const totalTime = Date.now() - startTime;
+      const blocksPerSecond = (placed / (totalTime / 1000)).toFixed(1);
+      
+      console.log(`[SPEED] ✅ Fast bridge complete: ${placed}/${distance} blocks in ${totalTime}ms (${blocksPerSecond} blocks/sec)`);
+      return placed >= distance;
+
+    } catch (err) {
+      console.log(`[SPEED] ❌ Fast bridge failed: ${err.message}`);
+      this.disableSprint();
+      return false;
+    }
+  }
+
+  // Get best block for bridging
+  getBridgeBlock() {
+    const bridgeBlocks = ['cobblestone', 'dirt', 'planks', 'stone', 'netherrack'];
+    
+    for (const blockName of bridgeBlocks) {
+      const item = this.bot.inventory.items().find(i => i.name === blockName);
+      if (item && item.count > 0) {
+        return item;
+      }
+    }
+    
+    // Fallback to any placeable block
+    return this.bot.inventory.items().find(i => 
+      i.name.includes('block') || i.name.includes('plank') || i.name.includes('wood')
+    );
+  }
+
+  // Place a single bridge block
+  async placeBridgeBlock(direction = 'forward') {
+    try {
+      const referenceBlock = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
+      if (!referenceBlock) return false;
+
+      const faceVec = direction === 'forward' ? new Vec3(0, 1, 0) : new Vec3(0, 1, 0);
+      const position = this.bot.entity.position.offset(0, -1, 0);
+
+      const placed = await this.bot.placeBlock(referenceBlock, faceVec);
+      return placed;
+
+    } catch (err) {
+      return false;
+    }
+  }
+
+  // Optimized movement with pathfinding and sprinting
+  async moveToFast(position, timeout = 30000) {
+    const startTime = Date.now();
+    
+    try {
+      // Enable sprinting for fast movement
+      if (this.canSprint()) {
+        this.enableSprint();
+      }
+
+      // Use pathfinding with goal
+      const goal = new goals.GoalNear(position.x, position.y, position.z, 1);
+      
+      await Promise.race([
+        this.bot.pathfinder.goto(goal),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Movement timeout')), timeout)
+        )
+      ]);
+
+      const moveTime = Date.now() - startTime;
+      console.log(`[SPEED] 🏃 Fast movement completed in ${moveTime}ms`);
+      return true;
+
+    } catch (err) {
+      console.log(`[SPEED] ❌ Fast movement failed: ${err.message}`);
+      this.disableSprint();
+      return false;
+    }
+  }
+
+  // Queue action for buffered execution
+  queueAction(action) {
+    this.actionBuffer.push(action);
+    
+    if (!this.processingActions) {
+      this.processActionBuffer();
+    }
+  }
+
+  // Process action buffer with minimal delays
+  async processActionBuffer() {
+    if (this.processingActions || this.actionBuffer.length === 0) {
+      return;
+    }
+
+    this.processingActions = true;
+
+    while (this.actionBuffer.length > 0) {
+      const action = this.actionBuffer.shift();
+      
+      try {
+        await action();
+        // Minimal delay between queued actions
+        await this.sleep(this.config.movementDelay);
+      } catch (err) {
+        console.log(`[SPEED] ❌ Buffered action failed: ${err.message}`);
+      }
+    }
+
+    this.processingActions = false;
+  }
+
+  // Optimized equipment switching
+  async equipFast(item, destination = 'hand') {
+    const startTime = Date.now();
+    
+    try {
+      // Direct equip without unnecessary checks
+      await this.bot.equip(item, destination);
+      
+      const equipTime = Date.now() - startTime;
+      console.log(`[SPEED] ⚡ Equipped ${item.name} in ${equipTime}ms`);
+      return true;
+
+    } catch (err) {
+      console.log(`[SPEED] ❌ Fast equip failed: ${err.message}`);
+      return false;
+    }
+  }
+
+  // Get performance metrics
+  getSpeedMetrics() {
+    return {
+      sprintEnabled: this.bot.getControlState('sprint'),
+      foodLevel: this.bot.food || 0,
+      actionQueueLength: this.actionBuffer.length,
+      processingActions: this.processingActions
+    };
+  }
+
+  // Utility sleep method
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
