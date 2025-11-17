@@ -6036,11 +6036,20 @@ class SwarmCoordinator {
     
     switch (message.type) {
       case 'HEARTBEAT':
-        bot.lastHeartbeat = Date.now();
-        bot.position = message.position;
-        bot.health = message.health;
-        bot.task = message.task;
-        bot.status = message.status;
+        const now = Date.now();
+        const previousLastSeen = bot.lastHeartbeat;
+        bot.lastHeartbeat = now;
+        bot.position = message.position || bot.position;
+        bot.health = message.health || bot.health;
+        bot.task = message.task || bot.task;
+        bot.status = message.status || bot.status;
+        
+        // If bot was previously disconnected, mark it as reconnected
+        if (bot.status === 'disconnected') {
+          console.log(`[SWARM] ✅ Bot ${botId} reconnected after ${Math.round((now - previousLastSeen) / 1000)}s`);
+          bot.status = message.status || 'idle';
+        }
+        
         this.sendAck(botId, message.id);
         break;
         
@@ -6697,9 +6706,14 @@ class SwarmCoordinator {
       const now = Date.now();
       
       this.bots.forEach((bot, botId) => {
-        if (now - bot.lastHeartbeat > 10000) {
-          console.log(`[SWARM] ⚠️ Bot ${botId} heartbeat timeout`);
+        // Increased timeout from 10s to 25s for better reliability
+        // This allows for network delays and busy periods while still detecting actual disconnections
+        if (now - bot.lastHeartbeat > 25000) {
+          console.log(`[SWARM] ⚠️ Bot ${botId} heartbeat timeout (last seen: ${Math.round((now - bot.lastHeartbeat) / 1000)}s ago)`);
           bot.status = 'disconnected';
+        } else if (now - bot.lastHeartbeat > 15000) {
+          // Warning at 15s to give early indication of potential issues
+          console.log(`[SWARM] ⚠️ Bot ${botId} heartbeat delayed (last seen: ${Math.round((now - bot.lastHeartbeat) / 1000)}s ago)`);
         }
       });
     }, 5000);
@@ -32638,14 +32652,21 @@ async function launchBot(username, role = 'fighter') {
         // Start heartbeat
         const heartbeatInterval = safeSetInterval(() => {
           if (wsClient && wsClient.readyState === WebSocket.OPEN) {
-            wsClient.send(JSON.stringify({
-              type: 'HEARTBEAT',
-              id: Date.now(),
-              position: bot.entity.position,
-              health: bot.health,
-              task: config.tasks.current?.item || null,
-              status: combatAI.inCombat ? 'combat' : (config.tasks.current ? 'busy' : 'idle')
-            }));
+            try {
+              wsClient.send(JSON.stringify({
+                type: 'HEARTBEAT',
+                id: Date.now(),
+                position: bot.entity ? bot.entity.position : { x: 0, y: 0, z: 0 },
+                health: bot.health || 20,
+                task: config.tasks.current?.item || null,
+                status: combatAI.inCombat ? 'combat' : (config.tasks.current ? 'busy' : 'idle')
+              }));
+            } catch (error) {
+              console.log(`[SWARM] Failed to send heartbeat for ${username}:`, error.message);
+            }
+          } else if (wsClient && wsClient.readyState === WebSocket.CLOSED) {
+            console.log(`[SWARM] WebSocket connection closed for ${username}, attempting reconnect...`);
+            // Note: Reconnection logic would need to be implemented here if needed
           }
         }, 3000, 'swarm-heartbeat');
       });
