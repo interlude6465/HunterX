@@ -12051,8 +12051,13 @@ class CombatAI {
   }
   
   hasCrystalResources() {
-    const crystals = this.bot.inventory.items().find(i => i.name === 'end_crystal');
-    const obsidian = this.bot.inventory.items().find(i => i.name === 'obsidian');
+    // Defensive check for bot and inventory
+    if (!this.bot || !this.bot.inventory || typeof this.bot.inventory.items !== 'function') {
+      return false;
+    }
+    
+    const crystals = this.bot.inventory.items().find(i => i && i.name === 'end_crystal');
+    const obsidian = this.bot.inventory.items().find(i => i && i.name === 'obsidian');
     return !!(crystals && obsidian);
   }
   
@@ -12205,13 +12210,17 @@ class CombatAI {
   // === COMBAT SPRINT MANAGEMENT ===
   
   canSprint() {
-    // Check if bot has enough food to sprint (minimum 6 food points)
-    const foodLevel = this.bot.food || 20;
+    // Check if bot and player exist and have enough food to sprint (minimum 6 food points)
+    if (!this.bot || typeof this.bot !== 'object') {
+      return false;
+    }
+    
+    const foodLevel = (this.bot && typeof this.bot.food === 'number') ? this.bot.food : 20;
     return foodLevel >= 6;
   }
   
   shouldSprintToTarget(target) {
-    if (!target || !target.position || !this.bot.entity || !this.bot.entity.position) {
+    if (!target || !target.position || !this.bot || !this.bot.entity || !this.bot.entity.position) {
       return false;
     }
     
@@ -12221,7 +12230,12 @@ class CombatAI {
   }
   
   enableCombatSprint() {
-    if (this.isSprinting || !this.canSprint()) {
+    // Check bot exists before attempting sprint
+    if (!this.bot || !this.canSprint()) {
+      return;
+    }
+    
+    if (this.isSprinting) {
       return;
     }
     
@@ -12249,25 +12263,39 @@ class CombatAI {
       return;
     }
     
+    // Clear sprint validation interval first
+    if (this.sprintCheckInterval) {
+      clearInterval(this.sprintCheckInterval);
+      this.sprintCheckInterval = null;
+    }
+    
+    // Only attempt to disable sprint if bot exists
+    if (!this.bot) {
+      this.isSprinting = false;
+      console.log('[COMBAT] 🚶 Sprint disabled (bot unavailable)');
+      return;
+    }
+    
     try {
       this.bot.setControlState('sprint', false);
       this.isSprinting = false;
       console.log('[COMBAT] 🚶 Sprint disabled');
       
-      // Clear sprint validation interval
-      if (this.sprintCheckInterval) {
-        clearInterval(this.sprintCheckInterval);
-        this.sprintCheckInterval = null;
-      }
-      
     } catch (err) {
       console.log(`[COMBAT] Failed to disable sprint: ${err.message}`);
+      this.isSprinting = false;
     }
   }
   
   validateCombatSprint() {
     // Validate sprint conditions during combat
     if (!this.isSprinting) {
+      return;
+    }
+    
+    // Check if bot still exists
+    if (!this.bot) {
+      this.disableCombatSprint();
       return;
     }
     
@@ -12285,7 +12313,7 @@ class CombatAI {
     }
     
     // Check if bot is in water (sprinting doesn't work well in water)
-    if (this.bot.isInWater) {
+    if (this.bot && this.bot.isInWater) {
       console.log('[COMBAT] 🌊 Bot in water, disabling sprint');
       this.disableCombatSprint();
       return;
@@ -12387,6 +12415,11 @@ class CombatAI {
   }
   
   getBestArmor(slot) {
+    // Defensive check for bot and inventory
+    if (!this.bot || !this.bot.inventory || typeof this.bot.inventory.items !== 'function') {
+      return null;
+    }
+    
     const items = this.bot.inventory.items().filter(item => {
       if (slot === 'head' && (item.name.includes('helmet') || item.name.includes('cap'))) return true;
       if (slot === 'torso' && (item.name.includes('chestplate') || item.name.includes('tunic'))) return true;
@@ -12428,8 +12461,8 @@ class CombatAI {
   
   async handleCombat(attacker) {
     // === ISSUE #3: Null checks for entity ===
-    if (!attacker || !attacker.position || !this.bot.entity || !this.bot.entity.position) {
-      console.log('[COMBAT] Cannot handle combat - entity missing');
+    if (!attacker || !attacker.position || !this.bot || !this.bot.entity || !this.bot.entity.position) {
+      console.log('[COMBAT] Cannot handle combat - entity or bot missing');
       return;
     }
     
@@ -12590,6 +12623,11 @@ class CombatAI {
   }
   
   async raiseShield() {
+    // Defensive checks for bot and inventory
+    if (!this.bot || !this.bot.inventory || typeof this.bot.inventory.items !== 'function') {
+      return;
+    }
+    
     const shield = this.bot.inventory.items().find(i => i.name === 'shield');
     if (shield) {
       await this.bot.equip(shield, 'off-hand');
@@ -12598,13 +12636,26 @@ class CombatAI {
   }
   
   async eatFood(food) {
+    // Defensive checks for bot and food
+    if (!this.bot || !food) {
+      return;
+    }
+    
     console.log(`[COMBAT] Eating: ${food.name}`);
     await this.bot.equip(food, 'hand');
     await this.bot.consume();
-    console.log(`[COMBAT] Health restored to ${this.bot.health}/20`);
+    
+    // Safe access to bot.health
+    const health = typeof this.bot.health === 'number' ? this.bot.health : 20;
+    console.log(`[COMBAT] Health restored to ${health}/20`);
   }
   
   async moveToward(target) {
+    // Defensive checks for bot and target
+    if (!this.bot || !target || !target.position || !this.bot.entity || !this.bot.entity.position) {
+      return;
+    }
+    
     try {
       // Check if bot or target is in water and use swimming behavior
       const botInWater = this.bot.isInWater;
@@ -12616,27 +12667,37 @@ class CombatAI {
         this.bot.swimmingBehavior.setEnabled(true);
       }
       
-      await this.bot.pathfinder.goto(new goals.GoalNear(
-        target.position.x,
-        target.position.y,
-        target.position.z,
-        2
-      ));
+      if (this.bot && this.bot.pathfinder) {
+        await this.bot.pathfinder.goto(new goals.GoalNear(
+          target.position.x,
+          target.position.y,
+          target.position.z,
+          2
+        ));
+      }
     } catch (e) {
       // Couldn't pathfind, use direct movement as fallback
-      const dir = target.position.minus(this.bot.entity.position).normalize();
-      this.bot.setControlState('forward', true);
-      
-      // If in water, enable jump for swimming
-      if (this.bot.isInWater) {
-        this.bot.setControlState('jump', true);
+      if (!this.bot || !this.bot.entity || !this.bot.entity.position) {
+        return;
       }
       
-      await sleep(100);
-      this.bot.setControlState('forward', false);
-      
-      if (this.bot.isInWater) {
-        this.bot.setControlState('jump', false);
+      try {
+        const dir = target.position.minus(this.bot.entity.position).normalize();
+        this.bot.setControlState('forward', true);
+        
+        // If in water, enable jump for swimming
+        if (this.bot.isInWater) {
+          this.bot.setControlState('jump', true);
+        }
+        
+        await sleep(100);
+        this.bot.setControlState('forward', false);
+        
+        if (this.bot && this.bot.isInWater) {
+          this.bot.setControlState('jump', false);
+        }
+      } catch (fallbackErr) {
+        // Fallback movement failed, bot may have disconnected
       }
     }
   }
@@ -12655,20 +12716,21 @@ class CombatAI {
     console.log('[LOOT] Collecting dropped items...');
     
     // === ISSUE #3: Null checks ===
-    if (!this.bot.entity || !this.bot.entity.position) {
+    if (!this.bot || !this.bot.entity || !this.bot.entity.position) {
       console.log('[LOOT] Cannot collect - bot entity missing');
       return;
     }
     
     try {
-      const items = Object.values(this.bot.entities).filter(e => 
+      const botEntities = this.bot.entities ? Object.values(this.bot.entities) : [];
+      const items = botEntities.filter(e => 
         e && e.name === 'item' && e.position &&
         e.position.distanceTo(this.bot.entity.position) < 10
       );
       
       for (const item of items) {
         try {
-          if (!item.position || !this.bot.pathfinder) {
+          if (!this.bot || !item.position || !this.bot.pathfinder) {
             continue;
           }
           const goal = new goals.GoalNear(new Vec3(item.position.x, item.position.y, item.position.z), 1);
@@ -13001,11 +13063,11 @@ class CombatAI {
       }
       
       try {
-        if (!this.bot.entity || !this.bot.entity.position) {
+        if (!this.bot || !this.bot.entity || !this.bot.entity.position) {
           return;
         }
         
-        const nearbyEntities = Object.values(this.bot.entities);
+        const nearbyEntities = this.bot.entities ? Object.values(this.bot.entities) : [];
         
         for (const entity of nearbyEntities) {
           if (!entity || !entity.position) continue;
@@ -13109,8 +13171,13 @@ class CombatAI {
   }
   
   async heal() {
+    // Defensive checks for bot and inventory
+    if (!this.bot || !this.bot.inventory || typeof this.bot.inventory.items !== 'function') {
+      return;
+    }
+    
     const healingItems = this.bot.inventory.items().filter(item => 
-      item.name.includes('potion') && item.name.includes('health')
+      item && item.name && item.name.includes('potion') && item.name.includes('health')
     );
     
     if (healingItems.length > 0) {
@@ -30381,41 +30448,52 @@ class BotSpawner {
       });
 
       // Handle disconnect with auto-reconnect
-      const handleDisconnect = async (reason) => {
-       console.log(`[RECONNECT] ${username} disconnected: ${reason}`);
+       const handleDisconnect = async (reason) => {
+        console.log(`[RECONNECT] ${username} disconnected: ${reason}`);
 
-       // Save bot state before disconnect
-       if (reconnectManager) {
-         reconnectManager.saveBotState(bot);
+        // Stop combat when bot disconnects
+        if (bot.combatAI) {
+          try {
+            bot.combatAI.pauseCombat('Bot disconnected');
+            bot.combatAI.abortCombat('Bot disconnected');
+            bot.combatAI.stopMonitoring();
+          } catch (err) {
+            console.warn(`[RECONNECT] Failed to stop combat for ${username}: ${err.message}`);
+          }
+        }
 
-         // Unregister from SwarmCoordinator and BotSpawner
-         this.unregisterBot(username);
-         if (globalSwarmCoordinator) {
-           try {
-             globalSwarmCoordinator.unregisterBot(username);
-           } catch (err) {
-             console.warn(`[RECONNECT] Failed to unregister from SwarmCoordinator: ${err.message}`);
-           }
-         }
+        // Save bot state before disconnect
+        if (reconnectManager) {
+          reconnectManager.saveBotState(bot);
 
-         // Attempt to reconnect with exponential backoff
-         const newBot = await reconnectManager.attemptReconnect();
-         if (newBot) {
-           // Register the new bot
-           this.registerBot(newBot, username, type, role, serverIP, options);
-         }
-       } else {
-         // Fallback: just unregister if no reconnect manager
-         this.unregisterBot(username);
-         if (globalSwarmCoordinator) {
-           try {
-             globalSwarmCoordinator.unregisterBot(username);
-           } catch (err) {
-             console.warn(`[RECONNECT] Failed to unregister from SwarmCoordinator: ${err.message}`);
-           }
-         }
-       }
-     };
+          // Unregister from SwarmCoordinator and BotSpawner
+          this.unregisterBot(username);
+          if (globalSwarmCoordinator) {
+            try {
+              globalSwarmCoordinator.unregisterBot(username);
+            } catch (err) {
+              console.warn(`[RECONNECT] Failed to unregister from SwarmCoordinator: ${err.message}`);
+            }
+          }
+
+          // Attempt to reconnect with exponential backoff
+          const newBot = await reconnectManager.attemptReconnect();
+          if (newBot) {
+            // Register the new bot
+            this.registerBot(newBot, username, type, role, serverIP, options);
+          }
+        } else {
+          // Fallback: just unregister if no reconnect manager
+          this.unregisterBot(username);
+          if (globalSwarmCoordinator) {
+            try {
+              globalSwarmCoordinator.unregisterBot(username);
+            } catch (err) {
+              console.warn(`[RECONNECT] Failed to unregister from SwarmCoordinator: ${err.message}`);
+            }
+          }
+        }
+      };
 
      // Detect all disconnect types
      bot.once('end', (reason) => {
