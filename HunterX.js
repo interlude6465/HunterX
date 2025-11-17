@@ -15847,6 +15847,8 @@ class ItemHunter {
       }
     }
     
+    await this.dropJunkItemsIfNeeded(5);
+    
     const approachPositions = this.getCandidateMiningPositions(position);
     
     if (approachPositions.length === 0) {
@@ -15915,6 +15917,9 @@ class ItemHunter {
       
       await this.bot.dig(block);
       console.log(`[HUNTER] ✅ Successfully mined ${entry.blockName}`);
+      
+      await this.collectDroppedOre(entry.blockName, position);
+      
       return true;
     } catch (err) {
       console.log(`[HUNTER] ❌ Failed to mine ${entry.blockName}: ${err.message}`);
@@ -16274,6 +16279,142 @@ class ItemHunter {
     }
   }
   
+  getInventoryFreeSlots() {
+    if (!this.bot || !this.bot.inventory) {
+      return 0;
+    }
+    
+    const items = this.bot.inventory.items();
+    let occupiedSlots = 0;
+    
+    for (const item of items) {
+      if (item && item.name) {
+        occupiedSlots++;
+      }
+    }
+    
+    const totalSlots = this.bot.inventory.size || 36;
+    return Math.max(0, totalSlots - occupiedSlots);
+  }
+  
+  isJunkItem(itemName) {
+    if (!itemName || typeof itemName !== 'string') {
+      return false;
+    }
+    
+    const junkItems = [
+      'cobblestone', 'stone', 'dirt', 'grass_block',
+      'diorite', 'andesite', 'granite',
+      'mud', 'mud_bricks',
+      'tuff', 'deepslate',
+      'gravel', 'sand', 'red_sand',
+      'clay', 'mycelium',
+      'dirt_path', 'farmland'
+    ];
+    
+    return junkItems.includes(itemName.toLowerCase());
+  }
+  
+  isValuableOre(itemName) {
+    if (!itemName || typeof itemName !== 'string') {
+      return false;
+    }
+    
+    const valuableOres = [
+      'diamond', 'diamond_ore', 'deepslate_diamond_ore',
+      'gold_ingot', 'gold_ore', 'deepslate_gold_ore',
+      'iron_ingot', 'iron_ore', 'deepslate_iron_ore',
+      'copper_ingot', 'copper_ore', 'deepslate_copper_ore',
+      'coal', 'coal_ore', 'deepslate_coal_ore',
+      'redstone', 'redstone_ore', 'deepslate_redstone_ore',
+      'lapis_lazuli', 'lapis_ore', 'deepslate_lapis_ore',
+      'emerald', 'emerald_ore', 'deepslate_emerald_ore',
+      'ancient_debris', 'netherite_ingot', 'netherite_scrap'
+    ];
+    
+    return valuableOres.some(ore => itemName.toLowerCase().includes(ore));
+  }
+  
+  dropJunkItems() {
+    if (!this.bot || !this.bot.inventory) {
+      return 0;
+    }
+    
+    const items = this.bot.inventory.items();
+    let droppedCount = 0;
+    
+    for (const item of items) {
+      if (item && item.name && this.isJunkItem(item.name)) {
+        try {
+          this.bot.toss(item);
+          droppedCount++;
+          console.log(`[HUNTER] 🗑️ Dropped ${item.name} (${item.count})`);
+        } catch (err) {
+          console.log(`[HUNTER] ⚠️ Failed to drop ${item.name}: ${err.message}`);
+        }
+      }
+    }
+    
+    return droppedCount;
+  }
+  
+  async dropJunkItemsIfNeeded(requiredFreeSlots = 5) {
+    const freeSlots = this.getInventoryFreeSlots();
+    
+    if (freeSlots >= requiredFreeSlots) {
+      return;
+    }
+    
+    console.log(`[HUNTER] 📦 Inventory full (${freeSlots} free slots), cleaning junk...`);
+    const dropped = this.dropJunkItems();
+    
+    if (dropped > 0) {
+      console.log(`[HUNTER] ✅ Dropped ${dropped} junk items, freed inventory space`);
+      await this.sleep(500);
+    } else {
+      console.log(`[HUNTER] ⚠️ No junk items to drop, inventory may be full with valuable items`);
+    }
+  }
+  
+  async collectDroppedOre(oreName, position) {
+    if (!this.bot || !this.bot.entity || !position) {
+      return;
+    }
+    
+    try {
+      const searchRadius = 3;
+      const nearbyEntities = this.bot.world.entities;
+      
+      for (const entityId in nearbyEntities) {
+        const entity = nearbyEntities[entityId];
+        
+        if (!entity || !entity.position || entity.type !== 'item') {
+          continue;
+        }
+        
+        const dist = Math.sqrt(
+          Math.pow(entity.position.x - position.x, 2) +
+          Math.pow(entity.position.y - position.y, 2) +
+          Math.pow(entity.position.z - position.z, 2)
+        );
+        
+        if (dist <= searchRadius) {
+          try {
+            if (typeof this.bot.collect === 'function') {
+              await this.bot.collect(entity);
+              console.log(`[HUNTER] 📦 Collected dropped ore near ${position.x}, ${position.y}, ${position.z}`);
+              await this.sleep(200);
+              return;
+            }
+          } catch (collectErr) {
+          }
+        }
+      }
+    } catch (err) {
+      console.log(`[HUNTER] ⚠️ Error collecting dropped ore: ${err.message}`);
+    }
+  }
+
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
