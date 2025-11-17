@@ -23733,7 +23733,13 @@ class MessageInterceptor {
     const threadKey = [player1, player2].sort().join('_');
     return this.conversationThreads.get(threadKey) || [];
   }
-  
+
+  logMessage(username, message, channel = 'chat', metadata = {}) {
+    // Wrapper method for interceptMessage with the expected parameter order
+    // (username, message, channel) instead of (message, username, channel)
+    return this.interceptMessage(message, username, channel, metadata);
+  }
+
   saveMessageLog() {
     try {
       const data = {
