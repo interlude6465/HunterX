@@ -18965,19 +18965,46 @@ try {
       return;
     }
     
-    if (lower.startsWith('!stay') || lower.startsWith('!dontleave')) {
+    if (lower.startsWith('!stay')) {
       if (!this.hasTrustLevel(username, 'trusted')) {
-        denyCommand("Only trusted+ can modify escape behavior!", 'blocked_escape_permissions');
+        denyCommand("Only trusted+ can modify stay behavior!", 'blocked_stay_permissions');
         return;
       }
       
-      config.dangerEscape.enabled = !config.dangerEscape.enabled;
-      if (!saveConfiguration()) {
-        this.bot.chat("⚠️ Failed to save escape settings!");
-        console.log('[ESCAPE] Failed to save escape settings');
+      // Initialize stay mode config if not present
+      if (!config.stayMode) {
+        config.stayMode = { enabled: false };
       }
       
-      this.broadcastEscapeStatus(false);
+      const match = lower.match(/^!stay\s+(on|off|status)\b/);
+      if (!match) {
+        this.bot.chat("Usage: !stay on|off|status");
+        return;
+      }
+      
+      const action = match[1];
+      
+      if (action === 'status') {
+        const status = config.stayMode.enabled ? 'ENABLED' : 'DISABLED';
+        this.bot.chat(`[STAY] Stay mode: ${status} - Bot ${config.stayMode.enabled ? 'will NOT leave' : 'will leave'} when in danger`);
+        return;
+      }
+      
+      const shouldEnable = action === 'on';
+      const previous = config.stayMode.enabled;
+      config.stayMode.enabled = shouldEnable;
+      
+      if (previous !== shouldEnable) {
+        if (!saveConfiguration()) {
+          this.bot.chat("⚠️ Failed to save stay settings!");
+          console.log('[STAY] Failed to save stay settings');
+        }
+      }
+      
+      const status = shouldEnable ? 'ENABLED' : 'DISABLED';
+      const behavior = shouldEnable ? 'will NOT leave' : 'will leave';
+      this.bot.chat(`[STAY] Stay mode ${status} - Bot ${behavior} when in danger`);
+      console.log(`[STAY] Stay mode ${status} by ${username}`);
       return;
     }
     
@@ -28146,6 +28173,44 @@ class BotSpawner {
         }
       }
       
+      // Stay command
+      else if (command.startsWith('stay ')) {
+        const match = command.match(/^stay\s+(on|off|status)\b/);
+        if (!match) {
+          bot.chat("Usage: !!stay on|off|status");
+          return;
+        }
+        
+        const action = match[1];
+        
+        // Initialize stay mode config if not present
+        if (!config.stayMode) {
+          config.stayMode = { enabled: false };
+        }
+        
+        if (action === 'status') {
+          const status = config.stayMode.enabled ? 'ENABLED' : 'DISABLED';
+          bot.chat(`[STAY] Stay mode: ${status} - Bot ${config.stayMode.enabled ? 'will NOT leave' : 'will leave'} when in danger`);
+          return;
+        }
+        
+        const shouldEnable = action === 'on';
+        const previous = config.stayMode.enabled;
+        config.stayMode.enabled = shouldEnable;
+        
+        if (previous !== shouldEnable) {
+          if (!saveConfiguration()) {
+            bot.chat("⚠️ Failed to save stay settings!");
+            console.log('[STAY] Failed to save stay settings');
+          }
+        }
+        
+        const status = shouldEnable ? 'ENABLED' : 'DISABLED';
+        const behavior = shouldEnable ? 'will NOT leave' : 'will leave';
+        bot.chat(`[STAY] Stay mode ${status} - Bot ${behavior} when in danger`);
+        console.log(`[SPAWNER] Stay mode ${status} for ${bot.username} by ${senderUsername}`);
+      }
+      
     } catch (error) {
       console.error(`[SPAWNER] Command execution failed for ${bot.username}:`, error.message);
     }
@@ -33844,6 +33909,7 @@ function saveConfiguration() {
       stashHunt: cfg.stashHunt || { active: false, startCoords: null, searchRadius: 10000, discovered: [], scanSpeed: 'fast', avoidPlayers: true, playerDetectionRadius: 100, flyHackEnabled: false, currentWaypoint: null, visitedChunks: [] },
       backup: cfg.backup || { enabled: true, autoBackup: true, backupPriority: [], leavePercentage: 0.1, riskAssessment: true, multiBot: true, maxBotsPerBackup: 3 },
       dangerEscape: cfg.dangerEscape || { enabled: true, playerProximityRadius: 50 },
+      stayMode: cfg.stayMode || { enabled: false },
       conversationalAI: cfg.conversationalAI || { enabled: false, useLLM: false, provider: {}, apiKey: '', requestTimeout: 30000, cacheTTL: 3600000, timeZoneAliases: {}, rateLimit: {}, autoReplyPrefix: '[AUTO]' },
       privateMsg: cfg.privateMsg || { enabled: false, defaultTemplate: '', trustLevelRequirement: 'trusted', rateLimit: {}, forwardToConsole: false },
       neural: cfg.neural || { combat: null, placement: null, dupe: null, conversation: null, dialogue: null, movement: null, available: false, type: 'fallback', manager: null },
@@ -33900,6 +33966,13 @@ function validateConfig(configToValidate) {
       if (!Number.isFinite(radius) || radius <= 0) {
         return false;
       }
+    }
+  }
+  
+  if (configToValidate.stayMode) {
+    const staySettings = configToValidate.stayMode;
+    if (staySettings.enabled !== undefined && typeof staySettings.enabled !== 'boolean') {
+      return false;
     }
   }
   
@@ -34124,6 +34197,11 @@ function runSetupWizard() {
      config.dangerEscape = {
        enabled: true,
        playerProximityRadius: 50
+     };
+   }
+   if (!config.stayMode) {
+     config.stayMode = {
+       enabled: false
      };
    }
    if (!config.conversationalAI) {
@@ -34965,8 +35043,20 @@ class EscapeArtist {
     console.log(`[ESCAPE] Danger detected: ${danger.type} (${danger.severity})`);
 
     const escapeConfig = config.dangerEscape || {};
+    const stayConfig = config.stayMode || {};
+    
+    // Check if escape behavior is disabled
     if (escapeConfig.enabled === false) {
       console.log('[ESCAPE] Escape behavior disabled - staying put');
+      return false;
+    }
+    
+    // Check if stay mode is enabled (prevents leaving but allows other defensive actions)
+    if (stayConfig.enabled === true) {
+      console.log('[ESCAPE] Stay mode enabled - bot will not leave area but will take defensive actions');
+      // Still allow defensive actions like equipping totems, healing, etc.
+      // But skip escape methods that involve leaving the area
+      await this.performDefensiveActions(danger);
       return false;
     }
 
@@ -34995,6 +35085,54 @@ class EscapeArtist {
     
     console.log('[ESCAPE] All methods failed. Initiating last resort...');
     await this.lastResort(danger);
+  }
+  
+  async performDefensiveActions(danger) {
+    console.log('[STAY] Performing defensive actions while staying in area');
+    
+    // Always equip totem if available for survival
+    await this.equipTotem();
+    
+    // Use fire resistance if fire/lava danger
+    if (danger.type === 'fire' || danger.type === 'lava') {
+      await this.fireResPotion();
+    }
+    
+    // Use healing items if health is low
+    if (this.bot.health < 15) {
+      // Try golden apple first
+      const goldenApple = this.bot.inventory.items().find(i => 
+        i.name === 'golden_apple' || i.name === 'enchanted_golden_apple'
+      );
+      
+      if (goldenApple) {
+        const equipped = await safeEquipItem(this.bot, goldenApple, 'hand');
+        if (equipped) {
+          await this.bot.consume();
+          console.log('[STAY] Consumed golden apple for healing');
+        }
+      }
+      
+      // Try health potion if still low
+      if (this.bot.health < 12) {
+        const healthPotion = this.bot.inventory.items().find(i => 
+          i.name.includes('potion') && i.name.includes('healing')
+        );
+        
+        if (healthPotion) {
+          const equipped = await safeEquipItem(this.bot, healthPotion, 'hand');
+          if (equipped) {
+            await this.bot.consume();
+            console.log('[STAY] Drank health potion');
+          }
+        }
+      }
+    }
+    
+    // Use water bucket if on fire
+    if (this.bot.isOnFire) {
+      await this.waterBucketEscape();
+    }
   }
   
   async tryEscapeMethod(method, danger) {
