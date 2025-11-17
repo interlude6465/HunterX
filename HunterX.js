@@ -18808,8 +18808,8 @@ class ConversationAI {
       }
 
       // Log message to interceptor
-      if (globalMessageInterceptor) {
-        globalMessageInterceptor.logMessage(userValidation.sanitized, sanitizedMessage, 'chat');
+      if (globalMessageInterceptor && typeof globalMessageInterceptor.interceptMessage === 'function') {
+        globalMessageInterceptor.interceptMessage(sanitizedMessage, userValidation.sanitized, 'chat');
       }
 
       // Handle /msg relay for trusted+ users
@@ -18818,7 +18818,7 @@ class ConversationAI {
         return;
       }
 
-      // Handle group commands (!! prefix)
+      // Handle group commands (!! prefix - swarm mode)
       if (sanitizedMessage.startsWith('!!')) {
         console.log(`[CMD_DEBUG][COMMAND] Group command detected: ${sanitizedMessage}`);
         if (!this.isWhitelisted(userValidation.sanitized)) {
@@ -18840,6 +18840,26 @@ class ConversationAI {
         } else {
           this.bot.chat("Swarm coordinator not available for group commands!");
         }
+        return;
+      }
+
+      // Handle single bot commands (! prefix)
+      if (sanitizedMessage.startsWith('!')) {
+        console.log(`[CMD_DEBUG][COMMAND] Single bot command detected: ${sanitizedMessage}`);
+        if (!this.isWhitelisted(userValidation.sanitized)) {
+          this.bot.chat("Sorry, only whitelisted players can give me commands!");
+          return;
+        }
+        const cleanCommand = sanitizedMessage.substring(1).trim();
+        
+        // Validate command length to prevent abuse
+        if (cleanCommand.length > 100) {
+          this.bot.chat("Command too long! Please keep it under 100 characters.");
+          return;
+        }
+        
+        console.log(`[CMD_DEBUG][COMMAND] Executing single bot command: ${cleanCommand}`);
+        await this.handleCommand(userValidation.sanitized, cleanCommand, { source: 'chat' });
         return;
       }
 
