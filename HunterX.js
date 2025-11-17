@@ -20104,11 +20104,40 @@ try {
       return;
     }
     
+    // Coordinated attack command (swarm)
     if (lower.includes('attack') && lower.includes('coordinated')) {
       const targetPlayer = this.extractPlayerName(message);
       if (targetPlayer) {
         this.bot.chat(`Initiating coordinated attack on ${targetPlayer}!`);
         this.initiateSwarmAttack(targetPlayer);
+      }
+      return;
+    }
+    
+    // Basic attack command (single bot)
+    if (lower.includes('attack')) {
+      const targetPlayer = this.extractPlayerName(message);
+      if (targetPlayer) {
+        console.log(`[CMD_DEBUG][COMMAND] Basic attack command on ${targetPlayer}`);
+        this.bot.chat(`🎯 Attacking ${targetPlayer}!`);
+        
+        // Find the target entity
+        const attackTarget = Object.values(this.bot.entities).find(e =>
+          e.type === 'player' && e.username === targetPlayer
+        );
+
+        if (attackTarget && this.bot.combatAI && typeof this.bot.combatAI.handleCombat === 'function') {
+          console.log(`[CMD_DEBUG][COMMAND] Found attack target ${targetPlayer} - ENGAGING!`);
+          await this.bot.combatAI.handleCombat(attackTarget);
+        } else if (!attackTarget) {
+          console.log(`[CMD_DEBUG][COMMAND] Attack target ${targetPlayer} not found in loaded entities`);
+          this.bot.chat(`⚠️ Cannot find ${targetPlayer} nearby!`);
+        } else if (!this.bot.combatAI) {
+          console.log(`[CMD_DEBUG][COMMAND] Combat AI not available for attack command`);
+          this.bot.chat(`⚠️ Combat system not ready!`);
+        }
+      } else {
+        this.bot.chat("Usage: 'attack <playername>'");
       }
       return;
     }
@@ -32149,10 +32178,10 @@ async function launchBot(username, role = 'fighter') {
                   (e.name && e.name.toLowerCase().includes(message.attacker.toLowerCase()))
                 );
 
-                if (backupAttacker && combatAI && typeof combatAI.handleCombat === 'function') {
+                if (backupAttacker && bot.combatAI && typeof bot.combatAI.handleCombat === 'function') {
                   // Attack the attacker directly
                   console.log(`[SWARM] 🎯 Found backup target ${message.attacker} - ENGAGING!`);
-                  await combatAI.handleCombat(backupAttacker);
+                  await bot.combatAI.handleCombat(backupAttacker);
                 } else if (!backupAttacker && bot.pathfinder) {
                   // If we can't find the attacker, navigate to the victim's location
                   console.log(`[SWARM] Could not find ${message.attacker}, moving to support location`);
@@ -32252,10 +32281,10 @@ async function launchBot(username, role = 'fighter') {
                     (e.name && e.name.toLowerCase().includes(message.attacker.toLowerCase()))
                   );
 
-                  if (attacker && combatAI && typeof combatAI.handleCombat === 'function') {
+                  if (attacker && bot.combatAI && typeof bot.combatAI.handleCombat === 'function') {
                     // Attack the attacker
                     console.log(`[SWARM] 🎯 Found attacker ${message.attacker} at ${attacker.position.x.toFixed(0)}, ${attacker.position.y.toFixed(0)}, ${attacker.position.z.toFixed(0)}`);
-                    await combatAI.handleCombat(attacker);
+                    await bot.combatAI.handleCombat(attacker);
                   } else if (!attacker && bot.pathfinder) {
                     // If we can't find the attacker, navigate to victim's location for support
                     console.log(`[SWARM] Could not find attacker ${message.attacker}, moving to support ${message.victim}`);
@@ -32284,11 +32313,11 @@ async function launchBot(username, role = 'fighter') {
                 e.type === 'player' && e.username === message.target
               );
 
-              if (coordAttackTarget && combatAI && typeof combatAI.handleCombat === 'function') {
+              if (coordAttackTarget && bot.combatAI && typeof bot.combatAI.handleCombat === 'function') {
                 console.log(`[SWARM] ⚔️ Joining coordinated attack on ${message.target}!`);
                 bot.chat(`🎯 Joining coordinated attack on ${message.target}!`);
-                await combatAI.handleCombat(coordAttackTarget);
-              } else if (coordAttackTarget && !combatAI) {
+                await bot.combatAI.handleCombat(coordAttackTarget);
+              } else if (coordAttackTarget && !bot.combatAI) {
                 console.log(`[SWARM] ⚠️ Combat AI not available for coordinated attack`);
               } else {
                 console.log(`[SWARM] ⚠️ Target ${message.target} not found in loaded entities`);
@@ -32374,8 +32403,8 @@ async function launchBot(username, role = 'fighter') {
               
               bot.currentHelpTimeout = setTimeout(() => {
                 if (bot.currentHelpOperation && bot.currentHelpOperation.id === message.operationId) {
-                  if (combatAI && typeof combatAI.setAggressiveMode === 'function') {
-                    combatAI.setAggressiveMode(false);
+                  if (bot.combatAI && typeof bot.combatAI.setAggressiveMode === 'function') {
+                    bot.combatAI.setAggressiveMode(false);
                   }
                   bot.currentHelpOperation = null;
                   bot.chat('Help operation timeout reached. Resuming normal tasks.');
@@ -32388,8 +32417,8 @@ async function launchBot(username, role = 'fighter') {
                     console.log(`[SWARM] Arrived at help location`);
                     bot.chat(`Arrived to help! Ready for combat.`);
                     
-                    if (combatAI && typeof combatAI.setAggressiveMode === 'function') {
-                      combatAI.setAggressiveMode(true);
+                    if (bot.combatAI && typeof bot.combatAI.setAggressiveMode === 'function') {
+                      bot.combatAI.setAggressiveMode(true);
                     }
                   })
                   .catch(err => {
@@ -32405,8 +32434,8 @@ async function launchBot(username, role = 'fighter') {
                 bot.currentHelpTimeout = null;
               }
               if (bot.currentHelpOperation && bot.currentHelpOperation.id === message.operationId) {
-                if (combatAI && typeof combatAI.setAggressiveMode === 'function') {
-                  combatAI.setAggressiveMode(false);
+                if (bot.combatAI && typeof bot.combatAI.setAggressiveMode === 'function') {
+                  bot.combatAI.setAggressiveMode(false);
                 }
                 if (bot.pathfinder) {
                   try { bot.pathfinder.stop(); } catch (err) {}
@@ -32416,6 +32445,103 @@ async function launchBot(username, role = 'fighter') {
               }
               break;
               
+            case 'COMMAND':
+              // Handle direct commands from swarm coordinator
+              console.log(`[SWARM] 🎯 Received command: ${message.command}`);
+              
+              // Parse the command and execute it
+              const command = message.command.toLowerCase().trim();
+              
+              // Attack command
+              if (command.startsWith('attack ')) {
+                const targetPlayer = command.substring(7).trim();
+                if (targetPlayer) {
+                  console.log(`[SWARM] ⚔️ Executing attack command on ${targetPlayer}!`);
+                  bot.chat(`🎯 Attacking ${targetPlayer}!`);
+                  
+                  // Find the target entity
+                  const attackTarget = Object.values(bot.entities).find(e =>
+                    e.type === 'player' && e.username === targetPlayer
+                  );
+
+                  if (attackTarget && bot.combatAI && typeof bot.combatAI.handleCombat === 'function') {
+                    console.log(`[SWARM] 🎯 Found attack target ${targetPlayer} - ENGAGING!`);
+                    await bot.combatAI.handleCombat(attackTarget);
+                  } else if (!attackTarget) {
+                    console.log(`[SWARM] ⚠️ Attack target ${targetPlayer} not found in loaded entities`);
+                    bot.chat(`⚠️ Cannot find ${targetPlayer} nearby!`);
+                  } else if (!bot.combatAI) {
+                    console.log(`[SWARM] ⚠️ Combat AI not available for attack command`);
+                    bot.chat(`⚠️ Combat system not ready!`);
+                  }
+                }
+              }
+              // Goto command  
+              else if (command.startsWith('goto ')) {
+                const coords = command.substring(5).trim().split(/\s+/);
+                if (coords.length === 3) {
+                  const x = parseFloat(coords[0]);
+                  const y = parseFloat(coords[1]); 
+                  const z = parseFloat(coords[2]);
+                  
+                  if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+                    console.log(`[SWARM] 📍 Executing goto command to ${x}, ${y}, ${z}!`);
+                    bot.chat(`📍 Going to ${x}, ${y}, ${z}!`);
+                    
+                    if (bot.pathfinder) {
+                      bot.pathfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 5))
+                        .then(() => {
+                          bot.chat(`✅ Arrived at destination!`);
+                        })
+                        .catch(err => {
+                          console.log(`[SWARM] Failed to reach destination: ${err.message}`);
+                          bot.chat(`⚠️ Cannot reach destination!`);
+                        });
+                    }
+                  }
+                }
+              }
+              // Stop command
+              else if (command === 'stop') {
+                console.log(`[SWARM] 🛑 Executing stop command!`);
+                bot.chat(`🛑 Stopping all actions!`);
+                
+                if (bot.combatAI) {
+                  bot.combatAI.inCombat = false;
+                  bot.combatAI.currentTarget = null;
+                }
+                if (bot.pvp && bot.pvp.target) {
+                  bot.pvp.stop();
+                }
+                if (bot.pathfinder) {
+                  try { bot.pathfinder.stop(); } catch (err) {}
+                }
+              }
+              // Follow command
+              else if (command.startsWith('follow ')) {
+                const targetPlayer = command.substring(7).trim();
+                if (targetPlayer) {
+                  console.log(`[SWARM] 👥 Executing follow command on ${targetPlayer}!`);
+                  bot.chat(`👥 Following ${targetPlayer}!`);
+                  
+                  const followTarget = Object.values(bot.entities).find(e =>
+                    e.type === 'player' && e.username === targetPlayer
+                  );
+
+                  if (followTarget && bot.pathfinder) {
+                    bot.pathfinder.setGoal(new goals.GoalFollow(followTarget, 3), true);
+                  } else {
+                    bot.chat(`⚠️ Cannot find ${targetPlayer} to follow!`);
+                  }
+                }
+              }
+              // Unknown command
+              else {
+                console.log(`[SWARM] ❓ Unknown command: ${command}`);
+                bot.chat(`❓ Unknown command: ${command}`);
+              }
+              break;
+
             case 'HEARTBEAT':
               // Keep-alive ping, acknowledge silently
               break;
