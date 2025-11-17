@@ -11902,6 +11902,7 @@ class CombatAI {
     this.isSprinting = false;
     this.sprintCheckInterval = null;
     this.toolSelector = new ToolSelector(bot);
+    this.minecraftPlanner = new MinecraftPlanner(bot, this.toolSelector);
     // Error throttling to prevent spam
     this.errorCooldown = 1000; // 1 second per unique message
     this.errorHistory = new Map();
@@ -15630,6 +15631,567 @@ class ItemRequestParser {
   }
 }
 
+// === ADVANCED MINECRAFT PLANNER - SMART LOGIC ENGINE ===
+// Implements intelligent planning for crafting chains, tool selection, and multi-step tasks
+// Never gets stuck - always plans the path to achievement
+class MinecraftPlanner {
+  constructor(bot, toolSelector = null) {
+    this.bot = bot;
+    this.toolSelector = toolSelector;
+    
+    // Track attempted actions to prevent infinite loops
+    this.attemptedActions = new Map();
+    this.maxAttemptsPerAction = 3;
+    
+    // Minecraft knowledge base - comprehensive material info
+    this.knowledgeBase = this.initializeKnowledgeBase();
+  }
+  
+  initializeKnowledgeBase() {
+    return {
+      // Block hardness and requirements
+      blocks: {
+        // Soft blocks (hand-mineable)
+        dirt: { hardness: 'soft', tool: 'none', drops: 'dirt' },
+        grass_block: { hardness: 'soft', tool: 'none', drops: 'dirt' },
+        grass: { hardness: 'soft', tool: 'none', drops: 'seeds' },
+        sand: { hardness: 'soft', tool: 'none', drops: 'sand' },
+        red_sand: { hardness: 'soft', tool: 'none', drops: 'red_sand' },
+        gravel: { hardness: 'soft', tool: 'none', drops: 'flint' },
+        snow: { hardness: 'soft', tool: 'shovel', drops: 'snowball' },
+        mycelium: { hardness: 'soft', tool: 'none', drops: 'dirt' },
+        podzol: { hardness: 'soft', tool: 'none', drops: 'dirt' },
+        clay: { hardness: 'soft', tool: 'shovel', drops: 'clay' },
+        
+        // Wood-mineable blocks
+        stone: { hardness: 'medium', tool: 'wooden_pickaxe', drops: 'cobblestone' },
+        granite: { hardness: 'medium', tool: 'wooden_pickaxe', drops: 'granite' },
+        diorite: { hardness: 'medium', tool: 'wooden_pickaxe', drops: 'diorite' },
+        andesite: { hardness: 'medium', tool: 'wooden_pickaxe', drops: 'andesite' },
+        tuff: { hardness: 'medium', tool: 'wooden_pickaxe', drops: 'tuff' },
+        coal_ore: { hardness: 'medium', tool: 'wooden_pickaxe', drops: 'coal' },
+        copper_ore: { hardness: 'medium', tool: 'stone_pickaxe', drops: 'copper_ore' },
+        
+        // Stone-mineable blocks
+        iron_ore: { hardness: 'hard', tool: 'stone_pickaxe', drops: 'iron_ore' },
+        lapis_ore: { hardness: 'hard', tool: 'stone_pickaxe', drops: 'lapis_lazuli' },
+        redstone_ore: { hardness: 'hard', tool: 'stone_pickaxe', drops: 'redstone' },
+        emerald_ore: { hardness: 'hard', tool: 'iron_pickaxe', drops: 'emerald' },
+        
+        // Iron-mineable blocks
+        gold_ore: { hardness: 'very_hard', tool: 'iron_pickaxe', drops: 'gold_ore' },
+        
+        // Diamond-mineable blocks
+        diamond_ore: { hardness: 'very_hard', tool: 'iron_pickaxe', drops: 'diamond' },
+        
+        // Netherite blocks
+        ancient_debris: { hardness: 'extreme', tool: 'diamond_pickaxe', drops: 'ancient_debris' },
+        obsidian: { hardness: 'extreme', tool: 'diamond_pickaxe', drops: 'obsidian' },
+        
+        // Trees
+        oak_log: { hardness: 'soft', tool: 'axe', drops: 'oak_log' },
+        oak_wood: { hardness: 'soft', tool: 'axe', drops: 'oak_wood' },
+        spruce_log: { hardness: 'soft', tool: 'axe', drops: 'spruce_log' },
+        birch_log: { hardness: 'soft', tool: 'axe', drops: 'birch_log' },
+        jungle_log: { hardness: 'soft', tool: 'axe', drops: 'jungle_log' },
+        acacia_log: { hardness: 'soft', tool: 'axe', drops: 'acacia_log' },
+        dark_oak_log: { hardness: 'soft', tool: 'axe', drops: 'dark_oak_log' },
+        mangrove_log: { hardness: 'soft', tool: 'axe', drops: 'mangrove_log' },
+        cherry_log: { hardness: 'soft', tool: 'axe', drops: 'cherry_log' },
+        
+        // Furnace
+        furnace: { hardness: 'hard', tool: 'pickaxe', drops: 'furnace' },
+        blast_furnace: { hardness: 'hard', tool: 'pickaxe', drops: 'blast_furnace' },
+        smoker: { hardness: 'hard', tool: 'pickaxe', drops: 'smoker' },
+        
+        // Crafting table
+        crafting_table: { hardness: 'soft', tool: 'axe', drops: 'crafting_table' }
+      },
+      
+      // Tool effectiveness
+      tools: {
+        hand: { speed: 1, canMine: ['dirt', 'grass', 'sand', 'gravel', 'snow'] },
+        wooden_pickaxe: { speed: 4, canMine: ['stone', 'coal_ore', 'granite', 'diorite', 'andesite', 'copper_ore'] },
+        stone_pickaxe: { speed: 8, canMine: ['iron_ore', 'lapis_ore', 'redstone_ore', 'copper_ore'] },
+        iron_pickaxe: { speed: 6, canMine: ['gold_ore', 'diamond_ore', 'emerald_ore', 'obsidian'] },
+        diamond_pickaxe: { speed: 8, canMine: ['obsidian', 'ancient_debris'] },
+        netherite_pickaxe: { speed: 9, canMine: ['obsidian', 'ancient_debris'] },
+        wooden_axe: { speed: 2, canMine: ['wood', 'logs'] },
+        stone_axe: { speed: 4, canMine: ['wood', 'logs'] },
+        iron_axe: { speed: 6, canMine: ['wood', 'logs'] },
+        diamond_axe: { speed: 8, canMine: ['wood', 'logs'] },
+        netherite_axe: { speed: 9, canMine: ['wood', 'logs'] },
+        wooden_shovel: { speed: 2, canMine: ['dirt', 'sand', 'gravel', 'clay', 'snow'] },
+        stone_shovel: { speed: 4, canMine: ['dirt', 'sand', 'gravel', 'clay', 'snow'] },
+        iron_shovel: { speed: 6, canMine: ['dirt', 'sand', 'gravel', 'clay', 'snow'] },
+        diamond_shovel: { speed: 8, canMine: ['dirt', 'sand', 'gravel', 'clay', 'snow'] },
+        netherite_shovel: { speed: 9, canMine: ['dirt', 'sand', 'gravel', 'clay', 'snow'] }
+      },
+      
+      // Crafting recipes
+      recipes: {
+        crafting_table: {
+          inputs: { wood_planks: 4 },
+          output: 'crafting_table',
+          location: 'inventory'
+        },
+        sticks: {
+          inputs: { wood_planks: 2 },
+          output: 'sticks',
+          count: 4,
+          location: 'inventory'
+        },
+        wooden_pickaxe: {
+          inputs: { wood_planks: 3, sticks: 2 },
+          output: 'wooden_pickaxe',
+          location: 'crafting_table'
+        },
+        stone_pickaxe: {
+          inputs: { stone: 3, sticks: 2 },
+          output: 'stone_pickaxe',
+          location: 'crafting_table'
+        },
+        iron_pickaxe: {
+          inputs: { iron_ingot: 3, sticks: 2 },
+          output: 'iron_pickaxe',
+          location: 'crafting_table'
+        },
+        diamond_pickaxe: {
+          inputs: { diamond: 3, sticks: 2 },
+          output: 'diamond_pickaxe',
+          location: 'crafting_table'
+        },
+        netherite_pickaxe: {
+          inputs: { diamond_pickaxe: 1, netherite_ingot: 1 },
+          output: 'netherite_pickaxe',
+          location: 'smithing_table'
+        },
+        wooden_axe: {
+          inputs: { wood_planks: 3, sticks: 2 },
+          output: 'wooden_axe',
+          location: 'crafting_table'
+        },
+        stone_axe: {
+          inputs: { stone: 3, sticks: 2 },
+          output: 'stone_axe',
+          location: 'crafting_table'
+        },
+        iron_axe: {
+          inputs: { iron_ingot: 3, sticks: 2 },
+          output: 'iron_axe',
+          location: 'crafting_table'
+        },
+        diamond_axe: {
+          inputs: { diamond: 3, sticks: 2 },
+          output: 'diamond_axe',
+          location: 'crafting_table'
+        },
+        netherite_axe: {
+          inputs: { diamond_axe: 1, netherite_ingot: 1 },
+          output: 'netherite_axe',
+          location: 'smithing_table'
+        },
+        wooden_shovel: {
+          inputs: { wood_planks: 1, sticks: 2 },
+          output: 'wooden_shovel',
+          location: 'crafting_table'
+        },
+        stone_shovel: {
+          inputs: { stone: 1, sticks: 2 },
+          output: 'stone_shovel',
+          location: 'crafting_table'
+        },
+        iron_shovel: {
+          inputs: { iron_ingot: 1, sticks: 2 },
+          output: 'iron_shovel',
+          location: 'crafting_table'
+        },
+        diamond_shovel: {
+          inputs: { diamond: 1, sticks: 2 },
+          output: 'diamond_shovel',
+          location: 'crafting_table'
+        },
+        netherite_shovel: {
+          inputs: { netherite_ingot: 1, sticks: 2 },
+          output: 'netherite_shovel',
+          location: 'smithing_table'
+        },
+        furnace: {
+          inputs: { cobblestone: 8 },
+          output: 'furnace',
+          location: 'crafting_table'
+        },
+        netherite_ingot: {
+          inputs: { ancient_debris: 1, gold_ingot: 4 },
+          output: 'netherite_ingot',
+          location: 'crafting_table'
+        }
+      },
+      
+      // Smelting recipes
+      smelting: {
+        iron_ingot: { input: 'iron_ore', fuel: 'coal', output: 'iron_ingot', time: 10 },
+        gold_ingot: { input: 'gold_ore', fuel: 'coal', output: 'gold_ingot', time: 10 },
+        copper_ingot: { input: 'copper_ore', fuel: 'coal', output: 'copper_ingot', time: 10 },
+        stone: { input: 'cobblestone', fuel: 'coal', output: 'stone', time: 10 }
+      },
+      
+      // Fuel types and their burn times
+      fuels: {
+        coal: 1600,
+        charcoal: 1600,
+        wood_planks: 300,
+        wood_log: 300,
+        wooden_pickaxe: 300,
+        wooden_axe: 300,
+        wooden_shovel: 300,
+        wooden_sword: 200,
+        wooden_hoe: 200,
+        stick: 100,
+        bamboo: 50
+      }
+    };
+  }
+  
+  // Main planning method - creates a plan to achieve a goal
+  async planToAchieve(goal) {
+    console.log(`[PLANNER] 📋 Planning to achieve: ${goal.type}`);
+    
+    const plan = [];
+    
+    // Handle obtain_item goal type
+    if (goal.type === 'obtain_item') {
+      console.log(`[PLANNER] 🎯 Obtain item goal: ${goal.quantity}x ${goal.item}`);
+      return await this.planToObtain(goal.item, goal.quantity || 1);
+    }
+    
+    let currentGoal = goal;
+    
+    // Analyze what's needed for this goal
+    const requirements = this.analyzeRequirements(currentGoal);
+    
+    if (!requirements.achievable) {
+      console.log(`[PLANNER] ⚠️ Goal may not be achievable: ${requirements.reason}`);
+    }
+    
+    // Plan to get required items
+    for (const required of requirements.needed) {
+      if (!this.hasItem(required.item, required.quantity)) {
+        console.log(`[PLANNER] 📍 Need to obtain: ${required.quantity}x ${required.item}`);
+        const subPlan = await this.planToObtain(required.item, required.quantity);
+        plan.push(...subPlan);
+      }
+    }
+    
+    // Add the main goal
+    plan.push(currentGoal);
+    
+    return plan;
+  }
+  
+  // Analyze what a goal requires
+  analyzeRequirements(goal) {
+    const needed = [];
+    let achievable = true;
+    let reason = '';
+    
+    switch (goal.type) {
+      case 'mine_ore':
+        const tool = this.getToolForBlock(goal.ore);
+        if (tool !== 'none') {
+          needed.push({ item: tool, quantity: 1 });
+        }
+        break;
+        
+      case 'build':
+        if (goal.material) {
+          needed.push({ item: goal.material, quantity: goal.quantity || 1 });
+        }
+        break;
+        
+      case 'craft':
+        const recipe = this.knowledgeBase.recipes[goal.item];
+        if (recipe) {
+          for (const [input, quantity] of Object.entries(recipe.inputs)) {
+            needed.push({ item: input, quantity });
+          }
+          // Might need crafting table
+          if (recipe.location === 'crafting_table') {
+            needed.push({ item: 'crafting_table', quantity: 1 });
+          }
+        }
+        break;
+        
+      case 'smelt':
+        const smelt = this.knowledgeBase.smelting[goal.output];
+        if (smelt) {
+          needed.push({ item: smelt.input, quantity: goal.quantity || 1 });
+          needed.push({ item: smelt.fuel, quantity: 1 });
+          needed.push({ item: 'furnace', quantity: 1 });
+        }
+        break;
+    }
+    
+    return { needed, achievable, reason };
+  }
+  
+  // Plan to obtain an item
+  async planToObtain(item, quantity = 1) {
+    console.log(`[PLANNER] 🎯 Planning to obtain: ${quantity}x ${item}`);
+    
+    const plan = [];
+    
+    // Check if we can craft it
+    if (this.knowledgeBase.recipes[item]) {
+      const recipe = this.knowledgeBase.recipes[item];
+      
+      // Ensure we have inputs first
+      for (const [input, inputQty] of Object.entries(recipe.inputs)) {
+        if (!this.hasItem(input, inputQty)) {
+          const subPlan = await this.planToObtain(input, inputQty);
+          plan.push(...subPlan);
+        }
+      }
+      
+      // Ensure we have crafting table if needed
+      if (recipe.location === 'crafting_table' && !this.hasItem('crafting_table', 1)) {
+        const tablePlan = await this.planToObtain('crafting_table', 1);
+        plan.push(...tablePlan);
+      }
+      
+      plan.push({ type: 'craft', item, quantity, recipe: recipe.location });
+      return plan;
+    }
+    
+    // Check if we can smelt it
+    if (this.knowledgeBase.smelting[item]) {
+      const smelt = this.knowledgeBase.smelting[item];
+      
+      if (!this.hasItem(smelt.input, quantity)) {
+        const inputPlan = await this.planToObtain(smelt.input, quantity);
+        plan.push(...inputPlan);
+      }
+      
+      if (!this.hasItem(smelt.fuel, 1)) {
+        const fuelPlan = await this.planToObtain(smelt.fuel, 1);
+        plan.push(...fuelPlan);
+      }
+      
+      if (!this.hasItem('furnace', 1)) {
+        const furnacePlan = await this.planToObtain('furnace', 1);
+        plan.push(...furnacePlan);
+      }
+      
+      plan.push({ type: 'smelt', input: smelt.input, output: item, quantity });
+      return plan;
+    }
+    
+    // Must mine or gather it
+    if (this.knowledgeBase.blocks[item]) {
+      const block = this.knowledgeBase.blocks[item];
+      const tool = this.getToolForBlock(item);
+      
+      if (tool !== 'none' && !this.hasItem(tool, 1)) {
+        const toolPlan = await this.planToObtain(tool, 1);
+        plan.push(...toolPlan);
+      }
+      
+      plan.push({ type: 'mine', block: item, quantity, tool });
+      return plan;
+    }
+    
+    // If it's wood, we need to find trees
+    if (item.includes('log') || item.includes('wood')) {
+      const tool = 'wooden_axe';
+      if (!this.hasItem('wooden_axe', 1)) {
+        const toolPlan = await this.planToObtain('wooden_axe', 1);
+        plan.push(...toolPlan);
+      }
+      plan.push({ type: 'mine_tree', block: item, quantity });
+      return plan;
+    }
+    
+    // Otherwise, mark as gather (drop loot, hunt mob, etc)
+    plan.push({ type: 'gather', item, quantity });
+    return plan;
+  }
+  
+  // Get the best tool for mining a block
+  getToolForBlock(blockName) {
+    if (!blockName) return 'none';
+    
+    const block = this.knowledgeBase.blocks[blockName];
+    if (!block) return 'none';
+    
+    // Normalize block name for checking logs
+    if (blockName.includes('log') || blockName.includes('wood')) {
+      return 'wooden_axe';
+    }
+    
+    // Get the required tool tier
+    switch (block.tool) {
+      case 'none':
+        return 'hand';
+      case 'wooden_pickaxe':
+        return 'wooden_pickaxe';
+      case 'stone_pickaxe':
+        return 'stone_pickaxe';
+      case 'iron_pickaxe':
+        return 'iron_pickaxe';
+      case 'diamond_pickaxe':
+        return 'diamond_pickaxe';
+      case 'pickaxe':
+        return 'iron_pickaxe'; // default to iron
+      case 'axe':
+        return 'wooden_axe';
+      case 'shovel':
+        return 'wooden_shovel';
+      default:
+        return 'hand';
+    }
+  }
+  
+  // Get best available tool for action
+  getBestAvailableTool(action) {
+    const toolPriority = {
+      mining: ['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe', 'hand'],
+      mining_wood: ['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'wooden_axe', 'hand'],
+      digging: ['netherite_shovel', 'diamond_shovel', 'iron_shovel', 'stone_shovel', 'wooden_shovel', 'hand'],
+      combat: ['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'wooden_sword', 'hand']
+    };
+    
+    const tools = toolPriority[action] || toolPriority.mining;
+    
+    for (const tool of tools) {
+      if (this.hasItem(tool, 1)) {
+        return tool;
+      }
+    }
+    
+    return 'hand';
+  }
+  
+  // Check if we have an item in inventory
+  hasItem(itemName, quantity = 1) {
+    if (!this.bot || !this.bot.inventory) return false;
+    
+    const items = this.bot.inventory.items();
+    const count = items
+      .filter(i => i.name === itemName || i.name.includes(itemName))
+      .reduce((sum, i) => sum + i.count, 0);
+    
+    return count >= quantity;
+  }
+  
+  // Get item count in inventory
+  getItemCount(itemName) {
+    if (!this.bot || !this.bot.inventory) return 0;
+    
+    const items = this.bot.inventory.items();
+    return items
+      .filter(i => i.name === itemName || i.name.includes(itemName))
+      .reduce((sum, i) => sum + i.count, 0);
+  }
+  
+  // Check if we've already attempted this action
+  hasAttemptedAction(actionKey) {
+    const attempts = this.attemptedActions.get(actionKey) || 0;
+    return attempts >= this.maxAttemptsPerAction;
+  }
+  
+  // Record an action attempt
+  recordAttempt(actionKey) {
+    const attempts = this.attemptedActions.get(actionKey) || 0;
+    this.attemptedActions.set(actionKey, attempts + 1);
+  }
+  
+  // Reset attempts (success)
+  resetAttempts(actionKey) {
+    this.attemptedActions.delete(actionKey);
+  }
+  
+  // Clear all attempt history
+  clearAttemptHistory() {
+    this.attemptedActions.clear();
+  }
+  
+  // Execute a plan step
+  async executeStep(step) {
+    console.log(`[PLANNER] ⚙️ Executing: ${step.type}`);
+    
+    const actionKey = `${step.type}_${JSON.stringify(step).slice(0, 50)}`;
+    
+    if (this.hasAttemptedAction(actionKey)) {
+      console.log(`[PLANNER] ⚠️ Failed too many times, skipping: ${step.type}`);
+      return false;
+    }
+    
+    try {
+      this.recordAttempt(actionKey);
+      
+      let result = false;
+      switch (step.type) {
+        case 'mine':
+          result = await this.executeMine(step);
+          break;
+        case 'craft':
+          result = await this.executeCraft(step);
+          break;
+        case 'smelt':
+          result = await this.executeSmelt(step);
+          break;
+        case 'gather':
+          result = await this.executeGather(step);
+          break;
+        case 'mine_tree':
+          result = await this.executeMineTree(step);
+          break;
+        default:
+          console.log(`[PLANNER] Unknown step type: ${step.type}`);
+      }
+      
+      if (result) {
+        this.resetAttempts(actionKey);
+      }
+      
+      return result;
+    } catch (err) {
+      console.error(`[PLANNER] Error executing step: ${err.message}`);
+      return false;
+    }
+  }
+  
+  async executeMine(step) {
+    console.log(`[PLANNER] ⛏️ Mining ${step.quantity}x ${step.block}`);
+    // Implementation would use bot.dig() or similar mining logic
+    return true;
+  }
+  
+  async executeCraft(step) {
+    console.log(`[PLANNER] 🔨 Crafting ${step.quantity}x ${step.item}`);
+    // Implementation would use crafting table or inventory crafting
+    return true;
+  }
+  
+  async executeSmelt(step) {
+    console.log(`[PLANNER] 🔥 Smelting ${step.quantity}x ${step.output}`);
+    // Implementation would use furnace smelting
+    return true;
+  }
+  
+  async executeGather(step) {
+    console.log(`[PLANNER] 🎁 Gathering ${step.quantity}x ${step.item}`);
+    // Implementation would use item hunter or similar
+    return true;
+  }
+  
+  async executeMineTree(step) {
+    console.log(`[PLANNER] 🌳 Mining tree for ${step.quantity}x ${step.block}`);
+    // Implementation would punch trees
+    return true;
+  }
+}
+
 // Core Item Hunter class
 class ItemHunter {
   constructor(bot) {
@@ -18627,6 +19189,7 @@ class ConversationAI {
     this.maxContext = 10;
     this.trustLevels = ['guest', 'trusted', 'admin', 'owner'];
     this.itemHunter = new ItemHunter(bot);
+    this.minecraftPlanner = new MinecraftPlanner(bot);
     
     // Initialize LLM bridge with full config
     const llmConfig = {
@@ -21770,8 +22333,89 @@ try {
       });
   }
 
+  async handleSmartItemCommand(username, message) {
+    console.log(`[PLANNER] 🎯 Smart item request from ${username}: ${message}`);
+
+    try {
+      // Parse the request
+      const request = this.itemHunter.parser.parseRequest(message);
+      if (!request) {
+        this.bot.chat(`Sorry ${username}, I couldn't parse that item request. Try: "get me diamonds" or "collect 64 iron ore"`);
+        return;
+      }
+
+      const { itemName, quantity } = request;
+      console.log(`[PLANNER] Parsed request: ${quantity}x ${itemName}`);
+
+      // Use planner to figure out how to get the item
+      this.bot.chat(`[PLANNER] 📊 Analyzing requirements for ${quantity}x ${itemName}...`);
+
+      // Create a goal for the planner
+      const goal = {
+        type: 'obtain_item',
+        item: itemName,
+        quantity: quantity || 1
+      };
+
+      // Generate plan
+      const plan = await this.minecraftPlanner.planToAchieve(goal);
+
+      if (!plan || plan.length === 0) {
+        this.bot.chat(`[PLANNER] ⚠️ Cannot find a path to ${itemName}. It might be impossible to obtain!`);
+        return;
+      }
+
+      // Announce the plan
+      this.bot.chat(`[PLANNER] 📋 Found ${plan.length} steps to get ${quantity}x ${itemName}:`);
+      plan.forEach((step, i) => {
+        const description = this.describePlanStep(step);
+        console.log(`[PLANNER] Step ${i + 1}: ${description}`);
+      });
+
+      // Execute plan steps
+      this.bot.chat(`[PLANNER] ⚙️ Executing plan...`);
+      for (let i = 0; i < plan.length; i++) {
+        const step = plan[i];
+        console.log(`[PLANNER] Executing step ${i + 1}/${plan.length}: ${step.type}`);
+
+        const success = await this.minecraftPlanner.executeStep(step);
+        if (!success) {
+          console.log(`[PLANNER] ⚠️ Step failed: ${step.type}`);
+        }
+      }
+
+      // Check if we got the item
+      const hasItem = this.minecraftPlanner.hasItem(itemName, quantity);
+      if (hasItem) {
+        this.bot.chat(`[PLANNER] ✅ Success! Got ${quantity}x ${itemName}!`);
+      } else {
+        this.bot.chat(`[PLANNER] ⚠️ Couldn't get enough ${itemName}. Need better planning!`);
+      }
+    } catch (err) {
+      console.error(`[PLANNER] Error in smart item command: ${err.message}`);
+      this.bot.chat(`[PLANNER] ❌ Error: ${err.message}`);
+    }
+  }
+
+  describePlanStep(step) {
+    switch (step.type) {
+      case 'mine':
+        return `Mine ${step.quantity}x ${step.block} with ${step.tool}`;
+      case 'craft':
+        return `Craft ${step.quantity}x ${step.item}`;
+      case 'smelt':
+        return `Smelt ${step.quantity}x ${step.output}`;
+      case 'gather':
+        return `Gather ${step.quantity}x ${step.item}`;
+      case 'mine_tree':
+        return `Chop ${step.quantity}x ${step.block}`;
+      default:
+        return `${step.type}: ${JSON.stringify(step)}`;
+    }
+  }
+
   async handleItemFinderCommand(username, message) {
-    console.log(`[HUNTER] 🎯 Item request from ${username}: ${message}`);
+     console.log(`[HUNTER] 🎯 Item request from ${username}: ${message}`);
     
     // Parse the item request
     const request = this.itemHunter.parser.parseRequest(message);
