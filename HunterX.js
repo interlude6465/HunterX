@@ -29285,6 +29285,7 @@ class BotSpawner {
     this.maxBots = config.swarm.maxBots;
     this.proxyManager = null;
     this.reconnectManagers = new Map(); // Track reconnect managers by username
+    this.connectionLocks = new Set(); // Prevent simultaneous connections by username
   }
   
   async detectServerType(serverIP) {
@@ -29915,41 +29916,43 @@ class BotSpawner {
      }
 
      // Handle disconnect with auto-reconnect
-     const handleDisconnect = async (reason) => {
-       console.log(`[RECONNECT] ${username} disconnected: ${reason}`);
+      const handleDisconnect = async (reason) => {
+        console.log(`[RECONNECT] ${username} disconnected: ${reason}`);
 
-       // Save bot state before disconnect
-       if (reconnectManager) {
-         reconnectManager.saveBotState(bot);
+        // Save bot state before disconnect
+        if (reconnectManager) {
+          // Store disconnect reason for special handling
+          reconnectManager.lastDisconnectReason = reason;
+          reconnectManager.saveBotState(bot);
 
-         // Unregister from SwarmCoordinator and BotSpawner
-         this.unregisterBot(username);
-         if (globalSwarmCoordinator) {
-           try {
-             globalSwarmCoordinator.unregisterBot(username);
-           } catch (err) {
-             console.warn(`[RECONNECT] Failed to unregister from SwarmCoordinator: ${err.message}`);
-           }
-         }
+          // Unregister from SwarmCoordinator and BotSpawner
+          this.unregisterBot(username);
+          if (globalSwarmCoordinator) {
+            try {
+              globalSwarmCoordinator.unregisterBot(username);
+            } catch (err) {
+              console.warn(`[RECONNECT] Failed to unregister from SwarmCoordinator: ${err.message}`);
+            }
+          }
 
-         // Attempt to reconnect with exponential backoff
-         const newBot = await reconnectManager.attemptReconnect();
-         if (newBot) {
-           // Register the new bot
-           this.registerBot(newBot, username, type, role, serverIP, options);
-         }
-       } else {
-         // Fallback: just unregister if no reconnect manager
-         this.unregisterBot(username);
-         if (globalSwarmCoordinator) {
-           try {
-             globalSwarmCoordinator.unregisterBot(username);
-           } catch (err) {
-             console.warn(`[RECONNECT] Failed to unregister from SwarmCoordinator: ${err.message}`);
-           }
-         }
-       }
-     };
+          // Attempt to reconnect with exponential backoff and proper cleanup
+          const newBot = await reconnectManager.attemptReconnect(bot);
+          if (newBot) {
+            // Register the new bot (this will create a new reconnect manager if needed)
+            this.registerBot(newBot, username, type, role, serverIP, options);
+          }
+        } else {
+          // Fallback: just unregister if no reconnect manager
+          this.unregisterBot(username);
+          if (globalSwarmCoordinator) {
+            try {
+              globalSwarmCoordinator.unregisterBot(username);
+            } catch (err) {
+              console.warn(`[RECONNECT] Failed to unregister from SwarmCoordinator: ${err.message}`);
+            }
+          }
+        }
+      };
 
      // Detect all disconnect types
      bot.once('end', (reason) => {
@@ -29975,6 +29978,21 @@ class BotSpawner {
       this.activeBots.splice(index, 1);
       this.refreshSwarmBotList();
     }
+    
+    // Also clean up reconnect manager to prevent memory leaks
+    if (this.reconnectManagers.has(username)) {
+      const reconnectManager = this.reconnectManagers.get(username);
+      reconnectManager.reconnecting = false;
+      reconnectManager.connectionInProgress = false;
+      this.releaseConnectionLock(username);
+      this.reconnectManagers.delete(username);
+      console.log(`[SPAWNER] Cleaned up AutoReconnectManager for ${username}`);
+    }
+  }
+
+  // Release connection lock for specific username
+  releaseConnectionLock(username) {
+    this.connectionLocks.delete(username);
   }
   
   refreshSwarmBotList() {
@@ -30351,17 +30369,69 @@ class AutoReconnectManager {
     this.username = options.username;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 10;
-    this.baseBackoffDelay = 5000; // 5 seconds
+    this.baseBackoffDelay = 10000; // Increased to 10 seconds for duplicate login handling
     this.reconnecting = false;
+    this.connectionInProgress = false; // Track actual connection state
     this.lastPosition = null;
     this.lastHealth = 20;
     this.lastTask = null;
     this.inventory = null;
+    this.lastDisconnectReason = null;
+    this.cleanupInProgress = false;
   }
 
-  // Calculate exponential backoff delay: 5s, 10s, 20s, 40s, 80s, 160s, etc
+  // Calculate exponential backoff delay with special handling for duplicate login
   getBackoffDelay(attempt) {
-    return this.baseBackoffDelay * Math.pow(2, Math.min(attempt, 7)); // Cap at 2^7 = 128x (10+ minutes)
+    let baseDelay = this.baseBackoffDelay;
+    
+    // Add extra delay for duplicate login errors to ensure server clears session
+    if (this.lastDisconnectReason && (
+        this.lastDisconnectReason.includes('duplicate_login') ||
+        this.lastDisconnectReason.includes('already connected') ||
+        this.lastDisconnectReason.includes('logged in from another location')
+    )) {
+      baseDelay = Math.max(baseDelay, 30000); // Minimum 30 seconds for duplicate login
+      console.log(`[RECONNECT] Duplicate login detected, using extended delay: ${baseDelay/1000}s`);
+    }
+    
+    return baseDelay * Math.pow(2, Math.min(attempt, 7)); // Cap at 2^7 = 128x (10+ minutes)
+  }
+
+  // Ensure proper connection cleanup before reconnect
+  async ensureConnectionCleanup(bot) {
+    if (this.cleanupInProgress) {
+      console.log(`[RECONNECT] Cleanup already in progress for ${this.username}`);
+      return;
+    }
+
+    this.cleanupInProgress = true;
+    
+    try {
+      console.log(`[RECONNECT] Starting connection cleanup for ${this.username}`);
+      
+      // Remove all event listeners to prevent memory leaks
+      if (bot) {
+        bot.removeAllListeners();
+        
+        // Force quit the bot if still connected
+        if (bot.player && bot.username) {
+          try {
+            bot.end('Disconnecting for cleanup');
+          } catch (err) {
+            console.warn(`[RECONNECT] Error during bot.end(): ${err.message}`);
+          }
+        }
+      }
+
+      // Wait a moment to ensure socket is fully closed
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      console.log(`[RECONNECT] ✅ Connection cleanup complete for ${this.username}`);
+    } catch (error) {
+      console.error(`[RECONNECT] Error during connection cleanup:`, error.message);
+    } finally {
+      this.cleanupInProgress = false;
+    }
   }
 
   // Save bot state before disconnect
@@ -30420,19 +30490,30 @@ class AutoReconnectManager {
     }
   }
 
-  // Attempt to reconnect
-  async attemptReconnect() {
-    if (this.reconnecting) {
-      console.log(`[RECONNECT] Already attempting to reconnect for ${this.username}`);
+  // Attempt to reconnect with proper locking and cleanup
+  async attemptReconnect(oldBot = null) {
+    // Check if already reconnecting to prevent race conditions
+    if (this.reconnecting || this.connectionInProgress) {
+      console.log(`[RECONNECT] Already reconnecting ${this.username}, skipping duplicate attempt`);
       return null;
     }
 
+    // Check if we've exceeded max attempts
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error(`[RECONNECT] ❌ Max reconnection attempts (${this.maxReconnectAttempts}) reached for ${this.username}. Giving up.`);
+      this.releaseConnectionLock();
+      return null;
+    }
+
+    // Acquire connection lock to prevent simultaneous connections
+    if (!this.acquireConnectionLock()) {
+      console.log(`[RECONNECT] Connection lock busy for ${this.username}, retrying later`);
       return null;
     }
 
     this.reconnecting = true;
+    this.connectionInProgress = true;
+    
     const delay = this.getBackoffDelay(this.reconnectAttempts);
     const delaySeconds = (delay / 1000).toFixed(1);
 
@@ -30440,48 +30521,96 @@ class AutoReconnectManager {
     console.log(`[RECONNECT] Waiting ${delaySeconds}s before reconnection attempt...`);
 
     try {
-      // Wait for backoff delay
+      // Step 1: Wait for backoff delay
       await new Promise(resolve => setTimeout(resolve, delay));
 
-      // Attempt to spawn a new bot with the same configuration
+      // Step 2: Ensure proper cleanup of previous connection
+      if (oldBot) {
+        await this.ensureConnectionCleanup(oldBot);
+      }
+
+      // Step 3: Attempt to spawn a new bot with the same configuration
       console.log(`[RECONNECT] 🔄 Attempting to reconnect ${this.username}...`);
       const newBot = await this.botSpawner.spawnBot(this.serverIP, this.options);
 
       if (newBot) {
         console.log(`[RECONNECT] ✅ Successfully reconnected ${this.username}`);
         this.reconnectAttempts = 0; // Reset attempts on successful reconnection
+        this.lastDisconnectReason = null; // Clear disconnect reason on success
 
-        // Restore bot state
+        // Step 4: Restore bot state
         await this.restoreBotState(newBot);
 
-        // Notify SwarmCoordinator of reconnection
+        // Step 5: Notify SwarmCoordinator of reconnection (without triggering new spawns)
         if (globalSwarmCoordinator) {
           try {
+            // Use a flag to prevent SwarmCoordinator from triggering additional spawns
+            const originalRegisterBot = globalSwarmCoordinator.registerBot;
+            globalSwarmCoordinator.registerBot = function(bot) {
+              // Just add to internal tracking without triggering spawns
+              if (!this.bots) this.bots = new Map();
+              this.bots.set(bot.username, { bot, lastSeen: Date.now() });
+              console.log(`[RECONNECT] ✅ Re-registered ${bot.username} with SwarmCoordinator (no trigger)`);
+            };
+            
             globalSwarmCoordinator.registerBot(newBot);
-            console.log(`[RECONNECT] ✅ Re-registered ${this.username} with SwarmCoordinator`);
+            
+            // Restore original function
+            globalSwarmCoordinator.registerBot = originalRegisterBot;
           } catch (error) {
             console.error(`[RECONNECT] Failed to re-register with SwarmCoordinator:`, error.message);
           }
         }
 
+        // Success - reset all flags
         this.reconnecting = false;
+        this.connectionInProgress = false;
+        this.releaseConnectionLock();
+        
         return newBot;
       }
     } catch (error) {
       console.error(`[RECONNECT] Reconnection attempt ${this.reconnectAttempts + 1} failed:`, error.message);
+      
+      // Store disconnect reason for special handling
+      this.lastDisconnectReason = error.message;
       this.reconnectAttempts++;
     }
 
-    this.reconnecting = false;
+    // Failed - reset flags but keep reconnecting true for next attempt
+    this.connectionInProgress = false;
+    this.releaseConnectionLock();
 
     // Schedule next attempt if not exceeded max
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       const nextDelay = this.getBackoffDelay(this.reconnectAttempts);
       const nextDelaySeconds = (nextDelay / 1000).toFixed(1);
       console.log(`[RECONNECT] Next reconnection attempt in ${nextDelaySeconds}s...`);
+      
+      // Schedule next attempt asynchronously
+      setTimeout(async () => {
+        await this.attemptReconnect(null);
+      }, nextDelay);
+    } else {
+      // Max attempts reached, clean up
+      this.reconnecting = false;
     }
 
     return null;
+  }
+
+  // Acquire connection lock to prevent simultaneous connections
+  acquireConnectionLock() {
+    if (this.botSpawner.connectionLocks.has(this.username)) {
+      return false;
+    }
+    this.botSpawner.connectionLocks.add(this.username);
+    return true;
+  }
+
+  // Release connection lock
+  releaseConnectionLock() {
+    this.botSpawner.connectionLocks.delete(this.username);
   }
 
   // Get reconnection statistics
