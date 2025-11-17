@@ -19741,6 +19741,11 @@ try {
     this._activeCommandContext = { username, bypassTrust, source, respond, setOutcome };
 
     const commandExecutor = async () => {
+      // Mark activity for AFK gatherer
+      if (this.bot.afkGatherer) {
+        this.bot.afkGatherer.markActivity();
+      }
+      
       if (!bypassTrust && !whitelistEntry) {
         outcome = 'blocked_not_whitelisted';
         console.log(`[CMD_DEBUG][COMMAND] (${source}) Blocked command from ${username}: user not in whitelist`);
@@ -19915,6 +19920,63 @@ try {
       const behavior = shouldEnable ? 'will NOT leave' : 'will leave';
       this.bot.chat(`[STAY] Stay mode ${status} - Bot ${behavior} when in danger`);
       console.log(`[STAY] Stay mode ${status} by ${username}`);
+      return;
+    }
+    
+    if (lower.startsWith('!afk')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        denyCommand("Only trusted+ can modify AFK gather behavior!", 'blocked_afk_permissions');
+        return;
+      }
+      
+      const match = lower.match(/^!afk\s+(on|off|status)\b/);
+      if (!match) {
+        this.bot.chat("Usage: !afk on|off|status");
+        return;
+      }
+      
+      const action = match[1];
+      
+      if (action === 'status') {
+        if (this.bot.afkGatherer) {
+          const status = this.bot.afkGatherer.enabled ? 'ENABLED' : 'DISABLED';
+          const gathering = this.bot.afkGatherer.currentlyGathering ? 'ACTIVE' : 'STANDBY';
+          const timeSinceActivity = Math.floor((Date.now() - this.bot.afkGatherer.lastActivityTime) / 1000);
+          this.bot.chat(`[AFK_GATHER] Status: ${status} | Mode: ${gathering} | Idle: ${timeSinceActivity}s`);
+          
+          // Show what items are needed
+          if (this.bot.afkGatherer.enabled) {
+            const needs = this.bot.afkGatherer.getInventoryNeeds();
+            if (needs.length > 0) {
+              const topNeeds = needs.slice(0, 3).map(n => `${n.item}(${n.current}/${n.config.target})`).join(', ');
+              this.bot.chat(`[AFK_GATHER] Needs: ${topNeeds}`);
+            } else {
+              this.bot.chat(`[AFK_GATHER] ✅ All essentials stocked!`);
+            }
+          }
+        } else {
+          this.bot.chat(`[AFK_GATHER] System not initialized`);
+        }
+        return;
+      }
+      
+      const shouldEnable = action === 'on';
+      
+      if (this.bot.afkGatherer) {
+        if (shouldEnable && !this.bot.afkGatherer.enabled) {
+          this.bot.afkGatherer.start();
+          this.bot.chat(`[AFK_GATHER] ✅ Auto-gather ENABLED - Will gather essentials when idle`);
+          console.log(`[AFK_GATHER] Enabled by ${username}`);
+        } else if (!shouldEnable && this.bot.afkGatherer.enabled) {
+          this.bot.afkGatherer.stop();
+          this.bot.chat(`[AFK_GATHER] ⏹️ Auto-gather DISABLED`);
+          console.log(`[AFK_GATHER] Disabled by ${username}`);
+        } else {
+          this.bot.chat(`[AFK_GATHER] Already ${shouldEnable ? 'enabled' : 'disabled'}`);
+        }
+      } else {
+        this.bot.chat(`[AFK_GATHER] ⚠️ System not available`);
+      }
       return;
     }
     
@@ -32761,6 +32823,14 @@ async function launchBot(username, role = 'fighter') {
     
     bot.swarmCoordinator = globalSwarmCoordinator;
     
+    // Initialize AFK auto-gather system
+    if (!globalAFKGatherer) {
+      globalAFKGatherer = new AFKGatherer(bot);
+      globalAFKGatherer.start();
+      console.log('[AFK_GATHER] Auto-gather system initialized and started');
+    }
+    bot.afkGatherer = globalAFKGatherer;
+    
     // Initialize RL Analytics performance tracking
     safeSetInterval(() => {
       globalRLAnalytics.savePerformanceMetrics();
@@ -35716,6 +35786,625 @@ function logNeuralSystemStatus() {
   
   console.log('=====================================\n');
 }
+
+// =========================================================
+// ===             AFK AUTO-GATHER MODULE               ===
+// =========================================================
+
+class AFKGatherer {
+  constructor(bot) {
+    this.bot = bot;
+    this.enabled = false;
+    this.lastActivityTime = Date.now();
+    this.idleTimeoutMs = 30000; // 30 seconds
+    this.currentlyGathering = false;
+    this.gatheringTask = null;
+    this.checkInterval = null;
+    
+    // Essential items configuration with priorities (lower = more important)
+    this.essentials = {
+      // Priority 1: Combat & Survival
+      'cooked_beef': { target: 64, priority: 1, category: 'food' },
+      'cooked_porkchop': { target: 64, priority: 1, category: 'food', alternative: true },
+      'cooked_chicken': { target: 64, priority: 1, category: 'food', alternative: true },
+      'water_bucket': { target: 2, priority: 1, category: 'utility' },
+      
+      // Priority 2: Building Materials
+      'oak_log': { target: 64, priority: 2, category: 'building' },
+      'oak_planks': { target: 64, priority: 2, category: 'building' },
+      'cobblestone': { target: 64, priority: 2, category: 'building' },
+      'dirt': { target: 32, priority: 2, category: 'building' },
+      
+      // Priority 3: Tools & Resources
+      'coal': { target: 32, priority: 3, category: 'resource' },
+      'torch': { target: 16, priority: 3, category: 'utility' },
+      'stick': { target: 16, priority: 3, category: 'resource' }
+    };
+  }
+  
+  start() {
+    if (this.enabled) return;
+    
+    this.enabled = true;
+    this.lastActivityTime = Date.now();
+    console.log('[AFK_GATHER] ✓ AFK auto-gather system started');
+    
+    // Check for idle state every 5 seconds
+    this.checkInterval = setInterval(() => {
+      this.checkIdleState();
+    }, 5000);
+  }
+  
+  stop() {
+    if (!this.enabled) return;
+    
+    this.enabled = false;
+    if (this.checkInterval) {
+      clearInterval(this.checkInterval);
+      this.checkInterval = null;
+    }
+    
+    if (this.gatheringTask) {
+      this.stopGathering();
+    }
+    
+    console.log('[AFK_GATHER] ✓ AFK auto-gather system stopped');
+  }
+  
+  markActivity() {
+    this.lastActivityTime = Date.now();
+    
+    // If we're currently gathering, stop it
+    if (this.currentlyGathering) {
+      console.log('[AFK_GATHER] Activity detected, stopping AFK gathering');
+      this.stopGathering();
+    }
+  }
+  
+  async checkIdleState() {
+    if (!this.enabled || !this.bot || !this.bot.entity) return;
+    
+    const timeSinceActivity = Date.now() - this.lastActivityTime;
+    const isIdle = timeSinceActivity >= this.idleTimeoutMs;
+    
+    // Check if bot is in danger or combat
+    const inDanger = this.isInDanger();
+    const inCombat = this.bot.pvp && this.bot.pvp.target;
+    
+    // Don't start gathering if already gathering, in danger, or in combat
+    if (this.currentlyGathering || inDanger || inCombat) {
+      return;
+    }
+    
+    // Start gathering if idle
+    if (isIdle) {
+      await this.startGathering();
+    }
+  }
+  
+  isInDanger() {
+    if (!this.bot || !this.bot.entity) return true;
+    
+    // Check health
+    if (this.bot.health < 15) return true;
+    
+    // Check for nearby hostile mobs
+    const hostileMobs = ['zombie', 'skeleton', 'creeper', 'spider', 'enderman', 'witch', 'pillager'];
+    const nearbyHostiles = Object.values(this.bot.entities).filter(e => 
+      hostileMobs.includes(e.name) &&
+      e.position && this.bot.entity.position &&
+      e.position.distanceTo(this.bot.entity.position) < 16
+    );
+    
+    return nearbyHostiles.length > 0;
+  }
+  
+  async startGathering() {
+    if (this.currentlyGathering) return;
+    
+    this.currentlyGathering = true;
+    console.log('[AFK_GATHER] ⏰ Bot idle for 30+ seconds, starting AFK auto-gather');
+    
+    try {
+      await this.gatherEssentials();
+    } catch (err) {
+      console.log(`[AFK_GATHER] ⚠️ Gathering error: ${err.message}`);
+    } finally {
+      this.currentlyGathering = false;
+    }
+  }
+  
+  stopGathering() {
+    this.currentlyGathering = false;
+    if (this.bot.pathfinder) {
+      this.bot.pathfinder.stop();
+    }
+    console.log('[AFK_GATHER] ⏸️ Gathering stopped');
+  }
+  
+  async gatherEssentials() {
+    console.log('[AFK_GATHER] 📋 Checking inventory for missing essentials...');
+    
+    const needs = this.getInventoryNeeds();
+    
+    if (needs.length === 0) {
+      console.log('[AFK_GATHER] ✅ All essentials stocked, entering standby');
+      this.currentlyGathering = false;
+      return;
+    }
+    
+    console.log(`[AFK_GATHER] 📦 Found ${needs.length} items to gather`);
+    
+    // Sort by priority
+    needs.sort((a, b) => a.config.priority - b.config.priority);
+    
+    // Gather each needed item
+    for (const need of needs) {
+      // Check if still idle and no danger
+      if (!this.currentlyGathering || this.isInDanger()) {
+        console.log('[AFK_GATHER] ⏹️ Stopping gathering due to activity or danger');
+        break;
+      }
+      
+      const timeSinceActivity = Date.now() - this.lastActivityTime;
+      if (timeSinceActivity < this.idleTimeoutMs) {
+        console.log('[AFK_GATHER] ⏹️ Activity detected, stopping gathering');
+        break;
+      }
+      
+      await this.gatherItem(need.item, need.needed);
+      
+      // Small delay between items
+      await this.sleep(1000);
+    }
+    
+    console.log('[AFK_GATHER] ✅ AFK gathering cycle complete');
+    this.currentlyGathering = false;
+  }
+  
+  getInventoryNeeds() {
+    const needs = [];
+    
+    for (const [itemName, config] of Object.entries(this.essentials)) {
+      // Skip alternatives if main food item is available
+      if (config.alternative && config.category === 'food') {
+        const hasPrimaryFood = this.bot.inventory.count(this.bot.registry.itemsByName['cooked_beef']?.id) >= 32;
+        if (hasPrimaryFood) continue;
+      }
+      
+      const item = this.bot.registry.itemsByName[itemName];
+      if (!item) continue;
+      
+      const current = this.bot.inventory.count(item.id);
+      const needed = config.target - current;
+      
+      if (needed > 0) {
+        needs.push({
+          item: itemName,
+          current,
+          needed,
+          config
+        });
+      }
+    }
+    
+    return needs;
+  }
+  
+  async gatherItem(itemName, needed) {
+    console.log(`[AFK_GATHER] 🎯 Gathering ${needed}x ${itemName}`);
+    
+    try {
+      switch (itemName) {
+        case 'cooked_beef':
+        case 'cooked_porkchop':
+        case 'cooked_chicken':
+          await this.gatherFood(itemName, needed);
+          break;
+        
+        case 'water_bucket':
+          await this.gatherWaterBucket(needed);
+          break;
+        
+        case 'oak_log':
+          await this.gatherWood(needed);
+          break;
+        
+        case 'oak_planks':
+          await this.craftPlanks(needed);
+          break;
+        
+        case 'cobblestone':
+          await this.gatherCobblestone(needed);
+          break;
+        
+        case 'dirt':
+          await this.gatherDirt(needed);
+          break;
+        
+        case 'coal':
+          await this.gatherCoal(needed);
+          break;
+        
+        case 'torch':
+          await this.craftTorches(needed);
+          break;
+        
+        case 'stick':
+          await this.craftSticks(needed);
+          break;
+        
+        default:
+          console.log(`[AFK_GATHER] ⚠️ No gathering strategy for ${itemName}`);
+      }
+    } catch (err) {
+      console.log(`[AFK_GATHER] ❌ Failed to gather ${itemName}: ${err.message}`);
+    }
+  }
+  
+  async gatherFood(itemName, needed) {
+    // First try to find and cook raw meat
+    const rawMeatMap = {
+      'cooked_beef': 'beef',
+      'cooked_porkchop': 'porkchop',
+      'cooked_chicken': 'chicken'
+    };
+    
+    const rawMeat = rawMeatMap[itemName];
+    const rawItem = this.bot.registry.itemsByName[rawMeat];
+    const rawCount = rawItem ? this.bot.inventory.count(rawItem.id) : 0;
+    
+    if (rawCount > 0) {
+      console.log(`[AFK_GATHER] 🍖 Found ${rawCount} raw ${rawMeat}, cooking...`);
+      await this.cookFood(rawMeat, Math.min(rawCount, needed));
+      return;
+    }
+    
+    // Hunt animals
+    console.log(`[AFK_GATHER] 🐄 Hunting animals for food...`);
+    await this.huntAnimalsForFood(needed);
+  }
+  
+  async huntAnimalsForFood(needed) {
+    const animalTypes = ['cow', 'pig', 'chicken', 'sheep'];
+    let hunted = 0;
+    const maxAttempts = Math.min(needed * 2, 20);
+    
+    for (let i = 0; i < maxAttempts && hunted < needed; i++) {
+      if (!this.currentlyGathering) break;
+      
+      const animal = this.findNearestAnimal(animalTypes);
+      if (!animal) {
+        console.log(`[AFK_GATHER] No animals nearby (attempt ${i+1}/${maxAttempts})`);
+        await this.sleep(2000);
+        continue;
+      }
+      
+      try {
+        await this.attackEntity(animal);
+        hunted++;
+        console.log(`[AFK_GATHER] Hunted animal (${hunted}/${needed})`);
+        await this.sleep(500);
+      } catch (err) {
+        console.log(`[AFK_GATHER] Failed to hunt: ${err.message}`);
+      }
+    }
+    
+    // Try to cook what we got
+    if (hunted > 0) {
+      await this.cookFood('beef', hunted);
+    }
+  }
+  
+  findNearestAnimal(types) {
+    const animals = Object.values(this.bot.entities).filter(e => 
+      types.includes(e.name) &&
+      e.position && this.bot.entity.position &&
+      e.position.distanceTo(this.bot.entity.position) < 32
+    );
+    
+    if (animals.length === 0) return null;
+    
+    // Sort by distance
+    animals.sort((a, b) => {
+      const distA = a.position.distanceTo(this.bot.entity.position);
+      const distB = b.position.distanceTo(this.bot.entity.position);
+      return distA - distB;
+    });
+    
+    return animals[0];
+  }
+  
+  async attackEntity(entity) {
+    if (!entity || !entity.position) return;
+    
+    const goal = new goals.GoalNear(entity.position.x, entity.position.y, entity.position.z, 2);
+    await this.bot.pathfinder.goto(goal);
+    
+    if (entity.isValid) {
+      await this.bot.attack(entity);
+    }
+  }
+  
+  async cookFood(rawFoodName, amount) {
+    console.log(`[AFK_GATHER] 🔥 Cooking ${amount}x ${rawFoodName}...`);
+    // This would require finding/placing a furnace and using it
+    // For simplicity, we'll skip the cooking implementation for now
+    // In a full implementation, this would use furnace automation
+  }
+  
+  async gatherWaterBucket(needed) {
+    // Check if we have a bucket
+    const bucketItem = this.bot.registry.itemsByName['bucket'];
+    if (!bucketItem) return;
+    
+    const buckets = this.bot.inventory.count(bucketItem.id);
+    
+    if (buckets > 0) {
+      // Find water and fill bucket
+      console.log(`[AFK_GATHER] 💧 Finding water to fill bucket...`);
+      await this.fillWaterBucket();
+    } else {
+      console.log(`[AFK_GATHER] ⚠️ No empty buckets, need to craft or find iron`);
+      // Would need to mine iron and craft bucket
+    }
+  }
+  
+  async fillWaterBucket() {
+    const waterBlock = this.bot.findBlock({
+      matching: this.bot.registry.blocksByName['water']?.id,
+      maxDistance: 64
+    });
+    
+    if (waterBlock) {
+      try {
+        const goal = new goals.GoalNear(waterBlock.position.x, waterBlock.position.y, waterBlock.position.z, 3);
+        await this.bot.pathfinder.goto(goal);
+        
+        const bucket = this.bot.inventory.items().find(i => i.name === 'bucket');
+        if (bucket) {
+          await this.bot.equip(bucket, 'hand');
+          await this.bot.activateBlock(waterBlock);
+          console.log(`[AFK_GATHER] ✅ Filled water bucket`);
+        }
+      } catch (err) {
+        console.log(`[AFK_GATHER] Failed to fill bucket: ${err.message}`);
+      }
+    }
+  }
+  
+  async gatherWood(needed) {
+    console.log(`[AFK_GATHER] 🌲 Mining wood...`);
+    
+    const logTypes = ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log'];
+    let gathered = 0;
+    
+    while (gathered < needed && this.currentlyGathering) {
+      const log = this.findNearestBlock(logTypes, 64);
+      
+      if (!log) {
+        console.log(`[AFK_GATHER] No logs nearby, stopping wood gathering`);
+        break;
+      }
+      
+      try {
+        await this.mineBlock(log);
+        gathered++;
+        console.log(`[AFK_GATHER] Wood gathered: ${gathered}/${needed}`);
+      } catch (err) {
+        console.log(`[AFK_GATHER] Failed to mine log: ${err.message}`);
+        break;
+      }
+    }
+  }
+  
+  findNearestBlock(blockNames, maxDistance = 64) {
+    for (const blockName of blockNames) {
+      const block = this.bot.findBlock({
+        matching: this.bot.registry.blocksByName[blockName]?.id,
+        maxDistance
+      });
+      
+      if (block) return block;
+    }
+    return null;
+  }
+  
+  async mineBlock(block) {
+    if (!block) return;
+    
+    const goal = new goals.GoalNear(block.position.x, block.position.y, block.position.z, 3);
+    await this.bot.pathfinder.goto(goal);
+    
+    // Equip appropriate tool
+    if (this.bot.toolSelector) {
+      await this.bot.toolSelector.equipToolForAction('mining');
+    }
+    
+    await this.bot.dig(block);
+  }
+  
+  async gatherCobblestone(needed) {
+    console.log(`[AFK_GATHER] ⛏️ Mining stone for cobblestone...`);
+    
+    let gathered = 0;
+    
+    while (gathered < needed && this.currentlyGathering) {
+      const stone = this.findNearestBlock(['stone', 'cobblestone'], 64);
+      
+      if (!stone) {
+        console.log(`[AFK_GATHER] No stone nearby`);
+        break;
+      }
+      
+      try {
+        await this.mineBlock(stone);
+        gathered++;
+        console.log(`[AFK_GATHER] Cobblestone gathered: ${gathered}/${needed}`);
+      } catch (err) {
+        console.log(`[AFK_GATHER] Failed to mine stone: ${err.message}`);
+        break;
+      }
+    }
+  }
+  
+  async gatherDirt(needed) {
+    console.log(`[AFK_GATHER] 🪨 Mining dirt...`);
+    
+    let gathered = 0;
+    
+    while (gathered < needed && this.currentlyGathering) {
+      const dirt = this.findNearestBlock(['dirt', 'grass_block'], 64);
+      
+      if (!dirt) {
+        console.log(`[AFK_GATHER] No dirt nearby`);
+        break;
+      }
+      
+      try {
+        await this.mineBlock(dirt);
+        gathered++;
+        console.log(`[AFK_GATHER] Dirt gathered: ${gathered}/${needed}`);
+      } catch (err) {
+        console.log(`[AFK_GATHER] Failed to mine dirt: ${err.message}`);
+        break;
+      }
+    }
+  }
+  
+  async gatherCoal(needed) {
+    console.log(`[AFK_GATHER] ⚫ Mining coal...`);
+    
+    let gathered = 0;
+    
+    while (gathered < needed && this.currentlyGathering) {
+      const coal = this.findNearestBlock(['coal_ore', 'deepslate_coal_ore'], 64);
+      
+      if (!coal) {
+        console.log(`[AFK_GATHER] No coal ore nearby`);
+        break;
+      }
+      
+      try {
+        await this.mineBlock(coal);
+        gathered++;
+        console.log(`[AFK_GATHER] Coal gathered: ${gathered}/${needed}`);
+      } catch (err) {
+        console.log(`[AFK_GATHER] Failed to mine coal: ${err.message}`);
+        break;
+      }
+    }
+  }
+  
+  async craftPlanks(needed) {
+    const logItem = this.bot.registry.itemsByName['oak_log'];
+    if (!logItem) return;
+    
+    const logs = this.bot.inventory.count(logItem.id);
+    
+    if (logs === 0) {
+      console.log(`[AFK_GATHER] No logs to craft planks, gathering wood first...`);
+      await this.gatherWood(Math.ceil(needed / 4));
+      return;
+    }
+    
+    console.log(`[AFK_GATHER] 🪵 Crafting planks from logs...`);
+    
+    const plankRecipe = this.bot.recipesFor(this.bot.registry.itemsByName['oak_planks'].id)[0];
+    if (plankRecipe) {
+      const batches = Math.ceil(needed / 4);
+      for (let i = 0; i < batches; i++) {
+        if (!this.currentlyGathering) break;
+        
+        try {
+          await this.bot.craft(plankRecipe, 1);
+          console.log(`[AFK_GATHER] Crafted planks (${i+1}/${batches})`);
+        } catch (err) {
+          console.log(`[AFK_GATHER] Failed to craft planks: ${err.message}`);
+          break;
+        }
+      }
+    }
+  }
+  
+  async craftSticks(needed) {
+    const plankItem = this.bot.registry.itemsByName['oak_planks'];
+    if (!plankItem) return;
+    
+    const planks = this.bot.inventory.count(plankItem.id);
+    
+    if (planks < 2) {
+      console.log(`[AFK_GATHER] Not enough planks for sticks, crafting planks first...`);
+      await this.craftPlanks(8);
+      return;
+    }
+    
+    console.log(`[AFK_GATHER] 🦯 Crafting sticks...`);
+    
+    const stickRecipe = this.bot.recipesFor(this.bot.registry.itemsByName['stick'].id)[0];
+    if (stickRecipe) {
+      const batches = Math.ceil(needed / 4);
+      for (let i = 0; i < batches; i++) {
+        if (!this.currentlyGathering) break;
+        
+        try {
+          await this.bot.craft(stickRecipe, 1);
+          console.log(`[AFK_GATHER] Crafted sticks (${i+1}/${batches})`);
+        } catch (err) {
+          console.log(`[AFK_GATHER] Failed to craft sticks: ${err.message}`);
+          break;
+        }
+      }
+    }
+  }
+  
+  async craftTorches(needed) {
+    const coalItem = this.bot.registry.itemsByName['coal'];
+    const stickItem = this.bot.registry.itemsByName['stick'];
+    
+    if (!coalItem || !stickItem) return;
+    
+    const coal = this.bot.inventory.count(coalItem.id);
+    const sticks = this.bot.inventory.count(stickItem.id);
+    
+    if (coal === 0) {
+      console.log(`[AFK_GATHER] No coal for torches, mining coal first...`);
+      await this.gatherCoal(Math.ceil(needed / 4));
+      return;
+    }
+    
+    if (sticks === 0) {
+      console.log(`[AFK_GATHER] No sticks for torches, crafting sticks first...`);
+      await this.craftSticks(needed);
+      return;
+    }
+    
+    console.log(`[AFK_GATHER] 🔦 Crafting torches...`);
+    
+    const torchRecipe = this.bot.recipesFor(this.bot.registry.itemsByName['torch'].id)[0];
+    if (torchRecipe) {
+      const batches = Math.ceil(needed / 4);
+      for (let i = 0; i < batches; i++) {
+        if (!this.currentlyGathering) break;
+        
+        try {
+          await this.bot.craft(torchRecipe, 1);
+          console.log(`[AFK_GATHER] Crafted torches (${i+1}/${batches})`);
+        } catch (err) {
+          console.log(`[AFK_GATHER] Failed to craft torches: ${err.message}`);
+          break;
+        }
+      }
+    }
+  }
+  
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// Global AFK gatherer instance
+let globalAFKGatherer = null;
 
 // Main startup function
 async function initializeHunterX() {
