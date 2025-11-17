@@ -16435,7 +16435,7 @@ class MobHunter {
     // Basic structure verification - check for multiple matching blocks nearby
     let matchCount = 0;
     const checkRadius = patterns.size === 'small' ? 16 : patterns.size === 'medium' ? 32 : 64;
-    
+
     for (const blockName of patterns.blocks) {
       const blockId = this.bot.registry.blocksByName[blockName]?.id;
       if (blockId) {
@@ -16448,10 +16448,22 @@ class MobHunter {
         if (blocks.length > 0) matchCount++;
       }
     }
-    
+
     return matchCount >= patterns.blocks.length * 0.5; // At least 50% of expected blocks
   }
-  
+
+  async travelTo(position) {
+    console.log(`[HUNTER] 🚶 Traveling to mob spawn at ${position.x}, ${position.y}, ${position.z}`);
+    try {
+      await safeGoTo(this.bot, position, 120000);
+      console.log(`[HUNTER] ✅ Arrived at mob spawn location`);
+      return true;
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Failed to travel to mob spawn: ${err.message}`);
+      return false;
+    }
+  }
+
   hasCrystalResources() {
     const crystals = this.bot.inventory.items().find(i => i.name === 'end_crystal');
     const obsidian = this.bot.inventory.items().find(i => i.name === 'obsidian');
