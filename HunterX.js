@@ -1879,9 +1879,194 @@ async function pingServer(serverIP) {
     console.log(`[DETECTION] Ping failed: ${error.message}`);
     throw error;
   }
-}
+  }
 
-// === SAFE BOT METHOD WRAPPERS ===
+  // === VERSION DETECTION AND CACHING SYSTEM ===
+  const SERVER_VERSION_CACHE_PATH = path.join(__dirname, 'data', 'server_versions.json');
+
+  // Ensure data directory exists
+  function ensureDataDirectory() {
+  const dataDir = path.join(__dirname, 'data');
+  if (!fs.existsSync(dataDir)) {
+   try {
+     fs.mkdirSync(dataDir, { recursive: true });
+     console.log('[VERSION] Created data directory');
+   } catch (err) {
+     console.warn(`[VERSION] Could not create data directory: ${err.message}`);
+   }
+  }
+  }
+
+  // Load server version cache from file
+  function loadServerVersionCache() {
+  ensureDataDirectory();
+  try {
+   if (fs.existsSync(SERVER_VERSION_CACHE_PATH)) {
+     const data = fs.readFileSync(SERVER_VERSION_CACHE_PATH, 'utf8');
+     const cache = JSON.parse(data);
+     console.log(`[VERSION] Loaded server version cache with ${Object.keys(cache).length} entries`);
+     return cache;
+   }
+  } catch (err) {
+   console.warn(`[VERSION] Could not load server version cache: ${err.message}`);
+  }
+  return {};
+  }
+
+  // Save server version cache to file
+  function saveServerVersionCache(cache) {
+  ensureDataDirectory();
+  try {
+   fs.writeFileSync(SERVER_VERSION_CACHE_PATH, JSON.stringify(cache, null, 2), 'utf8');
+   console.log('[VERSION] Saved server version cache');
+  } catch (err) {
+   console.warn(`[VERSION] Could not save server version cache: ${err.message}`);
+  }
+  }
+
+  // Get cached server version
+  function getCachedServerVersion(host) {
+  try {
+   const cache = loadServerVersionCache();
+   const entry = cache[host];
+   if (entry && entry.version) {
+     const age = Date.now() - (entry.timestamp || 0);
+     const ageHours = Math.floor(age / 3600000);
+     if (ageHours < 24) {
+       console.log(`[VERSION] Found cached version for ${host}: ${entry.version} (${ageHours}h old)`);
+       return entry;
+     } else {
+       console.log(`[VERSION] Cached version for ${host} is too old (${ageHours}h), will re-detect`);
+     }
+   }
+  } catch (err) {
+   console.warn(`[VERSION] Error reading cache: ${err.message}`);
+  }
+  return null;
+  }
+
+  // Cache server version
+  function cacheServerVersion(host, version, protocol) {
+  try {
+   const cache = loadServerVersionCache();
+   cache[host] = {
+     version: version,
+     protocol: protocol || null,
+     timestamp: Date.now()
+   };
+   saveServerVersionCache(cache);
+   console.log(`[VERSION] Cached version for ${host}: ${version}`);
+  } catch (err) {
+   console.warn(`[VERSION] Could not cache server version: ${err.message}`);
+  }
+  }
+
+  // Detect server version with multi-step fallback
+  async function detectServerVersionAutomatic(serverIP) {
+  const [host, portStr] = serverIP.split(':');
+  const port = parseInt(portStr) || 25565;
+
+  console.log(`[VERSION] Starting auto-detection for ${host}:${port}`);
+
+  // Step 1: Check cache first
+  const cachedEntry = getCachedServerVersion(host);
+  if (cachedEntry && cachedEntry.version) {
+   console.log(`[VERSION] Using cached version: ${cachedEntry.version}`);
+   return {
+     version: cachedEntry.version,
+     protocol: cachedEntry.protocol,
+     source: 'cache',
+     confidence: 'high'
+   };
+  }
+
+  // Step 2: Try to ping server
+  try {
+   console.log(`[VERSION] Attempting to ping server...`);
+   const pingResponse = await pingServer(serverIP);
+   if (pingResponse && pingResponse.version) {
+     const detectedVersion = extractVersionFromPing(pingResponse);
+     if (detectedVersion) {
+       const resolved = resolveSupportedVersion(detectedVersion);
+       if (resolved) {
+         console.log(`[VERSION] Detected version from ping: ${resolved}`);
+         return {
+           version: resolved,
+           protocol: pingResponse.version.protocol,
+           source: 'ping',
+           confidence: 'high'
+         };
+       }
+     }
+   }
+  } catch (pingErr) {
+   console.log(`[VERSION] Ping failed: ${pingErr.message}`);
+  }
+
+  // Step 3: Try most common version (1.21.4)
+  const commonVersions = ['1.21.4', '1.21.1', '1.21', '1.20.4', '1.20.1', '1.20', '1.19.2'];
+  console.log(`[VERSION] Falling back to trying common versions...`);
+
+  for (const testVersion of commonVersions) {
+   try {
+     console.log(`[VERSION] Testing version ${testVersion}...`);
+     const testBot = mineflayer.createBot({
+       host: host,
+       port: port,
+       username: 'VersionDetector',
+       version: testVersion,
+       hideErrors: true,
+       skipValidation: true
+     });
+
+     const result = await new Promise((resolve, reject) => {
+       const timeout = setTimeout(() => {
+         try {
+           testBot.quit();
+         } catch (e) {}
+         reject(new Error('Timeout'));
+       }, 3000);
+
+       testBot.once('login', () => {
+         clearTimeout(timeout);
+         try {
+           testBot.quit();
+         } catch (e) {}
+         console.log(`[VERSION] Successfully connected with version ${testVersion}`);
+         resolve({
+           version: testVersion,
+           protocol: null,
+           source: 'direct_test',
+           confidence: 'high'
+         });
+       });
+
+       testBot.once('error', (err) => {
+         clearTimeout(timeout);
+         reject(err);
+       });
+     });
+     
+     if (result) {
+       return result;
+     }
+   } catch (testErr) {
+     console.log(`[VERSION] Version ${testVersion} failed: ${testErr.message}`);
+   }
+  }
+
+  // Step 4: Last resort fallback
+  const fallback = getFallbackVersion();
+  console.log(`[VERSION] All detection methods failed, using fallback: ${fallback}`);
+  return {
+   version: fallback,
+   protocol: null,
+   source: 'fallback',
+   confidence: 'low'
+  };
+  }
+
+  // === SAFE BOT METHOD WRAPPERS ===
 function safeBotQuit(bot, reason = 'Disconnected') {
   if (!bot) {
     console.warn('[BOT] Bot is null, cannot quit');
@@ -18833,6 +19018,9 @@ try {
       // Analytics
       '!stats', 'stats', 'performance', 'analytics',
 
+      // Server info
+      'server version', 'server info', 'server status', 'update version',
+
       // Trust & Permissions
       'trust level', 'check trust', 'list whitelist', 'show whitelist', 'set trust', 'set level', 'remove trust', 'remove whitelist',
 
@@ -20826,10 +21014,60 @@ try {
         }
       }
       return;
-    }
+      }
 
-    // Stash scanner command
-    if (lower.includes('!stash') || lower.includes('stash')) {
+      // Server version command
+      if (lower.includes('!server') && lower.includes('version')) {
+      const serverIP = this.bot.options?.host || 'unknown';
+      const cachedEntry = getCachedServerVersion(serverIP);
+      if (cachedEntry && cachedEntry.version) {
+        const age = Math.floor((Date.now() - cachedEntry.timestamp) / 60000);
+        this.bot.chat(`🔌 Server: ${serverIP}, Version: ${cachedEntry.version} (cached ${age}m ago)`);
+      } else {
+        this.bot.chat(`🔌 Server: ${serverIP}, Version: unknown (not cached, connect to detect)`);
+      }
+      return;
+      }
+
+      // Server info command
+      if (lower.includes('server') && (lower.includes('info') || lower.includes('status'))) {
+      const serverIP = this.bot.options?.host || 'unknown';
+      const port = this.bot.options?.port || 25565;
+      const cachedEntry = getCachedServerVersion(serverIP);
+      const version = cachedEntry?.version || 'unknown';
+      const age = cachedEntry ? Math.floor((Date.now() - cachedEntry.timestamp) / 60000) : 'N/A';
+
+      this.bot.chat(`📊 Server Info:`);
+      this.bot.chat(`  🔌 Host: ${serverIP}:${port}`);
+      this.bot.chat(`  📦 Version: ${version}`);
+      this.bot.chat(`  ⏱️ Cache age: ${age}m`);
+      if (this.bot.entity && this.bot.entity.position) {
+        const pos = this.bot.entity.position;
+        this.bot.chat(`  📍 Bot position: ${Math.round(pos.x)}, ${Math.round(pos.y)}, ${Math.round(pos.z)}`);
+      }
+      return;
+      }
+
+      // Update version command (force re-detect)
+      if (lower.includes('update') && lower.includes('version')) {
+      if (!this.hasTrustLevel(username, 'admin')) {
+        denyCommand("Only admin+ can force version re-detection!", 'blocked_version_update');
+        return;
+      }
+      const serverIP = this.bot.options?.host || 'unknown';
+      this.bot.chat(`🔄 Attempting to re-detect server version for ${serverIP}...`);
+      try {
+        const detection = await detectServerVersionAutomatic(serverIP);
+        cacheServerVersion(serverIP, detection.version, detection.protocol);
+        this.bot.chat(`✅ Version updated: ${detection.version} (source: ${detection.source})`);
+      } catch (err) {
+        this.bot.chat(`❌ Version detection failed: ${err.message}`);
+      }
+      return;
+      }
+
+      // Stash scanner command
+      if (lower.includes('!stash') || lower.includes('stash')) {
       this.bot.chat(`🔍 Scanning for stashes...`);
       if (this.bot.stashScanner) {
         await this.bot.stashScanner.startScanning();
@@ -27715,8 +27953,24 @@ class BotSpawner {
     }
 
     const username = options.username || this.generateRandomUsername();
-    const initialVersion = options.version || this.serverType.version || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4';
-    let version = initialVersion;
+
+    // Auto-detect version if not provided
+    let version;
+    if (options.version) {
+      version = options.version;
+      console.log(`[SPAWNER] Using provided version: ${version}`);
+    } else if (this.serverType && this.serverType.version) {
+      version = this.serverType.version;
+      console.log(`[SPAWNER] Using detected server type version: ${version}`);
+    } else {
+      console.log(`[SPAWNER] Auto-detecting version for ${host}:${port}...`);
+      const detectionResult = await detectServerVersionAutomatic(serverIP);
+      version = detectionResult.version;
+      console.log(`[SPAWNER] Auto-detection result: ${version} (source: ${detectionResult.source}, confidence: ${detectionResult.confidence})`);
+
+      // Cache the successful version
+      cacheServerVersion(host, version, detectionResult.protocol);
+    }
 
     // Validate protocol version
     if (!version || version === 'unknown') {
@@ -27865,8 +28119,23 @@ class BotSpawner {
       throw new Error('Local account credentials not configured');
     }
 
-    const initialVersion = options.version || this.serverType.version || (config.bot && config.bot.defaultProtocolVersion) || '1.21.4';
-    let version = initialVersion;
+    // Auto-detect version if not provided
+    let version;
+    if (options.version) {
+      version = options.version;
+      console.log(`[SPAWNER] Using provided version: ${version}`);
+    } else if (this.serverType && this.serverType.version) {
+      version = this.serverType.version;
+      console.log(`[SPAWNER] Using detected server type version: ${version}`);
+    } else {
+      console.log(`[SPAWNER] Auto-detecting version for ${host}:${port}...`);
+      const detectionResult = await detectServerVersionAutomatic(serverIP);
+      version = detectionResult.version;
+      console.log(`[SPAWNER] Auto-detection result: ${version} (source: ${detectionResult.source}, confidence: ${detectionResult.confidence})`);
+
+      // Cache the successful version
+      cacheServerVersion(host, version, detectionResult.protocol);
+    }
 
     // Validate protocol version
     if (!version || version === 'unknown') {
