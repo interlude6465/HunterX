@@ -2592,6 +2592,194 @@ async function safeGoTo(bot, position, timeout = 60000) {
   }
 }
 
+// === UNDERGROUND TUNNEL DIGGING (Issue #XX - Mining Pathfinding) ===
+// Digs a tunnel through solid blocks to reach underground ore
+async function tunnelToBlock(bot, targetBlock, maxAttempts = 200) {
+  if (!bot.entity || !bot.entity.position) {
+    throw new Error('Bot position unavailable');
+  }
+  
+  if (!targetBlock || typeof targetBlock.x !== 'number' || typeof targetBlock.y !== 'number' || typeof targetBlock.z !== 'number') {
+    throw new Error('Invalid target block position');
+  }
+
+  const start = bot.entity.position.clone();
+  const target = new Vec3(Math.floor(targetBlock.x), Math.floor(targetBlock.y), Math.floor(targetBlock.z));
+  
+  console.log(`[TUNNEL] 🕳️ Starting tunnel from ${start.x.toFixed(1)}, ${start.y.toFixed(1)}, ${start.z.toFixed(1)} to ${target.x}, ${target.y}, ${target.z}`);
+  
+  // If already at target, return true
+  const initialDist = Math.sqrt(
+    Math.pow(start.x - target.x, 2) +
+    Math.pow(start.y - target.y, 2) +
+    Math.pow(start.z - target.z, 2)
+  );
+  
+  if (initialDist <= 2.5) {
+    console.log(`[TUNNEL] ✅ Already near target block (${initialDist.toFixed(1)} blocks away)`);
+    return true;
+  }
+
+  let attempts = 0;
+  const movementOffsets = [
+    { x: 0, y: 0, z: 1 },   // Forward
+    { x: 1, y: 0, z: 0 },   // Right
+    { x: -1, y: 0, z: 0 },  // Left
+    { x: 0, y: 0, z: -1 },  // Back
+    { x: 0, y: -1, z: 0 }   // Down
+  ];
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    
+    if (!bot.entity || !bot.entity.position) {
+      throw new Error('Bot disconnected during tunneling');
+    }
+
+    const current = bot.entity.position;
+    const distToTarget = Math.sqrt(
+      Math.pow(current.x - target.x, 2) +
+      Math.pow(current.y - target.y, 2) +
+      Math.pow(current.z - target.z, 2)
+    );
+
+    // Check if reached target
+    if (distToTarget <= 2.5) {
+      console.log(`[TUNNEL] ✅ Reached target block (${distToTarget.toFixed(1)} blocks away) after ${attempts} attempts`);
+      return true;
+    }
+
+    // Calculate direction to target
+    const dx = Math.sign(target.x - current.x);
+    const dy = Math.sign(target.y - current.y);
+    const dz = Math.sign(target.z - current.z);
+
+    // Determine primary dig direction (prefer horizontal movement)
+    let digOrder = [];
+    
+    if (dx !== 0) digOrder.push({ x: dx, y: 0, z: 0 });
+    if (dz !== 0) digOrder.push({ x: 0, y: 0, z: dz });
+    if (dy !== 0) digOrder.push({ x: 0, y: dy, z: 0 });
+    
+    // Add additional tunnel clearance (3x3 tunnel for head clearance)
+    const tunnelClearance = [
+      { x: dx, y: 1, z: dz },  // Diagonal up-forward
+      { x: dx, y: 0, z: 0 },   // Forward at height
+      { x: 0, y: 1, z: 0 },    // Up
+    ];
+
+    let dug = false;
+
+    // Try to dig in priority order
+    for (const offset of digOrder) {
+      const checkPos = current.offset(offset.x, offset.y, offset.z);
+      const block = bot.blockAt(checkPos);
+
+      if (block && block.name !== 'air' && block.name !== 'water' && block.name !== 'lava') {
+        try {
+          console.log(`[TUNNEL] ⛏️ Breaking ${block.name} at ${checkPos.x}, ${checkPos.y}, ${checkPos.z}`);
+          await bot.dig(block);
+          dug = true;
+          break;
+        } catch (err) {
+          console.log(`[TUNNEL] ⚠️ Failed to dig: ${err.message}`);
+        }
+      }
+    }
+
+    // Also dig clearance blocks for proper tunnel
+    for (const offset of tunnelClearance) {
+      const checkPos = current.offset(offset.x, offset.y, offset.z);
+      const block = bot.blockAt(checkPos);
+
+      if (block && block.name !== 'air' && block.name !== 'water' && block.name !== 'lava' && 
+          !(block.name.includes('ore') && !block.position.equals(target))) {
+        try {
+          await bot.dig(block);
+        } catch (err) {
+          // Silently fail for clearance blocks
+        }
+      }
+    }
+
+    // Move forward if we dug something or just try to move
+    if (dug) {
+      try {
+        // Small movement to let block break and gravity work
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        // Try to move toward the target
+        const nextPos = current.offset(dx === 0 ? 0 : Math.sign(dx), 
+                                       dy === 0 ? 0 : Math.sign(dy), 
+                                       dz === 0 ? 0 : Math.sign(dz));
+        
+        if (bot.pathfinder) {
+          try {
+            bot.pathfinder.stop();
+          } catch (e) {
+            // Ignore stop errors
+          }
+        }
+
+        // Try pathfinding to the next position
+        try {
+          const goal = new goals.GoalNear(Math.floor(nextPos.x), Math.floor(nextPos.y), Math.floor(nextPos.z), 1);
+          await Promise.race([
+            bot.pathfinder ? bot.pathfinder.goto(goal) : Promise.resolve(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Move timeout')), 2000))
+          ]);
+        } catch (moveErr) {
+          // If pathfinding fails, try direct movement via jumping/sprinting
+          if (bot.setControlState) {
+            bot.setControlState('forward', true);
+            await new Promise(resolve => setTimeout(resolve, 300));
+            bot.setControlState('forward', false);
+          }
+        }
+      } catch (moveErr) {
+        console.log(`[TUNNEL] ⚠️ Movement error: ${moveErr.message}`);
+      }
+    } else {
+      // No blocks to dig, try to move forward anyway
+      if (bot.pathfinder) {
+        try {
+          bot.pathfinder.stop();
+        } catch (e) {
+          // Ignore stop errors
+        }
+      }
+
+      try {
+        const goal = new goals.GoalNear(Math.floor(target.x), Math.floor(target.y), Math.floor(target.z), 2);
+        await Promise.race([
+          bot.pathfinder ? bot.pathfinder.goto(goal) : Promise.resolve(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Move timeout')), 2000))
+        ]);
+      } catch (moveErr) {
+        // Try manual movement
+        if (bot.setControlState) {
+          bot.setControlState('forward', true);
+          await new Promise(resolve => setTimeout(resolve, 300));
+          bot.setControlState('forward', false);
+        }
+      }
+    }
+
+    // Status update every 20 attempts
+    if (attempts % 20 === 0) {
+      console.log(`[TUNNEL] 📍 Progress: ${distToTarget.toFixed(1)} blocks away (attempt ${attempts}/${maxAttempts})`);
+    }
+  }
+
+  const finalDist = Math.sqrt(
+    Math.pow(bot.entity.position.x - target.x, 2) +
+    Math.pow(bot.entity.position.y - target.y, 2) +
+    Math.pow(bot.entity.position.z - target.z, 2)
+  );
+
+  throw new Error(`Failed to tunnel to block after ${attempts} attempts (${finalDist.toFixed(1)} blocks away)`);
+}
+
 // === SECURITY HELPERS (Issue #13, #14) ===
 // sanitizeFileName and related helpers are provided by ./utils/pathSecurity
 
@@ -16575,8 +16763,17 @@ class ItemHunter {
     }
     
     if (!reached) {
-      console.log(`[HUNTER] ❌ Failed to reach ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}: ${lastError ? lastError.message : 'unknown error'}`);
-      return false;
+      console.log(`[HUNTER] ⚠️ Standard pathfinding failed: ${lastError ? lastError.message : 'unknown error'}`);
+      console.log(`[HUNTER] 🕳️ Attempting tunnel digging to ore at ${position.x}, ${position.y}, ${position.z}...`);
+      
+      try {
+        await tunnelToBlock(this.bot, position, 200);
+        reached = true;
+        console.log(`[HUNTER] ✅ Tunnel digging successful!`);
+      } catch (tunnelErr) {
+        console.log(`[HUNTER] ❌ Tunnel digging also failed: ${tunnelErr.message}`);
+        return false;
+      }
     }
     
     block = this.bot.blockAt(position);
@@ -16585,7 +16782,7 @@ class ItemHunter {
       return false;
     }
     
-    if (!reachedPosition || !this.bot.entity || !this.bot.entity.position) {
+    if (!this.bot.entity || !this.bot.entity.position) {
       return false;
     }
     
