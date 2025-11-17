@@ -16555,28 +16555,72 @@ class ItemHunter {
     
     if (approachPositions.length === 0) {
       console.log(`[HUNTER] ⚠️ No valid mining positions found for ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}`);
+      console.log(`[HUNTER] 📍 Debug: Checking blocks around ore position...`);
+      
+      // Debug: Check why no positions were found
+      try {
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            const testPos = position.offset(dx, 0, dz);
+            const foot = this.bot.blockAt(testPos);
+            const head = this.bot.blockAt(testPos.offset(0, 1, 0));
+            const below = this.bot.blockAt(testPos.offset(0, -1, 0));
+            console.log(`[HUNTER]  Position (${dx}, 0, ${dz}): foot=${foot ? foot.name : 'null'}, head=${head ? head.name : 'null'}, below=${below ? below.name : 'null'}`);
+          }
+        }
+      } catch (e) {
+        console.log(`[HUNTER] Debug check error: ${e.message}`);
+      }
+      
       return false;
     }
+    
+    console.log(`[HUNTER] ✓ Found ${approachPositions.length} mining position(s) for ${entry.blockName}`);
     
     const timeoutPerAttempt = Math.max(5000, Math.floor(60000 / Math.max(approachPositions.length, 1)));
     let reached = false;
     let lastError = null;
     let reachedPosition = null;
     
-    for (const targetPos of approachPositions) {
+    // Try each mining position
+    for (let i = 0; i < approachPositions.length; i++) {
+      const targetPos = approachPositions[i];
       try {
+        console.log(`[HUNTER] 🎯 Attempting position ${i + 1}/${approachPositions.length}: (${targetPos.x}, ${targetPos.y}, ${targetPos.z})`);
         await safeGoTo(this.bot, targetPos, timeoutPerAttempt);
         reached = true;
         reachedPosition = targetPos;
+        console.log(`[HUNTER] ✓ Successfully reached mining position`);
         break;
       } catch (err) {
         lastError = err;
+        console.log(`[HUNTER] ⚠️ Position ${i + 1} failed: ${err.message}`);
       }
     }
     
     if (!reached) {
-      console.log(`[HUNTER] ❌ Failed to reach ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}: ${lastError ? lastError.message : 'unknown error'}`);
-      return false;
+      console.log(`[HUNTER] ❌ Failed to reach any mining position for ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}`);
+      console.log(`[HUNTER] Last error: ${lastError ? lastError.message : 'unknown error'}`);
+      
+      // Fallback: Try to get as close as possible to the ore block
+      if (this.bot.entity && this.bot.entity.position) {
+        const currentDist = Math.sqrt(
+          Math.pow(this.bot.entity.position.x - position.x, 2) +
+          Math.pow(this.bot.entity.position.y - position.y, 2) +
+          Math.pow(this.bot.entity.position.z - position.z, 2)
+        );
+        
+        if (currentDist <= 5.5) {
+          console.log(`[HUNTER] 📍 Bot is already within mining range (${currentDist.toFixed(1)} blocks), attempting to mine from current position`);
+          reached = true;
+          reachedPosition = this.bot.entity.position;
+        } else {
+          console.log(`[HUNTER] ❌ Bot is too far (${currentDist.toFixed(1)} blocks away) to mine`);
+          return false;
+        }
+      } else {
+        return false;
+      }
     }
     
     block = this.bot.blockAt(position);
@@ -16689,56 +16733,218 @@ class ItemHunter {
       return [];
     }
     
-    const offsets = [
-      // Primary positions (1 block away, same height)
-      new Vec3(1, 0, 0),
-      new Vec3(-1, 0, 0),
-      new Vec3(0, 0, 1),
-      new Vec3(0, 0, -1),
-      // Above position
-      new Vec3(0, 1, 0),
-      // Below position (for mining ceiling/ore above)
-      new Vec3(0, -1, 0),
-      // Diagonal positions (1 block away, 1 block up)
-      new Vec3(1, 1, 0),
-      new Vec3(-1, 1, 0),
-      new Vec3(0, 1, 1),
-      new Vec3(0, 1, -1),
-      // Diagonal positions (1 block away, same height)
-      new Vec3(1, 0, 1),
-      new Vec3(1, 0, -1),
-      new Vec3(-1, 0, 1),
-      new Vec3(-1, 0, -1),
-      // Extended reach positions (2 blocks horizontally)
-      new Vec3(2, 0, 0),
-      new Vec3(-2, 0, 0),
-      new Vec3(0, 0, 2),
-      new Vec3(0, 0, -2)
-    ];
-    
     const origin = (this.bot.entity && this.bot.entity.position) ? this.bot.entity.position : position;
     const candidates = [];
+    const strictCandidates = [];
+    const fallbackCandidates = [];
     
-    for (const offset of offsets) {
+    // Helper function to check if a block is passable (can stand in it)
+    const isPassable = (block) => {
+      if (!block) return true; // Air is passable
+      if (!block.name) return true; // Safety check
+      
+      // Explicitly passable block names
+      const passableNames = ['air', 'water', 'flowing_water', 'lava', 'flowing_lava', 'tall_grass', 'seagrass', 'snow', 'cave_air'];
+      if (passableNames.includes(block.name)) return true;
+      
+      // Check if block name contains markers for passability
+      if (block.name.includes('grass') && !block.name.includes('block')) return true;
+      if (block.name.includes('vine')) return true;
+      if (block.name.includes('web')) return true;
+      if (block.name.includes('plant')) return true;
+      if (block.name.includes('fire')) return true;
+      if (block.name.includes('button')) return true;
+      if (block.name.includes('torch')) return true;
+      if (block.name.includes('rail')) return true;
+      if (block.name.includes('redstone')) return true;
+      if (block.name.includes('carpet')) return true;
+      
+      // Check bounding box if available (safety check for undefined)
+      if (block.boundingBox) {
+        if (block.boundingBox === 'empty') return true;
+        if (block.boundingBox !== 'block') return true;
+      } else {
+        // If boundingBox is undefined, default to trying it as passable
+        // This helps when block metadata isn't fully available
+        return true;
+      }
+      
+      return false;
+    };
+    
+    // Helper function to check if a block can provide support (solid underneath)
+    const canSupport = (block) => {
+      if (!block) return false; // Need something solid
+      if (!block.name) return false;
+      
+      const solidNames = ['stone', 'deepslate', 'dirt', 'grass_block', 'bedrock', 'end_stone', 'sand', 'gravel', 'netherrack', 'obsidian', 'mud', 'clay'];
+      
+      // Check if it's a solid ore or common solid block
+      if (block.name.includes('ore')) return true; // All ore blocks can support
+      if (block.name.includes('stone')) return true; // All stone variants
+      if (solidNames.includes(block.name)) return true;
+      
+      // Check for other solids
+      if (block.name.includes('brick')) return true;
+      if (block.name.includes('concrete')) return true;
+      if (block.name.includes('wood') || block.name.includes('log') || block.name.includes('planks')) return true;
+      if (block.name.includes('wool')) return true;
+      if (block.name.includes('block') && !block.name.includes('grass') && !block.name.includes('seagrass')) return true;
+      
+      // Fallback: check bounding box
+      if (block.boundingBox === 'block') return true;
+      
+      return false;
+    };
+    
+    // Generate comprehensive offset positions
+    const primaryOffsets = [
+      // Cardinal directions at same height (closest primary positions)
+      { offset: new Vec3(1, 0, 0), priority: 1 },
+      { offset: new Vec3(-1, 0, 0), priority: 1 },
+      { offset: new Vec3(0, 0, 1), priority: 1 },
+      { offset: new Vec3(0, 0, -1), priority: 1 },
+    ];
+    
+    const secondaryOffsets = [
+      // Diagonal positions at same height
+      { offset: new Vec3(1, 0, 1), priority: 2 },
+      { offset: new Vec3(1, 0, -1), priority: 2 },
+      { offset: new Vec3(-1, 0, 1), priority: 2 },
+      { offset: new Vec3(-1, 0, -1), priority: 2 },
+    ];
+    
+    const elevatedOffsets = [
+      // One block up from cardinal (for mining lower ore)
+      { offset: new Vec3(1, 1, 0), priority: 2 },
+      { offset: new Vec3(-1, 1, 0), priority: 2 },
+      { offset: new Vec3(0, 1, 1), priority: 2 },
+      { offset: new Vec3(0, 1, -1), priority: 2 },
+      // One block down (for mining high ore/ceiling)
+      { offset: new Vec3(1, -1, 0), priority: 2 },
+      { offset: new Vec3(-1, -1, 0), priority: 2 },
+      { offset: new Vec3(0, -1, 1), priority: 2 },
+      { offset: new Vec3(0, -1, -1), priority: 2 },
+    ];
+    
+    const extendedOffsets = [
+      // Extended reach (2 blocks away)
+      { offset: new Vec3(2, 0, 0), priority: 3 },
+      { offset: new Vec3(-2, 0, 0), priority: 3 },
+      { offset: new Vec3(0, 0, 2), priority: 3 },
+      { offset: new Vec3(0, 0, -2), priority: 3 },
+      // Extended reach diagonal
+      { offset: new Vec3(2, 0, 1), priority: 3 },
+      { offset: new Vec3(2, 0, -1), priority: 3 },
+      { offset: new Vec3(-2, 0, 1), priority: 3 },
+      { offset: new Vec3(-2, 0, -1), priority: 3 },
+      { offset: new Vec3(1, 0, 2), priority: 3 },
+      { offset: new Vec3(-1, 0, 2), priority: 3 },
+      { offset: new Vec3(1, 0, -2), priority: 3 },
+      { offset: new Vec3(-1, 0, -2), priority: 3 },
+    ];
+    
+    const aboveOffsets = [
+      // Standing above the ore
+      { offset: new Vec3(0, 1, 0), priority: 2 },
+    ];
+    
+    const belowOffsets = [
+      // Standing below the ore (for ceiling ore)
+      { offset: new Vec3(0, -1, 0), priority: 3 },
+    ];
+    
+    // Process all offsets
+    const allOffsets = [
+      ...primaryOffsets,
+      ...secondaryOffsets,
+      ...elevatedOffsets,
+      ...extendedOffsets,
+      ...aboveOffsets,
+      ...belowOffsets
+    ];
+    
+    for (const { offset, priority } of allOffsets) {
       const candidate = position.offset(offset.x, offset.y, offset.z);
+      
+      // Check blocks at foot level, head level, and below
       const foot = this.bot.blockAt(candidate);
       const head = this.bot.blockAt(candidate.offset(0, 1, 0));
       const below = this.bot.blockAt(candidate.offset(0, -1, 0));
       
-      const passableFoot = !foot || foot.boundingBox !== 'block';
-      const passableHead = !head || head.boundingBox !== 'block';
-      const hasSupport = below && below.boundingBox === 'block';
+      // Strict validation: bot's feet and head must be in passable blocks, must have ground support
+      const strictPassableFoot = isPassable(foot);
+      const strictPassableHead = isPassable(head);
+      const hasGoodSupport = below && (canSupport(below) || below.boundingBox === 'block');
       
-      if (passableFoot && passableHead && hasSupport) {
-        candidates.push(candidate);
+      if (strictPassableFoot && strictPassableHead && hasGoodSupport) {
+        const candidate_obj = {
+          pos: candidate,
+          priority: priority,
+          supportStrength: (below && below.boundingBox === 'block') ? 2 : 1
+        };
+        strictCandidates.push(candidate_obj);
+      } else if (strictPassableFoot && strictPassableHead) {
+        // Fallback: same position is passable but support is uncertain
+        // This handles cases on unstable surfaces, slabs, stairs, etc.
+        fallbackCandidates.push({
+          pos: candidate,
+          priority: priority + 1,
+          supportStrength: 0
+        });
       }
     }
     
-    candidates.sort((a, b) => {
-      const da = Math.pow(origin.x - a.x, 2) + Math.pow(origin.y - a.y, 2) + Math.pow(origin.z - a.z, 2);
-      const db = Math.pow(origin.x - b.x, 2) + Math.pow(origin.y - b.y, 2) + Math.pow(origin.z - b.z, 2);
+    // Combine candidates: strict first, then fallback
+    const allCandidates = [...strictCandidates, ...fallbackCandidates];
+    
+    // Sort by priority (lower is better) and distance
+    allCandidates.sort((a, b) => {
+      // Primary sort: priority
+      if (a.priority !== b.priority) {
+        return a.priority - b.priority;
+      }
+      
+      // Secondary sort: distance to bot
+      const da = Math.pow(origin.x - a.pos.x, 2) + Math.pow(origin.y - a.pos.y, 2) + Math.pow(origin.z - a.pos.z, 2);
+      const db = Math.pow(origin.x - b.pos.x, 2) + Math.pow(origin.y - b.pos.y, 2) + Math.pow(origin.z - b.pos.z, 2);
       return da - db;
     });
+    
+    // Extract just the positions and return, removing duplicates
+    const seen = new Set();
+    for (const candidate of allCandidates) {
+      const key = `${candidate.pos.x},${candidate.pos.y},${candidate.pos.z}`;
+      if (!seen.has(key)) {
+        candidates.push(candidate.pos);
+        seen.add(key);
+      }
+    }
+    
+    // If we have too few candidates and there's ore nearby, add any passable air positions
+    if (candidates.length < 2) {
+      // Last resort: check any passable position within mining range
+      for (let dx = -2; dx <= 2; dx++) {
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dz = -2; dz <= 2; dz++) {
+            if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(dz) < 0.5) continue; // Skip origin
+            
+            const candidate = position.offset(dx, dy, dz);
+            const key = `${candidate.x},${candidate.y},${candidate.z}`;
+            if (seen.has(key)) continue; // Already considered
+            
+            const foot = this.bot.blockAt(candidate);
+            const head = this.bot.blockAt(candidate.offset(0, 1, 0));
+            
+            // Last resort: just check if it's passable
+            if (isPassable(foot) && isPassable(head)) {
+              candidates.push(candidate);
+              seen.add(key);
+            }
+          }
+        }
+      }
+    }
     
     return candidates;
   }
