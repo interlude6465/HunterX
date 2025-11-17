@@ -2570,8 +2570,28 @@ async function safeGoTo(bot, position, timeout = 60000) {
       bot.pathfinder.goto(goal),
       timeoutPromise
     ]);
+    if (bot.loopDetector) {
+      bot.loopDetector.recordAction('pathfinding', {
+        success: true,
+        reason: 'goal_reached',
+        metadata: {
+          position: { x: position.x, y: position.y, z: position.z },
+          timeout
+        }
+      });
+    }
   } catch (err) {
     bot.pathfinder.stop();
+    if (bot.loopDetector) {
+      bot.loopDetector.recordAction('pathfinding', {
+        success: false,
+        reason: err && err.message ? err.message : 'pathfinding_failed',
+        metadata: {
+          position: { x: position.x, y: position.y, z: position.z },
+          timeout
+        }
+      });
+    }
     throw err;
   }
 }
@@ -15821,24 +15841,63 @@ class ItemHunter {
   }
   
   async mineBlockEntry(entry, targets) {
+    let position = null;
+
+    const recordMining = (success, reason) => {
+      if (!this.bot || !this.bot.loopDetector) {
+        return;
+      }
+
+      let posMeta = null;
+      if (position && typeof position.x === 'number' && typeof position.y === 'number' && typeof position.z === 'number') {
+        posMeta = { x: position.x, y: position.y, z: position.z };
+      } else if (entry && entry.position && typeof entry.position.x === 'number' && typeof entry.position.y === 'number' && typeof entry.position.z === 'number') {
+        posMeta = {
+          x: Math.floor(entry.position.x),
+          y: Math.floor(entry.position.y),
+          z: Math.floor(entry.position.z)
+        };
+      }
+
+      this.bot.loopDetector.recordAction('mining', {
+        success,
+        reason,
+        metadata: {
+          block: entry ? entry.blockName : null,
+          position: posMeta
+        }
+      });
+    };
+
     if (!entry || !entry.position) {
+      recordMining(false, 'invalid_entry');
       return false;
     }
-    
-    let position = entry.position.clone ? entry.position.clone() : new Vec3(entry.position.x, entry.position.y, entry.position.z);
+
+    const sourcePos = entry.position;
+    if (sourcePos && typeof sourcePos.clone === 'function') {
+      position = sourcePos.clone();
+    } else if (sourcePos && typeof sourcePos.x === 'number' && typeof sourcePos.y === 'number' && typeof sourcePos.z === 'number') {
+      position = new Vec3(sourcePos.x, sourcePos.y, sourcePos.z);
+    } else {
+      recordMining(false, 'invalid_position');
+      return false;
+    }
+
     if (position && typeof position.floored === 'function') {
       position = position.floored();
     } else {
       position = new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
     }
-    
+
     let block = this.bot.blockAt(position);
-    
+
     if (!block || block.name !== entry.blockName) {
       this.worldKnowledge.forgetBlock(entry.blockName, position, entry.dimension);
+      recordMining(false, 'block_missing');
       return false;
     }
-    
+
     const action = targets.toolAction || 'mining';
     if (this.bot.toolSelector) {
       const equipped = await this.bot.toolSelector.equipToolForAction(action);
@@ -15846,19 +15905,20 @@ class ItemHunter {
         await this.bot.toolSelector.equipToolForAction('mining');
       }
     }
-    
+
     const approachPositions = this.getCandidateMiningPositions(position);
-    
+
     if (approachPositions.length === 0) {
       console.log(`[HUNTER] ⚠️ No valid mining positions found for ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}`);
+      recordMining(false, 'no_positions');
       return false;
     }
-    
+
     const timeoutPerAttempt = Math.max(5000, Math.floor(60000 / Math.max(approachPositions.length, 1)));
     let reached = false;
     let lastError = null;
     let reachedPosition = null;
-    
+
     for (const targetPos of approachPositions) {
       try {
         await safeGoTo(this.bot, targetPos, timeoutPerAttempt);
@@ -15869,55 +15929,62 @@ class ItemHunter {
         lastError = err;
       }
     }
-    
+
     if (!reached) {
       console.log(`[HUNTER] ❌ Failed to reach ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}: ${lastError ? lastError.message : 'unknown error'}`);
+      recordMining(false, 'path_failed');
       return false;
     }
-    
+
     block = this.bot.blockAt(position);
     if (!block || block.name !== entry.blockName) {
       this.worldKnowledge.forgetBlock(entry.blockName, position, entry.dimension);
+      recordMining(false, 'block_missing');
       return false;
     }
-    
+
     if (!reachedPosition || !this.bot.entity || !this.bot.entity.position) {
+      recordMining(false, 'state_invalid');
       return false;
     }
-    
+
     const distToBlock = Math.sqrt(
       Math.pow(this.bot.entity.position.x - position.x, 2) +
       Math.pow(this.bot.entity.position.y - position.y, 2) +
       Math.pow(this.bot.entity.position.z - position.z, 2)
     );
-    
+
     if (distToBlock > 5.5) {
       console.log(`[HUNTER] ⚠️ Block out of reach (${distToBlock.toFixed(1)} blocks away) for ${entry.blockName}`);
+      recordMining(false, 'out_of_reach');
       return false;
     }
-    
+
     if (!this.bot.entity.onGround) {
-      console.log(`[HUNTER] ⚠️ Bot not on ground, cannot dig`);
+      console.log('[HUNTER] ⚠️ Bot not on ground, cannot dig');
+      recordMining(false, 'not_on_ground');
       return false;
     }
-    
+
     try {
       if (this.bot.pathfinder) {
         this.bot.pathfinder.stop();
       }
-      
+
       if (typeof this.bot.lookAt === 'function') {
         try {
           await this.bot.lookAt(position.offset(0.5, 0.5, 0.5));
         } catch (e) {
         }
       }
-      
+
       await this.bot.dig(block);
       console.log(`[HUNTER] ✅ Successfully mined ${entry.blockName}`);
+      recordMining(true, 'mined');
       return true;
     } catch (err) {
       console.log(`[HUNTER] ❌ Failed to mine ${entry.blockName}: ${err.message}`);
+      recordMining(false, 'dig_failed');
       return false;
     }
   }
@@ -25922,6 +25989,850 @@ class SwimmingBehavior {
   }
 }
 
+class LoopDetector {
+  constructor(bot, options = {}) {
+    this.bot = bot;
+    this.options = options;
+    this.positionHistory = [];
+    this.actionHistory = [];
+    this.maxPositionHistory = options.maxPositionHistory || 200;
+    this.maxActionHistory = options.maxActionHistory || 50;
+    this.stuckTimeThreshold = options.stuckTimeThreshold || 5000;
+    this.stuckDistanceThreshold = options.stuckDistanceThreshold || 0.9;
+    this.velocityThreshold = options.velocityThreshold || 0.05;
+    this.velocityTimeThreshold = options.velocityTimeThreshold || 3000;
+    this.spinSampleSize = options.spinSampleSize || 16;
+    this.spinRadiusThreshold = options.spinRadiusThreshold || 1.2;
+    this.spinYawThreshold = options.spinYawThreshold || Math.PI * 1.75;
+    this.oscillationSampleSize = options.oscillationSampleSize || 24;
+    this.oscillationPathThreshold = options.oscillationPathThreshold || 6;
+    this.oscillationDisplacementThreshold = options.oscillationDisplacementThreshold || 1.5;
+    this.failureThreshold = options.failureThreshold || 3;
+    this.recoveryCooldown = options.recoveryCooldown || 7000;
+    this.lastRecovery = 0;
+    this.listeners = [];
+    this.monitorInterval = null;
+    this.monitorIntervalTracked = false;
+    this.currentTask = null;
+    this.taskRetryCounts = new Map();
+    this.lastFailureAlert = new Map();
+    this.active = false;
+    this.lastAction = null;
+  }
+
+  start() {
+    if (this.active || !this.bot) {
+      return;
+    }
+
+    this.active = true;
+
+    const physicsHandler = this.handlePhysicsTick.bind(this);
+    this.bot.on('physicsTick', physicsHandler);
+    this.listeners.push({ emitter: this.bot, event: 'physicsTick', handler: physicsHandler });
+
+    if (this.bot.pathfinder) {
+      const pf = this.bot.pathfinder;
+
+      const goalReachedHandler = () => {
+        this.recordAction('pathfinding', { success: true, reason: 'goal_reached' });
+      };
+      pf.on('goal_reached', goalReachedHandler);
+      this.listeners.push({ emitter: pf, event: 'goal_reached', handler: goalReachedHandler });
+
+      const pathResetHandler = (reason) => {
+        const status = reason && reason.status ? reason.status : (typeof reason === 'string' ? reason : null);
+        if (status === 'noPath' || status === 'timeout' || status === 'stuck' || status === 'cantFind') {
+          this.recordAction('pathfinding', { success: false, reason: status });
+        }
+      };
+      pf.on('path_reset', pathResetHandler);
+      this.listeners.push({ emitter: pf, event: 'path_reset', handler: pathResetHandler });
+
+      const pathUpdateHandler = (update) => {
+        if (update && update.status === 'noPath') {
+          this.recordAction('pathfinding', { success: false, reason: 'no_path' });
+        }
+      };
+      pf.on('path_update', pathUpdateHandler);
+      this.listeners.push({ emitter: pf, event: 'path_update', handler: pathUpdateHandler });
+    }
+
+    const analyze = this.analyze.bind(this);
+    if (typeof safeSetInterval === 'function') {
+      this.monitorInterval = safeSetInterval(analyze, 1000, `loop-detector-${this.bot.username || 'bot'}`);
+      this.monitorIntervalTracked = true;
+    } else {
+      this.monitorInterval = setInterval(analyze, 1000);
+      this.monitorIntervalTracked = false;
+    }
+
+    const cleanup = () => this.stop();
+    this.bot.once('end', cleanup);
+    this.bot.once('kicked', cleanup);
+  }
+
+  stop() {
+    if (!this.active) {
+      return;
+    }
+
+    this.active = false;
+
+    for (const { emitter, event, handler } of this.listeners) {
+      try {
+        emitter.removeListener(event, handler);
+      } catch (err) {
+        // Ignore removal errors
+      }
+    }
+    this.listeners = [];
+
+    if (this.monitorInterval) {
+      if (this.monitorIntervalTracked && typeof clearTrackedInterval === 'function') {
+        clearTrackedInterval(this.monitorInterval);
+      } else {
+        clearInterval(this.monitorInterval);
+      }
+      this.monitorInterval = null;
+      this.monitorIntervalTracked = false;
+    }
+
+    this.positionHistory = [];
+    this.actionHistory = [];
+    this.lastAction = null;
+  }
+
+  handlePhysicsTick() {
+    if (!this.bot || !this.bot.entity || !this.bot.entity.position) {
+      return;
+    }
+
+    const now = Date.now();
+    const position = this.bot.entity.position.clone();
+    const yaw = typeof this.bot.entity.yaw === 'number' ? this.bot.entity.yaw : 0;
+    const velocity = this.bot.entity.velocity ? this.bot.entity.velocity.clone() : new Vec3(0, 0, 0);
+
+    this.positionHistory.push({
+      position,
+      yaw,
+      velocity,
+      timestamp: now
+    });
+
+    if (this.positionHistory.length > this.maxPositionHistory) {
+      this.positionHistory.shift();
+    }
+  }
+
+  recordAction(actionType, details = {}) {
+    if (!actionType) {
+      return null;
+    }
+
+    const entry = {
+      type: actionType,
+      success: details.success === true,
+      timestamp: Date.now(),
+      reason: details.reason || null,
+      metadata: details.metadata || null
+    };
+
+    this.actionHistory.push(entry);
+    if (this.actionHistory.length > this.maxActionHistory) {
+      this.actionHistory.shift();
+    }
+
+    this.lastAction = entry;
+    if (entry.success) {
+      this.lastFailureAlert.delete(actionType);
+    }
+
+    return entry;
+  }
+
+  setCurrentTask(task) {
+    this.currentTask = task || null;
+    const key = this.getTaskKey(task);
+    if (!key) {
+      return;
+    }
+
+    this.taskRetryCounts.set(key, { attempts: 0, updated: Date.now() });
+  }
+
+  clearCurrentTask(task) {
+    const key = this.getTaskKey(task || this.currentTask);
+    if (key) {
+      this.taskRetryCounts.delete(key);
+    }
+    if (!task || task === this.currentTask) {
+      this.currentTask = null;
+    }
+  }
+
+  markTaskSuccess(task) {
+    this.clearCurrentTask(task);
+  }
+
+  analyze() {
+    if (!this.active) {
+      return;
+    }
+
+    const spinning = this.detectSpinning();
+    if (spinning) {
+      this.handleLoop('spinning', spinning);
+      return;
+    }
+
+    const stuck = this.detectStuck();
+    if (stuck) {
+      this.handleLoop('stuck', stuck);
+      return;
+    }
+
+    const stalled = this.detectVelocityStall();
+    if (stalled) {
+      this.handleLoop('stalled', stalled);
+      return;
+    }
+
+    const oscillation = this.detectOscillation();
+    if (oscillation) {
+      this.handleLoop('oscillation', oscillation);
+      return;
+    }
+
+    const repeating = this.detectRepeatingFailure();
+    if (repeating) {
+      this.handleRepeatedFailure(repeating);
+    }
+  }
+
+  detectSpinning() {
+    if (this.positionHistory.length < this.spinSampleSize) {
+      return null;
+    }
+
+    const samples = this.positionHistory.slice(-this.spinSampleSize);
+    const { maxRadius } = this.computeRadius(samples);
+    if (maxRadius > this.spinRadiusThreshold) {
+      return null;
+    }
+
+    let yawTravel = 0;
+    for (let i = 1; i < samples.length; i++) {
+      const diff = LoopDetector.normalizeAngleDiff(samples[i].yaw - samples[i - 1].yaw);
+      yawTravel += Math.abs(diff);
+    }
+
+    if (yawTravel >= this.spinYawThreshold) {
+      return {
+        yawTravel,
+        maxRadius,
+        duration: samples[samples.length - 1].timestamp - samples[0].timestamp
+      };
+    }
+
+    return null;
+  }
+
+  detectStuck() {
+    if (this.positionHistory.length < 2) {
+      return null;
+    }
+
+    const now = Date.now();
+    const window = [];
+    for (let i = this.positionHistory.length - 1; i >= 0; i--) {
+      const entry = this.positionHistory[i];
+      if (now - entry.timestamp > this.stuckTimeThreshold) {
+        break;
+      }
+      window.unshift(entry);
+    }
+
+    if (window.length < 2) {
+      return null;
+    }
+
+    if (now - window[0].timestamp < this.stuckTimeThreshold) {
+      return null;
+    }
+
+    const hasTask = !!this.currentTask;
+    const moving = this.bot && this.bot.pathfinder && typeof this.bot.pathfinder.isMoving === 'function' && this.bot.pathfinder.isMoving();
+    if (!hasTask && !moving) {
+      return null;
+    }
+
+    const origin = window[0].position;
+    let maxDistance = 0;
+    for (const entry of window) {
+      const dist = entry.position.distanceTo(origin);
+      if (dist > maxDistance) {
+        maxDistance = dist;
+      }
+    }
+
+    if (maxDistance <= this.stuckDistanceThreshold) {
+      return {
+        duration: now - window[0].timestamp,
+        maxDistance
+      };
+    }
+
+    return null;
+  }
+
+  detectVelocityStall() {
+    const now = Date.now();
+    const window = [];
+    for (let i = this.positionHistory.length - 1; i >= 0; i--) {
+      const entry = this.positionHistory[i];
+      if (now - entry.timestamp > this.velocityTimeThreshold) {
+        break;
+      }
+      window.unshift(entry);
+    }
+
+    if (window.length < 3) {
+      return null;
+    }
+
+    const hasTask = !!this.currentTask;
+    const moving = this.bot && this.bot.pathfinder && typeof this.bot.pathfinder.isMoving === 'function' && this.bot.pathfinder.isMoving();
+    if (!hasTask && !moving) {
+      return null;
+    }
+
+    const duration = now - window[0].timestamp;
+    if (duration < this.velocityTimeThreshold) {
+      return null;
+    }
+
+    const avgSpeed = window.reduce((total, entry) => total + this.getVelocityMagnitude(entry.velocity), 0) / window.length;
+    if (avgSpeed < this.velocityThreshold) {
+      return {
+        averageSpeed: avgSpeed,
+        duration
+      };
+    }
+
+    return null;
+  }
+
+  detectOscillation() {
+    if (this.positionHistory.length < this.oscillationSampleSize) {
+      return null;
+    }
+
+    const samples = this.positionHistory.slice(-this.oscillationSampleSize);
+    const pathLength = samples.reduce((total, entry, index) => {
+      if (index === 0) {
+        return total;
+      }
+      return total + samples[index - 1].position.distanceTo(entry.position);
+    }, 0);
+
+    const displacement = samples[0].position.distanceTo(samples[samples.length - 1].position);
+
+    if (pathLength > this.oscillationPathThreshold && displacement <= this.oscillationDisplacementThreshold) {
+      return {
+        pathLength,
+        displacement
+      };
+    }
+
+    return null;
+  }
+
+  detectRepeatingFailure() {
+    if (this.actionHistory.length < this.failureThreshold) {
+      return null;
+    }
+
+    const recent = this.actionHistory.slice(-5);
+    if (recent.length < this.failureThreshold) {
+      return null;
+    }
+
+    const last = recent[recent.length - 1];
+    if (!last || last.success) {
+      return null;
+    }
+
+    const sameFailures = recent.filter(entry => entry.type === last.type && !entry.success);
+    if (sameFailures.length < this.failureThreshold) {
+      return null;
+    }
+
+    const now = Date.now();
+    const lastAlert = this.lastFailureAlert.get(last.type) || 0;
+    if (now - lastAlert < this.recoveryCooldown) {
+      return null;
+    }
+
+    this.lastFailureAlert.set(last.type, now);
+    return {
+      actionType: last.type,
+      failureCount: sameFailures.length,
+      reason: last.reason,
+      metadata: last.metadata
+    };
+  }
+
+  handleRepeatedFailure(info) {
+    console.log(`[LOOP_DETECT] Action repeating (${info.actionType}) detected (${info.failureCount} failures)`);
+
+    this.stopMovement();
+    this.switchToAlternateStrategy(info.actionType, info);
+    this.requestTaskRetry(`repeating_failure:${info.actionType}`);
+
+    if (this.bot && typeof this.bot.emit === 'function') {
+      try {
+        this.bot.emit('loop_detector:repeating_failure', { info, detector: this });
+      } catch (err) {
+        // Ignore emit errors
+      }
+    }
+  }
+
+  handleLoop(type, details) {
+    const now = Date.now();
+    if (now - this.lastRecovery < this.recoveryCooldown) {
+      return;
+    }
+
+    this.lastRecovery = now;
+
+    const detailSummary = details ? JSON.stringify(details) : '';
+    console.log(`[LOOP_DETECT] ${this.formatLoopType(type)} detected${detailSummary ? ` ${detailSummary}` : ''}`);
+
+    if (this.bot && typeof this.bot.emit === 'function') {
+      try {
+        this.bot.emit('loop_detector:detected', { type, details, detector: this });
+      } catch (err) {
+        // Ignore emit errors
+      }
+    }
+
+    this.stopMovement();
+    this.abortCurrentTask(type, details);
+    this.attemptRecovery(type, details);
+  }
+
+  stopMovement() {
+    if (this.bot && this.bot.pathfinder && typeof this.bot.pathfinder.stop === 'function') {
+      try {
+        this.bot.pathfinder.stop();
+      } catch (err) {
+        // Ignore stop errors
+      }
+    }
+
+    if (this.bot && typeof this.bot.stopDigging === 'function') {
+      try {
+        this.bot.stopDigging();
+      } catch (err) {
+        // Ignore stop errors
+      }
+    }
+
+    if (this.bot && typeof this.bot.setControlState === 'function') {
+      const controls = ['forward', 'back', 'left', 'right', 'jump', 'sprint', 'sneak'];
+      for (const control of controls) {
+        try {
+          this.bot.setControlState(control, false);
+        } catch (err) {
+          // Ignore control errors
+        }
+      }
+    }
+  }
+
+  abortCurrentTask(trigger, details) {
+    let aborted = false;
+
+    const candidates = [];
+    if (this.currentTask) {
+      candidates.push(this.currentTask);
+    }
+    if (this.bot && this.bot.currentTask && this.bot.currentTask !== this.currentTask) {
+      candidates.push(this.bot.currentTask);
+    }
+    if (this.bot && this.bot.taskManager && this.bot.taskManager !== this.currentTask) {
+      candidates.push(this.bot.taskManager);
+    }
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      if (typeof candidate.abort === 'function') {
+        try {
+          candidate.abort(trigger, details);
+          aborted = true;
+        } catch (err) {
+          console.log(`[LOOP_DETECT] Task abort handler failed: ${err.message}`);
+        }
+      } else if (typeof candidate.abortCurrentTask === 'function') {
+        try {
+          candidate.abortCurrentTask(trigger, details);
+          aborted = true;
+        } catch (err) {
+          console.log(`[LOOP_DETECT] Task abort handler failed: ${err.message}`);
+        }
+      }
+    }
+
+    if (this.bot && this.bot.conversationAI) {
+      const conversation = this.bot.conversationAI;
+      const aborters = [
+        conversation.activeTask,
+        conversation.taskManager,
+        conversation.commandHandler,
+        conversation.taskScheduler,
+        conversation.scheduler
+      ];
+      for (const aborter of aborters) {
+        if (!aborter || aborter === this.currentTask) {
+          continue;
+        }
+
+        if (typeof aborter.abortCurrentTask === 'function') {
+          try {
+            aborter.abortCurrentTask(trigger, details);
+            aborted = true;
+          } catch (err) {
+            console.log(`[LOOP_DETECT] Conversation abort handler failed: ${err.message}`);
+          }
+        } else if (typeof aborter.abort === 'function') {
+          try {
+            aborter.abort(trigger, details);
+            aborted = true;
+          } catch (err) {
+            console.log(`[LOOP_DETECT] Conversation abort handler failed: ${err.message}`);
+          }
+        }
+      }
+    }
+
+    if (!aborted && this.bot && typeof this.bot.emit === 'function') {
+      try {
+        this.bot.emit('loop_detector:abort', { trigger, details, detector: this });
+      } catch (err) {
+        // Ignore emit errors
+      }
+    }
+  }
+
+  attemptRecovery(type, details) {
+    switch (type) {
+      case 'spinning':
+        this.nudgeBot(['jump', 'right']);
+        this.requestTaskRetry('spinning');
+        break;
+      case 'stuck':
+        this.nudgeBot(['jump', 'forward']);
+        this.requestTaskRetry('stuck');
+        break;
+      case 'stalled':
+        this.nudgeBot(['back', 'jump']);
+        this.requestTaskRetry('stalled');
+        break;
+      case 'oscillation':
+        this.nudgeBot(['left', 'right', 'jump']);
+        this.requestTaskRetry('oscillation');
+        break;
+      default:
+        this.requestTaskRetry(type);
+        break;
+    }
+  }
+
+  nudgeBot(sequence = []) {
+    if (!this.bot || typeof this.bot.setControlState !== 'function') {
+      return;
+    }
+
+    const durations = {
+      jump: 220,
+      forward: 400,
+      back: 400,
+      left: 320,
+      right: 320
+    };
+
+    sequence.forEach((control, index) => {
+      const startDelay = index * 120;
+      setTimeout(() => {
+        try {
+          this.bot.setControlState(control, true);
+        } catch (err) {
+          // Ignore control errors
+        }
+      }, startDelay);
+      setTimeout(() => {
+        try {
+          this.bot.setControlState(control, false);
+        } catch (err) {
+          // Ignore control errors
+        }
+      }, startDelay + (durations[control] || 250));
+    });
+  }
+
+  requestTaskRetry(reason) {
+    const key = this.getTaskKey(this.currentTask);
+    if (!key) {
+      if (this.bot && typeof this.bot.emit === 'function') {
+        try {
+          this.bot.emit('loop_detector:retry', { reason, detector: this });
+        } catch (err) {
+          // Ignore emit errors
+        }
+      }
+      return;
+    }
+
+    const record = this.taskRetryCounts.get(key) || { attempts: 0 };
+    record.attempts++;
+    record.updated = Date.now();
+    this.taskRetryCounts.set(key, record);
+
+    if (record.attempts <= 3) {
+      console.log(`[LOOP_DETECT] Retrying task ${key} (${record.attempts}/3) due to ${reason}`);
+
+      const task = this.currentTask;
+      if (task) {
+        if (typeof task.retry === 'function') {
+          try {
+            task.retry(reason);
+            return;
+          } catch (err) {
+            console.log(`[LOOP_DETECT] Task retry failed: ${err.message}`);
+          }
+        }
+
+        if (typeof task.reset === 'function') {
+          try {
+            task.reset(reason);
+            return;
+          } catch (err) {
+            console.log(`[LOOP_DETECT] Task reset failed: ${err.message}`);
+          }
+        }
+      }
+
+      if (this.bot && this.bot.conversationAI && this.bot.conversationAI.taskManager && typeof this.bot.conversationAI.taskManager.retryTask === 'function') {
+        try {
+          this.bot.conversationAI.taskManager.retryTask(key, reason);
+          return;
+        } catch (err) {
+          console.log(`[LOOP_DETECT] Task manager retry failed: ${err.message}`);
+        }
+      }
+
+      if (this.bot && typeof this.bot.emit === 'function') {
+        try {
+          this.bot.emit('loop_detector:retry', { reason, taskKey: key, detector: this });
+        } catch (err) {
+          // Ignore emit errors
+        }
+      }
+    } else {
+      console.log(`[LOOP_DETECT] Task ${key} exceeded retry limit, marking as failed`);
+      this.reportTaskFailed(reason);
+    }
+  }
+
+  reportTaskFailed(reason) {
+    const key = this.getTaskKey(this.currentTask);
+
+    if (this.currentTask) {
+      if (typeof this.currentTask.fail === 'function') {
+        try {
+          this.currentTask.fail(reason);
+        } catch (err) {
+          console.log(`[LOOP_DETECT] Task fail handler error: ${err.message}`);
+        }
+      } else if (typeof this.currentTask.abort === 'function') {
+        try {
+          this.currentTask.abort(reason);
+        } catch (err) {
+          console.log(`[LOOP_DETECT] Task abort handler error: ${err.message}`);
+        }
+      }
+    }
+
+    if (this.bot && this.bot.conversationAI && this.bot.conversationAI.taskManager && typeof this.bot.conversationAI.taskManager.reportTaskFailed === 'function') {
+      try {
+        this.bot.conversationAI.taskManager.reportTaskFailed(key, reason);
+      } catch (err) {
+        console.log(`[LOOP_DETECT] Task manager failure report error: ${err.message}`);
+      }
+    }
+
+    if (this.bot && typeof this.bot.emit === 'function') {
+      try {
+        this.bot.emit('loop_detector:task_failed', { reason, taskKey: key, detector: this });
+      } catch (err) {
+        // Ignore emit errors
+      }
+    }
+
+    if (key) {
+      this.taskRetryCounts.delete(key);
+    }
+    this.currentTask = null;
+  }
+
+  switchToAlternateStrategy(actionType, info) {
+    console.log(`[LOOP_DETECT] Action repeating, changing strategy for ${actionType}`);
+
+    const task = this.currentTask;
+    if (task && typeof task.switchToAlternateStrategy === 'function') {
+      try {
+        task.switchToAlternateStrategy(actionType, info);
+        return;
+      } catch (err) {
+        console.log(`[LOOP_DETECT] Alternate strategy handler failed: ${err.message}`);
+      }
+    }
+
+    if (task && typeof task.useAlternateStrategy === 'function') {
+      try {
+        task.useAlternateStrategy(actionType, info);
+        return;
+      } catch (err) {
+        console.log(`[LOOP_DETECT] Alternate strategy handler failed: ${err.message}`);
+      }
+    }
+
+    if (this.bot && this.bot.conversationAI && this.bot.conversationAI.taskManager && typeof this.bot.conversationAI.taskManager.switchToAlternateStrategy === 'function') {
+      try {
+        this.bot.conversationAI.taskManager.switchToAlternateStrategy(actionType, info);
+        return;
+      } catch (err) {
+        console.log(`[LOOP_DETECT] Task manager alternate strategy failed: ${err.message}`);
+      }
+    }
+
+    if (this.bot && typeof this.bot.emit === 'function') {
+      try {
+        this.bot.emit('loop_detector:alternate_strategy', { actionType, info, detector: this });
+      } catch (err) {
+        // Ignore emit errors
+      }
+    }
+  }
+
+  getTaskKey(task) {
+    if (!task) {
+      return null;
+    }
+
+    if (typeof task === 'string') {
+      return task;
+    }
+
+    if (task.id) {
+      return task.id;
+    }
+
+    if (task.name) {
+      return task.name;
+    }
+
+    if (task.type && task.target) {
+      return `${task.type}:${task.target}`;
+    }
+
+    if (task.type) {
+      return task.type;
+    }
+
+    if (task.action) {
+      return task.action;
+    }
+
+    return null;
+  }
+
+  computeRadius(samples) {
+    if (!samples || samples.length === 0) {
+      return { avgRadius: 0, maxRadius: 0 };
+    }
+
+    let sumX = 0;
+    let sumZ = 0;
+    for (const sample of samples) {
+      sumX += sample.position.x;
+      sumZ += sample.position.z;
+    }
+
+    const centerX = sumX / samples.length;
+    const centerZ = sumZ / samples.length;
+
+    let maxRadius = 0;
+    let totalRadius = 0;
+    for (const sample of samples) {
+      const dx = sample.position.x - centerX;
+      const dz = sample.position.z - centerZ;
+      const radius = Math.sqrt(dx * dx + dz * dz);
+      totalRadius += radius;
+      if (radius > maxRadius) {
+        maxRadius = radius;
+      }
+    }
+
+    return {
+      avgRadius: totalRadius / samples.length,
+      maxRadius
+    };
+  }
+
+  getVelocityMagnitude(vec) {
+    if (!vec) {
+      return 0;
+    }
+
+    const x = vec.x || 0;
+    const y = vec.y || 0;
+    const z = vec.z || 0;
+    return Math.sqrt(x * x + y * y + z * z);
+  }
+
+  formatLoopType(type) {
+    switch (type) {
+      case 'spinning':
+        return 'Spinning';
+      case 'stuck':
+        return 'Movement stuck';
+      case 'stalled':
+        return 'Velocity stall';
+      case 'oscillation':
+        return 'Back-and-forth movement';
+      default:
+        return type;
+    }
+  }
+
+  static normalizeAngleDiff(value) {
+    let result = value;
+    while (result > Math.PI) {
+      result -= Math.PI * 2;
+    }
+    while (result < -Math.PI) {
+      result += Math.PI * 2;
+    }
+    return result;
+  }
+}
+
 // === PLUGIN ANALYZER ===
 class PluginAnalyzer {
   constructor() {
@@ -29079,6 +29990,13 @@ class BotSpawner {
     console.log(`[SPAWNER] Initializing bot systems for ${username}...`);
     
     try {
+      if (!bot.loopDetector) {
+        bot.loopDetector = new LoopDetector(bot);
+      }
+      if (bot.loopDetector) {
+        bot.loopDetector.start();
+      }
+      
       // 1. Initialize pathfinder and movement
       if (bot.pathfinder && bot.pathfinder.setMovements) {
         const movements = new Movements(bot);
@@ -32541,6 +33459,8 @@ async function launchBot(username, role = 'fighter') {
   
   globalBot = bot;
   
+  bot.loopDetector = new LoopDetector(bot);
+  
   // Set up dashboard chat relay
   bot.on('message', (jsonMsg) => {
     try {
@@ -32647,6 +33567,10 @@ async function launchBot(username, role = 'fighter') {
   
   bot.once('spawn', async () => {
     console.log(`[SPAWN] ${username} joined ${config.server}`);
+
+    if (bot.loopDetector) {
+      bot.loopDetector.start();
+    }
 
     // Wait a moment for plugins to fully initialize
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -36887,6 +37811,10 @@ class SupplyChainManager {
     botInfo.currentTask = task;
     botInfo.status = 'working';
     
+    if (botInfo.bot && botInfo.bot.loopDetector) {
+      botInfo.bot.loopDetector.setCurrentTask(task);
+    }
+    
     console.log(`[SUPPLY] Assigned task ${task.id} to bot ${botUsername}`);
     
     // Execute task (simplified for now)
@@ -36922,6 +37850,7 @@ class SupplyChainManager {
     }
     
     const task = botInfo.currentTask;
+    const botInstance = botInfo.bot;
     
     if (success) {
       this.taskQueue.completeTask(taskId);
@@ -36937,6 +37866,14 @@ class SupplyChainManager {
     } else {
       this.taskQueue.failTask(taskId);
       console.log(`[SUPPLY] Task failed: ${task.id} by ${botUsername}`);
+    }
+    
+    if (botInstance && botInstance.loopDetector) {
+      if (success) {
+        botInstance.loopDetector.markTaskSuccess(task);
+      } else {
+        botInstance.loopDetector.clearCurrentTask(task);
+      }
     }
     
     botInfo.currentTask = null;
