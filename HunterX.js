@@ -29284,6 +29284,7 @@ class BotSpawner {
     this.activeBots = [];
     this.maxBots = config.swarm.maxBots;
     this.proxyManager = null;
+    this.reconnectManagers = new Map(); // Track reconnect managers by username
   }
   
   async detectServerType(serverIP) {
@@ -29651,7 +29652,7 @@ class BotSpawner {
         console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
       }
       
-      this.registerBot(bot, username, 'proxy', options.role);
+      this.registerBot(bot, username, 'proxy', options.role, serverIP, options);
       return bot;
     } catch (error) {
       console.error(`[SPAWNER] Failed with version ${version}: ${error.message}`);
@@ -29671,20 +29672,20 @@ class BotSpawner {
            const bot = await createBotWithVersion(extractedVersion);
            console.log(`[SPAWNER] ✓ Success with extracted version: ${extractedVersion}`);
 
-           // Load pathfinder plugin for spawned bot
-           try {
-             bot.loadPlugin(pathfinder);
-             console.log(`[SPAWNER] ✅ Pathfinder plugin loaded for proxy bot: ${username}`);
-           } catch (err) {
-             console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
-           }
+            // Load pathfinder plugin for spawned bot
+            try {
+              bot.loadPlugin(pathfinder);
+              console.log(`[SPAWNER] ✅ Pathfinder plugin loaded for proxy bot: ${username}`);
+            } catch (err) {
+              console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
+            }
 
-           this.registerBot(bot, username, 'proxy', options.role);
-           return bot;
-         } catch (retryError) {
-           console.error(`[SPAWNER] Retry failed: ${retryError.message}`);
-         }
-      }
+            this.registerBot(bot, username, 'proxy', options.role, serverIP, options);
+            return bot;
+          } catch (retryError) {
+            console.error(`[SPAWNER] Retry failed: ${retryError.message}`);
+          }
+        }
       
       // Try alternative versions if extraction didn't work
       console.log('[SPAWNER] Trying alternative versions...');
@@ -29706,13 +29707,13 @@ class BotSpawner {
             console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
           }
 
-          this.registerBot(bot, username, 'proxy', options.role);
+          this.registerBot(bot, username, 'proxy', options.role, serverIP, options);
           return bot;
-        } catch (altError) {
+          } catch (altError) {
           console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
           continue;
-        }
-      }
+          }
+          }
       
       throw error;
     }
@@ -29818,7 +29819,7 @@ class BotSpawner {
          console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
        }
 
-       this.registerBot(bot, username, 'local', options.role);
+       this.registerBot(bot, username, 'local', options.role, serverIP, options);
        return bot;
      } catch (error) {
        console.error(`[SPAWNER] Failed with version ${version}: ${error.message}`);
@@ -29846,12 +29847,12 @@ class BotSpawner {
             console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
           }
 
-          this.registerBot(bot, username, 'local', options.role);
+          this.registerBot(bot, username, 'local', options.role, serverIP, options);
           return bot;
-        } catch (retryError) {
+          } catch (retryError) {
           console.error(`[SPAWNER] Retry failed: ${retryError.message}`);
-        }
-        }
+          }
+          }
 
         // Try alternative versions
         console.log('[SPAWNER] Trying alternative versions...');
@@ -29873,38 +29874,100 @@ class BotSpawner {
               console.error(`[SPAWNER] ⚠️ Failed to load pathfinder plugin for ${username}: ${err.message}`);
             }
 
-            this.registerBot(bot, username, 'local', options.role);
+            this.registerBot(bot, username, 'local', options.role, serverIP, options);
             return bot;
-          } catch (altError) {
+            } catch (altError) {
             console.log(`[SPAWNER] ✗ Version ${altVersion} failed: ${altError.message}`);
             continue;
-          }
-        }
+            }
+            }
 
         throw error;
       }
     }
   
-  registerBot(bot, username, type, role = null) {
-    const entry = {
-      bot,
-      username,
-      type,
-      role,
-      spawned: Date.now()
-    };
-    this.activeBots.push(entry);
-    this.refreshSwarmBotList();
-    
-    const cleanup = () => this.unregisterBot(username);
-    bot.once('end', cleanup);
-    bot.once('kicked', cleanup);
-    bot.once('error', (err) => {
-      if (err && (err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED')) {
-        cleanup();
-      }
-    });
-  }
+  registerBot(bot, username, type, role = null, serverIP = null, options = null) {
+     const entry = {
+       bot,
+       username,
+       type,
+       role,
+       spawned: Date.now()
+     };
+     this.activeBots.push(entry);
+     this.refreshSwarmBotList();
+
+     // Create or reuse an AutoReconnectManager for this bot
+     let reconnectManager = null;
+     if (serverIP && options) {
+       // Check if we already have a manager for this username (e.g., from a previous reconnection)
+       if (this.reconnectManagers.has(username)) {
+         reconnectManager = this.reconnectManagers.get(username);
+         console.log(`[SPAWNER] Reusing AutoReconnectManager for ${username} (attempt ${reconnectManager.reconnectAttempts + 1}/${reconnectManager.maxReconnectAttempts})`);
+       } else {
+         reconnectManager = new AutoReconnectManager(this, serverIP, {
+           ...options,
+           username: username
+         });
+         this.reconnectManagers.set(username, reconnectManager);
+         console.log(`[SPAWNER] AutoReconnectManager initialized for ${username}`);
+       }
+     }
+
+     // Handle disconnect with auto-reconnect
+     const handleDisconnect = async (reason) => {
+       console.log(`[RECONNECT] ${username} disconnected: ${reason}`);
+
+       // Save bot state before disconnect
+       if (reconnectManager) {
+         reconnectManager.saveBotState(bot);
+
+         // Unregister from SwarmCoordinator and BotSpawner
+         this.unregisterBot(username);
+         if (globalSwarmCoordinator) {
+           try {
+             globalSwarmCoordinator.unregisterBot(username);
+           } catch (err) {
+             console.warn(`[RECONNECT] Failed to unregister from SwarmCoordinator: ${err.message}`);
+           }
+         }
+
+         // Attempt to reconnect with exponential backoff
+         const newBot = await reconnectManager.attemptReconnect();
+         if (newBot) {
+           // Register the new bot
+           this.registerBot(newBot, username, type, role, serverIP, options);
+         }
+       } else {
+         // Fallback: just unregister if no reconnect manager
+         this.unregisterBot(username);
+         if (globalSwarmCoordinator) {
+           try {
+             globalSwarmCoordinator.unregisterBot(username);
+           } catch (err) {
+             console.warn(`[RECONNECT] Failed to unregister from SwarmCoordinator: ${err.message}`);
+           }
+         }
+       }
+     };
+
+     // Detect all disconnect types
+     bot.once('end', (reason) => {
+       handleDisconnect(`socketClosed: ${reason}`);
+     });
+
+     bot.once('kicked', (reason) => {
+       const reasonText = typeof reason === 'string' ? reason : JSON.stringify(reason);
+       handleDisconnect(`kicked: ${reasonText}`);
+     });
+
+     bot.once('error', (err) => {
+       if (err) {
+         const errorCode = err.code || err.message || String(err);
+         handleDisconnect(`error: ${errorCode}`);
+       }
+     });
+   }
   
   unregisterBot(username) {
     const index = this.activeBots.findIndex(info => info.username === username);
@@ -30278,6 +30341,161 @@ let globalBotSpawner = null;
     this.movementRL.resetStats();
   }
   }
+
+// === AUTO RECONNECT MANAGER ===
+class AutoReconnectManager {
+  constructor(botSpawner, serverIP, options = {}) {
+    this.botSpawner = botSpawner;
+    this.serverIP = serverIP;
+    this.options = options;
+    this.username = options.username;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.baseBackoffDelay = 5000; // 5 seconds
+    this.reconnecting = false;
+    this.lastPosition = null;
+    this.lastHealth = 20;
+    this.lastTask = null;
+    this.inventory = null;
+  }
+
+  // Calculate exponential backoff delay: 5s, 10s, 20s, 40s, 80s, 160s, etc
+  getBackoffDelay(attempt) {
+    return this.baseBackoffDelay * Math.pow(2, Math.min(attempt, 7)); // Cap at 2^7 = 128x (10+ minutes)
+  }
+
+  // Save bot state before disconnect
+  saveBotState(bot) {
+    try {
+      if (bot.entity) {
+        this.lastPosition = {
+          x: bot.entity.position.x,
+          y: bot.entity.position.y,
+          z: bot.entity.position.z
+        };
+      }
+      this.lastHealth = bot.health || 20;
+      
+      // Try to save inventory
+      if (bot.inventory && bot.inventory.items) {
+        this.inventory = bot.inventory.items().map(item => ({
+          type: item.type,
+          count: item.count,
+          metadata: item.metadata
+        }));
+      }
+
+      console.log(`[RECONNECT] Saved state for ${this.username} - Position: ${JSON.stringify(this.lastPosition)}`);
+    } catch (error) {
+      console.error(`[RECONNECT] Error saving bot state:`, error.message);
+    }
+  }
+
+  // Attempt to restore bot state
+  async restoreBotState(newBot) {
+    try {
+      if (!newBot) return;
+
+      // Restore position by navigating back
+      if (this.lastPosition && newBot.pathfinder) {
+        console.log(`[RECONNECT] Attempting to restore position for ${this.username}`);
+        try {
+          const target = new Vec3(this.lastPosition.x, this.lastPosition.y, this.lastPosition.z);
+          await newBot.pathfinder.goto(target);
+          console.log(`[RECONNECT] Position restored for ${this.username}`);
+        } catch (err) {
+          console.warn(`[RECONNECT] Could not restore exact position: ${err.message}`);
+        }
+      }
+
+      // Restore task if available
+      if (this.lastTask) {
+        console.log(`[RECONNECT] Resuming task for ${this.username}: ${this.lastTask}`);
+        // Task resumption logic would go here based on task type
+      }
+
+      console.log(`[RECONNECT] ✅ State restoration complete for ${this.username}`);
+    } catch (error) {
+      console.error(`[RECONNECT] Error restoring bot state:`, error.message);
+    }
+  }
+
+  // Attempt to reconnect
+  async attemptReconnect() {
+    if (this.reconnecting) {
+      console.log(`[RECONNECT] Already attempting to reconnect for ${this.username}`);
+      return null;
+    }
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error(`[RECONNECT] ❌ Max reconnection attempts (${this.maxReconnectAttempts}) reached for ${this.username}. Giving up.`);
+      return null;
+    }
+
+    this.reconnecting = true;
+    const delay = this.getBackoffDelay(this.reconnectAttempts);
+    const delaySeconds = (delay / 1000).toFixed(1);
+
+    console.log(`[RECONNECT] Bot ${this.username} disconnected. Attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts}`);
+    console.log(`[RECONNECT] Waiting ${delaySeconds}s before reconnection attempt...`);
+
+    try {
+      // Wait for backoff delay
+      await new Promise(resolve => setTimeout(resolve, delay));
+
+      // Attempt to spawn a new bot with the same configuration
+      console.log(`[RECONNECT] 🔄 Attempting to reconnect ${this.username}...`);
+      const newBot = await this.botSpawner.spawnBot(this.serverIP, this.options);
+
+      if (newBot) {
+        console.log(`[RECONNECT] ✅ Successfully reconnected ${this.username}`);
+        this.reconnectAttempts = 0; // Reset attempts on successful reconnection
+
+        // Restore bot state
+        await this.restoreBotState(newBot);
+
+        // Notify SwarmCoordinator of reconnection
+        if (globalSwarmCoordinator) {
+          try {
+            globalSwarmCoordinator.registerBot(newBot);
+            console.log(`[RECONNECT] ✅ Re-registered ${this.username} with SwarmCoordinator`);
+          } catch (error) {
+            console.error(`[RECONNECT] Failed to re-register with SwarmCoordinator:`, error.message);
+          }
+        }
+
+        this.reconnecting = false;
+        return newBot;
+      }
+    } catch (error) {
+      console.error(`[RECONNECT] Reconnection attempt ${this.reconnectAttempts + 1} failed:`, error.message);
+      this.reconnectAttempts++;
+    }
+
+    this.reconnecting = false;
+
+    // Schedule next attempt if not exceeded max
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      const nextDelay = this.getBackoffDelay(this.reconnectAttempts);
+      const nextDelaySeconds = (nextDelay / 1000).toFixed(1);
+      console.log(`[RECONNECT] Next reconnection attempt in ${nextDelaySeconds}s...`);
+    }
+
+    return null;
+  }
+
+  // Get reconnection statistics
+  getStats() {
+    return {
+      username: this.username,
+      attempts: this.reconnectAttempts,
+      maxAttempts: this.maxReconnectAttempts,
+      isReconnecting: this.reconnecting,
+      lastPosition: this.lastPosition,
+      lastHealth: this.lastHealth
+    };
+  }
+}
 
 // === HOME DEFENSE SYSTEM ===
 class HomeDefenseSystem {
