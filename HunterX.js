@@ -2559,7 +2559,22 @@ async function safeGoTo(bot, position, timeout = 60000) {
     throw new Error('Invalid position');
   }
   
-  const goal = new goals.GoalNear(new Vec3(position.x, position.y, position.z), 1);
+  const target = new Vec3(Math.round(position.x), Math.round(position.y), Math.round(position.z));
+  
+  // If already close enough, skip pathfinding
+  if (bot.entity?.position) {
+    const current = bot.entity.position;
+    const distance = Math.sqrt(
+      Math.pow(current.x - target.x, 2) +
+      Math.pow(current.y - target.y, 2) +
+      Math.pow(current.z - target.z, 2)
+    );
+    if (distance <= 1.5) {
+      return true;
+    }
+  }
+  
+  const goal = new goals.GoalBlock(target.x, target.y, target.z);
   
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => reject(new Error('Pathfinding timeout')), timeout);
@@ -2570,6 +2585,7 @@ async function safeGoTo(bot, position, timeout = 60000) {
       bot.pathfinder.goto(goal),
       timeoutPromise
     ]);
+    return true;
   } catch (err) {
     bot.pathfinder.stop();
     throw err;
@@ -16165,12 +16181,16 @@ class ItemHunter {
     for (const treePos of trees) {
       if (collected >= needed) break;
       
-      await this.bot.pathfinder.goto(new goals.GoalNear(treePos.x, treePos.y, treePos.z, 1));
-      const block = this.bot.blockAt(treePos);
-      if (block) {
-        await this.bot.dig(block);
-        collected++;
-        console.log(`[HUNTER] 🪵 Chopped ${treeType} (${collected}/${needed})`);
+      try {
+        await safeGoTo(this.bot, treePos, 30000);
+        const block = this.bot.blockAt(treePos);
+        if (block) {
+          await this.bot.dig(block);
+          collected++;
+          console.log(`[HUNTER] 🪵 Chopped ${treeType} (${collected}/${needed})`);
+        }
+      } catch (err) {
+        console.log(`[HUNTER] ⚠️ Failed to reach tree at ${treePos.x}, ${treePos.y}, ${treePos.z}: ${err.message}`);
       }
     }
     
@@ -16188,12 +16208,16 @@ class ItemHunter {
     for (const cropPos of crops) {
       if (collected >= needed) break;
       
-      await this.bot.pathfinder.goto(new goals.GoalNear(cropPos.x, cropPos.y, cropPos.z, 1));
-      const block = this.bot.blockAt(cropPos);
-      if (block) {
-        await this.bot.dig(block);
-        collected++;
-        console.log(`[HUNTER] 🌾 Harvested ${cropType} (${collected}/${needed})`);
+      try {
+        await safeGoTo(this.bot, cropPos, 30000);
+        const block = this.bot.blockAt(cropPos);
+        if (block) {
+          await this.bot.dig(block);
+          collected++;
+          console.log(`[HUNTER] 🌾 Harvested ${cropType} (${collected}/${needed})`);
+        }
+      } catch (err) {
+        console.log(`[HUNTER] ⚠️ Failed to reach crop at ${cropPos.x}, ${cropPos.y}, ${cropPos.z}: ${err.message}`);
       }
     }
     
@@ -16254,8 +16278,12 @@ class ItemHunter {
       const targetX = this.bot.entity.position.x + Math.cos(angle) * distance;
       const targetZ = this.bot.entity.position.z + Math.sin(angle) * distance;
       
-      await this.bot.pathfinder.goto(new goals.GoalNear(targetX, 64, targetZ, 5));
-      await this.sleep(1000);
+      try {
+        await safeGoTo(this.bot, new Vec3(targetX, 64, targetZ), 30000);
+        await this.sleep(1000);
+      } catch (err) {
+        console.log(`[HUNTER] ⚠️ Failed to explore direction ${i + 1}/10: ${err.message}`);
+      }
     }
     
     console.log(`[HUNTER] ❌ Could not find target biome`);
@@ -17948,12 +17976,16 @@ class AutoMiner {
     });
     
     for (const orePos of oreBlocks) {
-      await this.bot.pathfinder.goto(new goals.GoalNear(orePos.x, orePos.y, orePos.z, 1));
-      const ore = this.bot.blockAt(orePos);
-      if (ore) {
-        await this.bot.dig(ore);
-        collected++;
-        console.log(`[HUNTER] ⛏️ Mined ${targetOre}`);
+      try {
+        await safeGoTo(this.bot, orePos, 30000);
+        const ore = this.bot.blockAt(orePos);
+        if (ore) {
+          await this.bot.dig(ore);
+          collected++;
+          console.log(`[HUNTER] ⛏️ Mined ${targetOre}`);
+        }
+      } catch (err) {
+        console.log(`[HUNTER] ⚠️ Failed to reach ore at ${orePos.x}, ${orePos.y}, ${orePos.z}: ${err.message}`);
       }
     }
     
@@ -20671,9 +20703,14 @@ try {
       } else {
         // Come to player
         const player = this.bot.players[username];
-        if (player) {
+        if (player && player.entity) {
           this.bot.chat(`Coming to you, ${username}!`);
-          this.bot.pathfinder.goto(new goals.GoalNear(player.entity.position, 2)).catch(() => {});
+          try {
+            await safeGoTo(this.bot, player.entity.position, 60000);
+            this.bot.chat(`I've arrived, ${username}!`);
+          } catch (err) {
+            this.bot.chat(`Sorry, I couldn't reach you: ${err.message}`);
+          }
         }
       }
       return;
@@ -25656,8 +25693,13 @@ class MovementModeManager {
         console.log('[MOVEMENT] 🔍 Pausing for environment scan');
       }
 
-      // Default: use standard pathfinder
-      this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(x, y, z), 2)).catch(() => {});
+      // Default: use standard pathfinder with safety wrapper
+      try {
+        await safeGoTo(this.bot, destination, 120000);
+      } catch (gotoErr) {
+        console.log(`[MOVEMENT] ❌ Failed to reach destination via pathfinder: ${gotoErr.message}`);
+        throw gotoErr;
+      }
 
       // Record outcome after movement attempt
       const travelTime = Date.now() - this.travelStartTime;
@@ -29082,8 +29124,44 @@ class BotSpawner {
       // 1. Initialize pathfinder and movement
       if (bot.pathfinder && bot.pathfinder.setMovements) {
         const movements = new Movements(bot);
+        
+        // Enable enhanced navigation capabilities
+        movements.canSwim = true;
+        movements.allowSprinting = true;
+        movements.canDig = true;
+        movements.digCost = 1;
+        movements.allowParkour = true;
+        
+        // Set scaffolding blocks for bridging
+        if (!Array.isArray(movements.scaffoldingBlocks)) {
+          movements.scaffoldingBlocks = [];
+        }
+        const cobblestone = bot.registry.blocksByName['cobblestone'];
+        const dirt = bot.registry.blocksByName['dirt'];
+        if (cobblestone && !movements.scaffoldingBlocks.includes(cobblestone.id)) {
+          movements.scaffoldingBlocks.push(cobblestone.id);
+        }
+        if (dirt && !movements.scaffoldingBlocks.includes(dirt.id)) {
+          movements.scaffoldingBlocks.push(dirt.id);
+        }
+        
+        // Allow pathfinding through water
+        if (movements.blocksCantBreak) {
+          movements.blocksCantBreak.delete(bot.registry.blocksByName.water?.id);
+        }
+        
         bot.pathfinder.setMovements(movements);
-        console.log(`[SPAWNER] ✅ Pathfinder initialized for ${username}`);
+        console.log(`[SPAWNER] ✅ Pathfinder initialized for ${username} with enhanced navigation`);
+        
+        // Enable dynamic block updates for spawned bots
+        if (!bot._pathfinderDynamicUpdateHooked) {
+          bot.on('blockUpdate', (oldBlock, newBlock) => {
+            if (bot.pathfinder && bot.pathfinder.isMoving() && bot.pathfinder.goal) {
+              bot.pathfinder.setGoal(bot.pathfinder.goal, true);
+            }
+          });
+          bot._pathfinderDynamicUpdateHooked = true;
+        }
       } else {
         console.log(`[SPAWNER] ⚠️ Pathfinder not available for ${username}`);
       }
@@ -32668,17 +32746,52 @@ async function launchBot(username, role = 'fighter') {
       movements.canSwim = true;
       movements.allowSprinting = true;
       
+      // Enable digging through obstacles (critical for navigation)
+      movements.canDig = true;
+      movements.digCost = 1;
+      
+      // Enable parkour for better navigation
+      movements.allowParkour = true;
+      
+      // Ensure scaffolding list exists then add defaults for bridging
+      if (!Array.isArray(movements.scaffoldingBlocks)) {
+        movements.scaffoldingBlocks = [];
+      }
+      const cobblestone = bot.registry.blocksByName['cobblestone'];
+      const dirt = bot.registry.blocksByName['dirt'];
+      if (cobblestone && !movements.scaffoldingBlocks.includes(cobblestone.id)) {
+        movements.scaffoldingBlocks.push(cobblestone.id);
+      }
+      if (dirt && !movements.scaffoldingBlocks.includes(dirt.id)) {
+        movements.scaffoldingBlocks.push(dirt.id);
+      }
+      
       // Allow pathfinding through water
       if (movements.blocksCantBreak) {
         movements.blocksCantBreak.delete(bot.registry.blocksByName.water?.id);
       }
       
       bot.pathfinder.setMovements(movements);
-      console.log('[PATHFINDER] Movements configured successfully with swimming enabled');
+      console.log('[PATHFINDER] Movements configured successfully with digging, parkour, and swimming enabled');
     } catch (err) {
       console.error('[PATHFINDER] Failed to set movements:', err.message);
       return;
     }
+
+    // Enable dynamic pathfinder updates when blocks change
+    // This prevents the "spinning in circles" bug where the pathfinder 
+    // thinks blocks exist that have been broken
+    if (!bot._pathfinderDynamicUpdateHooked) {
+      bot.on('blockUpdate', (oldBlock, newBlock) => {
+        if (bot.pathfinder && bot.pathfinder.isMoving() && bot.pathfinder.goal) {
+          // Recalculate path when blocks change during navigation
+          bot.pathfinder.setGoal(bot.pathfinder.goal, true);
+        }
+      });
+      bot._pathfinderDynamicUpdateHooked = true;
+      console.log('[PATHFINDER] Dynamic block updates enabled');
+    }
+
 
     await combatLogger.onSpawn();
     console.log('[BARITONE] Pathfinder ready');
