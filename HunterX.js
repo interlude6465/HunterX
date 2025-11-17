@@ -31595,6 +31595,13 @@ async function launchBot(username, role = 'fighter') {
 
   const schematicLoader = new SchematicLoader(bot);
   const intelligenceDB = new IntelligenceDatabase(bot);
+  
+  // Initialize global message interceptor from IntelligenceDatabase's MessageInterceptor
+  if (intelligenceDB && intelligenceDB.messageInterceptor) {
+    globalMessageInterceptor = intelligenceDB.messageInterceptor;
+    console.log('[MESSAGE_INTERCEPTOR] ✅ Global message interceptor initialized');
+  }
+  
   let stashScanner = null;
   let dupeFramework = null;
   let lootOperation = null;
@@ -31629,6 +31636,9 @@ async function launchBot(username, role = 'fighter') {
   bot.combatLogger = combatLogger;
   bot.schematicLoader = schematicLoader;
   bot.toolSelector = combatAI.toolSelector;
+  bot.conversationAI = conversationAI;
+  bot.messageInterceptor = intelligenceDB.messageInterceptor;
+  bot.intelligenceDB = intelligenceDB;
   
   // Safe method calls with existence checks
   if (combatAI && typeof combatAI.setCombatLogger === 'function') {
