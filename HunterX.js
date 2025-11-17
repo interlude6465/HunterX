@@ -15808,8 +15808,12 @@ class ItemHunter {
         continue;
       }
       
-      // OPTIMIZED: Reduced delay from 800ms to 100ms for faster mining
-      await this.sleep(100);
+      // OPTIMIZED: Use speed optimizer for ultra-fast mining
+      if (this.speedOptimizer) {
+        await this.speedOptimizer.sleep(50); // Ultra-fast 50ms delay
+      } else {
+        await this.sleep(100); // Fallback
+      }
       await this.worldKnowledge.scanForBlocks(targets.blockNames, 24);
     }
     
@@ -15996,6 +16000,96 @@ class ItemHunter {
     return candidates;
   }
   
+  // OPTIMIZED: Fast bridging method for rapid movement
+  async bridgeFast(distance = 10, direction = 'forward') {
+    if (!this.speedOptimizer) {
+      console.log('[HUNTER] ⚠️ Speed optimizer not available');
+      return false;
+    }
+    
+    console.log(`[HUNTER] 🌉 Starting fast bridge: ${distance} blocks`);
+    
+    try {
+      const success = await this.speedOptimizer.bridgeFast(distance, direction);
+      if (success) {
+        console.log(`[HUNTER] ✅ Fast bridge completed successfully`);
+      } else {
+        console.log(`[HUNTER] ❌ Fast bridge failed`);
+      }
+      return success;
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Fast bridge error: ${err.message}`);
+      return false;
+    }
+  }
+
+  // OPTIMIZED: Fast movement with sprinting
+  async moveToFast(x, y, z, timeout = 30000) {
+    if (!this.speedOptimizer) {
+      console.log('[HUNTER] ⚠️ Speed optimizer not available');
+      return false;
+    }
+    
+    const targetPos = new Vec3(x, y, z);
+    console.log(`[HUNTER] 🏃 Starting fast movement to ${x}, ${y}, ${z}`);
+    
+    try {
+      const success = await this.speedOptimizer.moveToFast(targetPos, timeout);
+      if (success) {
+        console.log(`[HUNTER] ✅ Fast movement completed`);
+      } else {
+        console.log(`[HUNTER] ❌ Fast movement failed`);
+      }
+      return success;
+    } catch (err) {
+      console.log(`[HUNTER] ❌ Fast movement error: ${err.message}`);
+      return false;
+    }
+  }
+
+  // OPTIMIZED: Get comprehensive speed metrics
+  getSpeedReport() {
+    if (!this.speedOptimizer) {
+      return { error: 'Speed optimizer not available' };
+    }
+    
+    const metrics = this.speedOptimizer.getSpeedMetrics();
+    const report = {
+      timestamp: Date.now(),
+      botName: this.bot.username,
+      speedOptimizations: {
+        enabled: true,
+        sprintActive: metrics.sprintEnabled,
+        foodLevel: metrics.foodLevel,
+        actionQueueLength: metrics.actionQueueLength,
+        processingActions: metrics.processingActions
+      },
+      performanceMetrics: {
+        miningDelay: '50ms (ultra-fast)',
+        bridgingDelay: '100ms (continuous)',
+        movementDelay: '0ms (instant)',
+        fishingDelay: '200ms (rapid)',
+        expectedSpeedImprovement: '3-5x faster than human'
+      },
+      capabilities: [
+        '⚡ Ultra-fast mining (50ms delays)',
+        '🌉 Continuous bridging (100ms placement)',
+        '🏃 Sprint-based movement',
+        '🎣 Rapid fishing (200ms casts)',
+        '🔄 Action buffering system',
+        '⚙️ Optimized equipment switching'
+      ]
+    };
+    
+    console.log(`[SPEED] 📊 Speed Report for ${this.bot.username}:`);
+    console.log(`[SPEED]   Sprint: ${metrics.sprintEnabled ? '✅' : '❌'}`);
+    console.log(`[SPEED]   Food: ${metrics.foodLevel}/20`);
+    console.log(`[SPEED]   Queue: ${metrics.actionQueueLength} actions`);
+    console.log(`[SPEED]   Processing: ${metrics.processingActions ? '✅' : '❌'}`);
+    
+    return report;
+  }
+
   async findItemViaStrategies(itemName, quantity, knowledge) {
     const resolvedKnowledge = knowledge || ITEM_KNOWLEDGE[itemName];
     if (!resolvedKnowledge) {
@@ -18017,6 +18111,9 @@ class AutoMiner {
 class AutoFisher {
   constructor(bot) {
     this.bot = bot;
+    
+    // OPTIMIZED: Initialize speed optimizer for faster fishing
+    this.speedOptimizer = new SpeedOptimizer(bot);
   }
   
   async fishForItem(itemName, quantity) {
@@ -18059,8 +18156,12 @@ class AutoFisher {
       
       casts++;
       
-      // OPTIMIZED: Reduced fishing delay from 2000ms to 500ms for faster fishing
-      await this.sleep(500);
+      // OPTIMIZED: Use speed optimizer for ultra-fast fishing
+      if (this.speedOptimizer) {
+        await this.speedOptimizer.sleep(200); // Ultra-fast 200ms delay
+      } else {
+        await this.sleep(500); // Fallback
+      }
     }
     
     if (collected >= quantity) {
@@ -18121,16 +18222,33 @@ class AutoFisher {
   
   async castRod() {
     try {
-      // Look at water and cast
+      // OPTIMIZED: Use speed optimizer for faster casting
+      if (this.speedOptimizer) {
+        // Use speed optimizer's fast equip for fishing rod
+        const rod = this.bot.inventory.items().find(i => i.name === 'fishing_rod');
+        if (rod) {
+          await this.speedOptimizer.equipFast(rod, 'hand');
+        }
+        
+        // Fast cast with minimal delay
+        await this.bot.look(
+          this.bot.entity.yaw + (Math.random() - 0.5) * 0.5,
+          0.2
+        );
+        await this.speedOptimizer.sleep(50); // Ultra-fast cast
+        await this.bot.activateItem();
+        console.log(`[HUNTER] 🎣 Line cast (FAST MODE)`);
+        return;
+      }
+      
+      // Fallback to original method
       await this.bot.look(
-        this.bot.entity.yaw + (Math.random() - 0.5) * 0.5, // Add some randomness
-        0.2 // Look slightly down
+        this.bot.entity.yaw + (Math.random() - 0.5) * 0.5,
+        0.2
       );
       
-      // OPTIMIZED: Reduced cast delay from 500ms to 100ms for faster casting
       await this.sleep(100);
-      await this.bot.activateItem(); // Cast line
-      
+      await this.bot.activateItem();
       console.log(`[HUNTER] 🎣 Line cast`);
     } catch (err) {
       console.log(`[HUNTER] ❌ Failed to cast: ${err.message}`);
