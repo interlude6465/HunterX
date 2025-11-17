@@ -15848,23 +15848,22 @@ class ItemHunter {
     }
     
     const approachPositions = this.getCandidateMiningPositions(position);
-    const hasOriginal = approachPositions.some(pos =>
-      (typeof pos.equals === 'function' && pos.equals(position)) ||
-      (pos.x === position.x && pos.y === position.y && pos.z === position.z)
-    );
-    if (!hasOriginal) {
-      const fallback = position.clone ? position.clone() : new Vec3(position.x, position.y, position.z);
-      approachPositions.push(fallback);
+    
+    if (approachPositions.length === 0) {
+      console.log(`[HUNTER] ⚠️ No valid mining positions found for ${entry.blockName} at ${position.x}, ${position.y}, ${position.z}`);
+      return false;
     }
     
     const timeoutPerAttempt = Math.max(5000, Math.floor(60000 / Math.max(approachPositions.length, 1)));
     let reached = false;
     let lastError = null;
+    let reachedPosition = null;
     
     for (const targetPos of approachPositions) {
       try {
         await safeGoTo(this.bot, targetPos, timeoutPerAttempt);
         reached = true;
+        reachedPosition = targetPos;
         break;
       } catch (err) {
         lastError = err;
@@ -15882,11 +15881,40 @@ class ItemHunter {
       return false;
     }
     
+    if (!reachedPosition || !this.bot.entity || !this.bot.entity.position) {
+      return false;
+    }
+    
+    const distToBlock = Math.sqrt(
+      Math.pow(this.bot.entity.position.x - position.x, 2) +
+      Math.pow(this.bot.entity.position.y - position.y, 2) +
+      Math.pow(this.bot.entity.position.z - position.z, 2)
+    );
+    
+    if (distToBlock > 5.5) {
+      console.log(`[HUNTER] ⚠️ Block out of reach (${distToBlock.toFixed(1)} blocks away) for ${entry.blockName}`);
+      return false;
+    }
+    
+    if (!this.bot.entity.onGround) {
+      console.log(`[HUNTER] ⚠️ Bot not on ground, cannot dig`);
+      return false;
+    }
+    
     try {
-      if (typeof this.bot.lookAt === 'function') {
-        await this.bot.lookAt(position.offset(0.5, 0.5, 0.5)).catch(() => {});
+      if (this.bot.pathfinder) {
+        this.bot.pathfinder.stop();
       }
+      
+      if (typeof this.bot.lookAt === 'function') {
+        try {
+          await this.bot.lookAt(position.offset(0.5, 0.5, 0.5));
+        } catch (e) {
+        }
+      }
+      
       await this.bot.dig(block);
+      console.log(`[HUNTER] ✅ Successfully mined ${entry.blockName}`);
       return true;
     } catch (err) {
       console.log(`[HUNTER] ❌ Failed to mine ${entry.blockName}: ${err.message}`);
@@ -15900,11 +15928,30 @@ class ItemHunter {
     }
     
     const offsets = [
+      // Primary positions (1 block away, same height)
       new Vec3(1, 0, 0),
       new Vec3(-1, 0, 0),
       new Vec3(0, 0, 1),
       new Vec3(0, 0, -1),
-      new Vec3(0, 1, 0)
+      // Above position
+      new Vec3(0, 1, 0),
+      // Below position (for mining ceiling/ore above)
+      new Vec3(0, -1, 0),
+      // Diagonal positions (1 block away, 1 block up)
+      new Vec3(1, 1, 0),
+      new Vec3(-1, 1, 0),
+      new Vec3(0, 1, 1),
+      new Vec3(0, 1, -1),
+      // Diagonal positions (1 block away, same height)
+      new Vec3(1, 0, 1),
+      new Vec3(1, 0, -1),
+      new Vec3(-1, 0, 1),
+      new Vec3(-1, 0, -1),
+      // Extended reach positions (2 blocks horizontally)
+      new Vec3(2, 0, 0),
+      new Vec3(-2, 0, 0),
+      new Vec3(0, 0, 2),
+      new Vec3(0, 0, -2)
     ];
     
     const origin = (this.bot.entity && this.bot.entity.position) ? this.bot.entity.position : position;
