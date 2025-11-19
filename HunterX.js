@@ -24562,202 +24562,221 @@ try {
       }
 
       safeWriteFile('./data/whitelist.json', JSON.stringify(config.whitelist, null, 2));
-       this.bot.chat(`✅ Set ${targetPlayer}'s trust level to ${trustLevel}`);
-      }
+      this.bot.chat(`✅ Set ${targetPlayer}'s trust level to ${trustLevel}`);
+    }
+  }
 
-      // === AI PLANNING COMMANDS ===
+  async handleAICommands(username, message) {
+    const lower = message.toLowerCase();
+    
+    // Helper functions for command responses
+    const respond = (success, text) => {
+      this.bot.chat(text);
+      return success;
+    };
+    
+    const denyCommand = (reason, outcome) => {
+      this.bot.chat(reason);
+      return false;
+    };
+    
+    const setOutcome = (outcome) => {
+      // Set outcome for tracking if needed
+    };
 
-      // Create plan command
-      if (lower.includes('plan') || lower.includes('make plan') || lower.includes('create plan') || lower.includes('ai plan') || lower.includes('smart plan')) {
-        if (!this.hasTrustLevel(username, 'trusted')) {
-          denyCommand("Only trusted+ can create AI plans!", 'blocked_planning');
-          return;
-        }
+    // === AI PLANNING COMMANDS ===
 
-        // Extract goal from message
-        const goalMatch = message.match(/(?:plan|make plan|create plan|ai plan|smart plan)\s+(.+)$/i);
-        if (!goalMatch) {
-          respond(false, "Usage: plan <goal> (e.g., 'plan get me full netherite gear')");
-          return;
-        }
-
-        const goal = goalMatch[1].trim();
-
-        try {
-          const plan = await this.aiPlanner.createPlan(goal, { requestedBy: username });
-          const steps = plan.steps.slice(0, 10); // Show first 10 steps
-
-          respond(true, `🧠 Created AI plan for: ${goal}`);
-          respond(true, `📋 Plan ID: ${plan.id}`);
-          respond(true, `⏱️ Estimated time: ${Math.round(plan.estimatedTime / 60)} minutes`);
-          respond(true, `📝 Steps: ${plan.steps.length} total`);
-
-          for (let i = 0; i < steps.length; i++) {
-            const step = steps[i];
-            respond(true, `${i + 1}. ${step.description}`);
-          }
-
-          if (plan.steps.length > 10) {
-            respond(true, `... and ${plan.steps.length - 10} more steps`);
-          }
-
-          respond(true, `💡 Use 'execute plan ${plan.id}' to start execution`);
-
-        } catch (error) {
-          respond(false, `❌ Failed to create plan: ${error.message}`);
-        }
+    // Create plan command
+    if (lower.includes('plan') || lower.includes('make plan') || lower.includes('create plan') || lower.includes('ai plan') || lower.includes('smart plan')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        denyCommand("Only trusted+ can create AI plans!", 'blocked_planning');
         return;
       }
 
-      // Execute plan command
-      if (lower.includes('execute plan') || lower.includes('run plan') || lower.includes('start plan')) {
-       if (!this.hasTrustLevel(username, 'trusted')) {
-         denyCommand("Only trusted+ can execute AI plans!", 'blocked_planning');
-         return;
-       }
-
-       const planMatch = message.match(/(?:execute|run|start)\s+plan\s+([a-zA-Z0-9_]+)/i);
-       if (!planMatch) {
-         respond(false, "Usage: execute plan <plan_id>");
-         return;
-       }
-
-       const planId = planMatch[1];
-
-       try {
-         respond(true, `🚀 Executing plan ${planId}...`);
-         const plan = await this.aiPlanner.executePlan(planId);
-         respond(true, `✅ Plan completed successfully!`);
-
-         // Track outcome for RL training
-         if (this.dialogueRL) {
-           this.dialogueRL.recordInteraction(username, `execute plan ${planId}`, 'success', {
-             planId: planId,
-             steps: plan.steps.length,
-             duration: Date.now() - plan.startTime
-           });
-         }
-
-       } catch (error) {
-         respond(false, `❌ Plan execution failed: ${error.message}`);
-
-         // Track outcome for RL training
-         if (this.dialogueRL) {
-           this.dialogueRL.recordInteraction(username, `execute plan ${planId}`, 'failure', {
-             planId: planId,
-             error: error.message
-           });
-         }
-       }
-       return;
+      // Extract goal from message
+      const goalMatch = message.match(/(?:plan|make plan|create plan|ai plan|smart plan)\s+(.+)$/i);
+      if (!goalMatch) {
+        respond(false, "Usage: plan <goal> (e.g., 'plan get me full netherite gear')");
+        return;
       }
+
+      const goal = goalMatch[1].trim();
+
+      try {
+        const plan = await this.aiPlanner.createPlan(goal, { requestedBy: username });
+        const steps = plan.steps.slice(0, 10); // Show first 10 steps
+
+        respond(true, `🧠 Created AI plan for: ${goal}`);
+        respond(true, `📋 Plan ID: ${plan.id}`);
+        respond(true, `⏱️ Estimated time: ${Math.round(plan.estimatedTime / 60)} minutes`);
+        respond(true, `📝 Steps: ${plan.steps.length} total`);
+
+        for (let i = 0; i < steps.length; i++) {
+          const step = steps[i];
+          respond(true, `${i + 1}. ${step.description}`);
+        }
+
+        if (plan.steps.length > 10) {
+          respond(true, `... and ${plan.steps.length - 10} more steps`);
+        }
+
+        respond(true, `💡 Use 'execute plan ${plan.id}' to start execution`);
+
+      } catch (error) {
+        respond(false, `❌ Failed to create plan: ${error.message}`);
+      }
+      return;
+    }
+
+      // Execute plan command
+    if (lower.includes('execute plan') || lower.includes('run plan') || lower.includes('start plan')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        denyCommand("Only trusted+ can execute AI plans!", 'blocked_planning');
+        return;
+      }
+
+      const planMatch = message.match(/(?:execute|run|start)\s+plan\s+([a-zA-Z0-9_]+)/i);
+      if (!planMatch) {
+        respond(false, "Usage: execute plan <plan_id>");
+        return;
+      }
+
+      const planId = planMatch[1];
+
+      try {
+        respond(true, `🚀 Executing plan ${planId}...`);
+        const plan = await this.aiPlanner.executePlan(planId);
+        respond(true, `✅ Plan completed successfully!`);
+
+        // Track outcome for RL training
+        if (this.dialogueRL) {
+          this.dialogueRL.recordInteraction(username, `execute plan ${planId}`, 'success', {
+            planId: planId,
+            steps: plan.steps.length,
+            duration: Date.now() - plan.startTime
+          });
+        }
+
+      } catch (error) {
+        respond(false, `❌ Plan execution failed: ${error.message}`);
+
+        // Track outcome for RL training
+        if (this.dialogueRL) {
+          this.dialogueRL.recordInteraction(username, `execute plan ${planId}`, 'failure', {
+            planId: planId,
+            error: error.message
+          });
+        }
+      }
+      return;
+    }
 
       // Plan management commands
-      if (lower.includes('cancel plan') || lower.includes('stop plan')) {
-       if (!this.hasTrustLevel(username, 'trusted')) {
-         denyCommand("Only trusted+ can manage plans!", 'blocked_planning');
-         return;
-       }
-
-       const planMatch = message.match(/(?:cancel|stop)\s+plan\s+([a-zA-Z0-9_]+)/i);
-       if (!planMatch) {
-         respond(false, "Usage: cancel plan <plan_id>");
-         return;
-       }
-
-       const planId = planMatch[1];
-       const success = this.aiPlanner.cancelPlan(planId);
-
-       if (success) {
-         respond(true, `✅ Plan ${planId} cancelled`);
-       } else {
-         respond(false, `❌ Plan ${planId} not found`);
-       }
-       return;
+    if (lower.includes('cancel plan') || lower.includes('stop plan')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        denyCommand("Only trusted+ can manage plans!", 'blocked_planning');
+        return;
       }
 
-      if (lower.includes('pause plan')) {
-       if (!this.hasTrustLevel(username, 'trusted')) {
-         denyCommand("Only trusted+ can manage plans!", 'blocked_planning');
-         return;
-       }
-
-       const planMatch = message.match(/pause\s+plan\s+([a-zA-Z0-9_]+)/i);
-       if (!planMatch) {
-         respond(false, "Usage: pause plan <plan_id>");
-         return;
-       }
-
-       const planId = planMatch[1];
-       const success = this.aiPlanner.pausePlan(planId);
-
-       if (success) {
-         respond(true, `⏸️ Plan ${planId} paused`);
-       } else {
-         respond(false, `❌ Plan ${planId} not found`);
-       }
-       return;
+      const planMatch = message.match(/(?:cancel|stop)\s+plan\s+([a-zA-Z0-9_]+)/i);
+      if (!planMatch) {
+        respond(false, "Usage: cancel plan <plan_id>");
+        return;
       }
 
-      if (lower.includes('resume plan')) {
-       if (!this.hasTrustLevel(username, 'trusted')) {
-         denyCommand("Only trusted+ can manage plans!", 'blocked_planning');
-         return;
-       }
+      const planId = planMatch[1];
+      const success = this.aiPlanner.cancelPlan(planId);
 
-       const planMatch = message.match(/resume\s+plan\s+([a-zA-Z0-9_]+)/i);
-       if (!planMatch) {
-         respond(false, "Usage: resume plan <plan_id>");
-         return;
-       }
+      if (success) {
+        respond(true, `✅ Plan ${planId} cancelled`);
+      } else {
+        respond(false, `❌ Plan ${planId} not found`);
+      }
+      return;
+    }
 
-       const planId = planMatch[1];
-       const success = this.aiPlanner.resumePlan(planId);
-
-       if (success) {
-         respond(true, `▶️ Plan ${planId} resumed`);
-       } else {
-         respond(false, `❌ Plan ${planId} not found`);
-       }
-       return;
+    if (lower.includes('pause plan')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        denyCommand("Only trusted+ can manage plans!", 'blocked_planning');
+        return;
       }
 
-      // Plan status and listing
-      if (lower.includes('plan status') || lower.includes('list plans') || lower.includes('show plans')) {
-       if (!this.hasTrustLevel(username, 'trusted')) {
-         denyCommand("Only trusted+ can view plans!", 'blocked_planning');
-         return;
-       }
+      const planMatch = message.match(/pause\s+plan\s+([a-zA-Z0-9_]+)/i);
+      if (!planMatch) {
+        respond(false, "Usage: pause plan <plan_id>");
+        return;
+      }
+
+      const planId = planMatch[1];
+      const success = this.aiPlanner.pausePlan(planId);
+
+      if (success) {
+        respond(true, `⏸️ Plan ${planId} paused`);
+      } else {
+        respond(false, `❌ Plan ${planId} not found`);
+      }
+      return;
+    }
+
+    if (lower.includes('resume plan')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        denyCommand("Only trusted+ can manage plans!", 'blocked_planning');
+        return;
+      }
+
+      const planMatch = message.match(/resume\s+plan\s+([a-zA-Z0-9_]+)/i);
+      if (!planMatch) {
+        respond(false, "Usage: resume plan <plan_id>");
+        return;
+      }
+
+      const planId = planMatch[1];
+      const success = this.aiPlanner.resumePlan(planId);
+
+      if (success) {
+        respond(true, `▶️ Plan ${planId} resumed`);
+      } else {
+        respond(false, `❌ Plan ${planId} not found`);
+      }
+      return;
+    }
+
+    // Plan status and listing
+    if (lower.includes('plan status') || lower.includes('list plans') || lower.includes('show plans')) {
+      if (!this.hasTrustLevel(username, 'trusted')) {
+        denyCommand("Only trusted+ can view plans!", 'blocked_planning');
+        return;
+      }
 
        const activePlans = this.aiPlanner.getAllActivePlans();
 
-       if (activePlans.length === 0) {
-         respond(true, "📋 No active plans");
-         return;
-       }
-
-       respond(true, `📋 Active Plans (${activePlans.length}):`);
-
-       for (const plan of activePlans) {
-         const status = plan.status === 'executing' ? '🚀' : plan.status === 'paused' ? '⏸️' : '📝';
-         const progress = plan.currentStep + 1;
-         respond(true, `${status} ${plan.id}: ${plan.goal} (${progress}/${plan.steps.length} steps)`);
-       }
-       return;
+      if (activePlans.length === 0) {
+        respond(true, "📋 No active plans");
+        return;
       }
 
-      // === KNOWLEDGE BASE COMMANDS ===
+      respond(true, `📋 Active Plans (${activePlans.length}):`);
 
-      // General knowledge queries
-      if (lower.includes('knowledge') || lower.includes('minecraft knowledge') || lower.includes('get info') || lower.includes('tell me about')) {
-       const topicMatch = message.match(/(?:knowledge|get info|tell me about)\s+(.+)$/i);
-       if (!topicMatch) {
-         respond(false, "Usage: knowledge <topic> (e.g., 'knowledge diamond ore')");
-         return;
-       }
+      for (const plan of activePlans) {
+        const status = plan.status === 'executing' ? '🚀' : plan.status === 'paused' ? '⏸️' : '📝';
+        const progress = plan.currentStep + 1;
+        respond(true, `${status} ${plan.id}: ${plan.goal} (${progress}/${plan.steps.length} steps)`);
+      }
+      return;
+    }
 
-       const topic = topicMatch[1].trim().toLowerCase();
-       const info = this.getKnowledgeInfo(topic);
+    // === KNOWLEDGE BASE COMMANDS ===
+
+    // General knowledge queries
+    if (lower.includes('knowledge') || lower.includes('minecraft knowledge') || lower.includes('get info') || lower.includes('tell me about')) {
+      const topicMatch = message.match(/(?:knowledge|get info|tell me about)\s+(.+)$/i);
+      if (!topicMatch) {
+        respond(false, "Usage: knowledge <topic> (e.g., 'knowledge diamond ore')");
+        return;
+      }
+
+      const topic = topicMatch[1].trim().toLowerCase();
+      const info = this.getKnowledgeInfo(topic);
 
        if (info) {
          respond(true, `📚 ${topic.toUpperCase()}:`);
