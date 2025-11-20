@@ -31459,11 +31459,32 @@ class BotSpawner {
       // Initialize LoopDetector for this bot
       const loopDetector = new LoopDetector(bot);
       bot.loopDetector = loopDetector; // Attach to bot instance for easy access
-      
+
+      // Flag to prevent multiple disconnect handlers from firing
+      let disconnectHandlerExecuted = false;
+      let spawnTime = null;
+
       // Start loop detection when bot spawns
       bot.once('spawn', () => {
+        spawnTime = Date.now();
         console.log(`[LOOP_DETECT] Initializing loop detection for ${username}`);
         loopDetector.start();
+        // Reset disconnect handler flag when bot successfully spawns
+        disconnectHandlerExecuted = false;
+        console.log(`[RECONNECT] ✅ Bot ${username} successfully spawned and logged in`);
+
+        // Register with SwarmCoordinator ONLY after successful spawn
+        if (!globalSwarmCoordinator) {
+          globalSwarmCoordinator = new SwarmCoordinator(9090);
+          console.log('[SPAWNER] ✅ SwarmCoordinator initialized');
+        }
+
+        try {
+          globalSwarmCoordinator.registerBot(bot);
+          console.log(`[SPAWNER] ✅ ${username} registered with SwarmCoordinator after spawn`);
+        } catch (error) {
+          console.error(`[SPAWNER] Failed to register ${username} with SwarmCoordinator:`, error.message);
+        }
       });
 
       // Stop loop detection when bot disconnects
@@ -31476,19 +31497,36 @@ class BotSpawner {
 
       // Handle disconnect with auto-reconnect
        const handleDisconnect = async (reason) => {
-        console.log(`[RECONNECT] ${username} disconnected: ${reason}`);
+        // Prevent duplicate disconnect handling
+        if (disconnectHandlerExecuted) {
+          console.log(`[RECONNECT] ⚠️ Disconnect handler already executed for ${username}, ignoring duplicate`);
+          return;
+        }
+        disconnectHandlerExecuted = true;
+
+        console.log(`[RECONNECT] 🔌 ${username} disconnected: ${reason}`);
+
+        // Check if bot disconnected immediately after spawn
+        if (spawnTime) {
+          const timeSinceSpawn = Date.now() - spawnTime;
+          if (timeSinceSpawn < 2000) {
+            console.log(`[RECONNECT] ⚠️ Bot disconnected immediately after spawn (${timeSinceSpawn}ms after spawn)`);
+          }
+        }
 
         // Detect if this is a duplicate_login kick
-        const isDuplicateLogin = reason && (
-          reason.includes('duplicate_login') || 
-          reason.includes('multiplayer.disconnect.duplicate_login')
-        );
-        
+        const reasonLower = reason ? reason.toLowerCase() : '';
+        const isDuplicateLogin = reasonLower.includes('duplicate_login') ||
+                                 reasonLower.includes('multiplayer.disconnect.duplicate_login') ||
+                                 reasonLower.includes('you are already logged in');
+
         if (isDuplicateLogin) {
-          console.log(`[RECONNECT] ⚠️ Duplicate login detected for ${username}`);
+          console.log(`[RECONNECT] ⚠️ DUPLICATE LOGIN DETECTED for ${username}`);
+          console.log(`[RECONNECT] Full disconnect reason: ${reason}`);
           if (reconnectManager) {
             reconnectManager.isDuplicateLogin = true;
             reconnectManager.disconnectTimestamp = Date.now();
+            console.log(`[RECONNECT] Setting extended backoff (60+ second delay) for next reconnect attempt`);
           }
         }
 
@@ -31835,20 +31873,25 @@ class BotSpawner {
       globalSwarmCoordinator = new SwarmCoordinator(9090);
       console.log(`[SPAWNER] ✅ SwarmCoordinator initialized for batch registration`);
     }
-    
+
     let registeredCount = 0;
+    let alreadyRegisteredCount = 0;
     for (const botInfo of this.activeBots) {
       try {
         if (botInfo.bot && globalSwarmCoordinator.registerBot) {
-          globalSwarmCoordinator.registerBot(botInfo.bot);
-          registeredCount++;
+          const result = globalSwarmCoordinator.registerBot(botInfo.bot);
+          if (result) {
+            registeredCount++;
+          } else {
+            alreadyRegisteredCount++;
+          }
         }
       } catch (error) {
         console.error(`[SPAWNER] Failed to register ${botInfo.username}:`, error.message);
       }
     }
-    
-    console.log(`[SPAWNER] ✅ Registered ${registeredCount} bots with SwarmCoordinator`);
+
+    console.log(`[SPAWNER] ✅ Registered ${registeredCount} new bots, ${alreadyRegisteredCount} already registered with SwarmCoordinator`);
   }
   
   getActiveBotCount() {
@@ -31951,29 +31994,39 @@ class AutoReconnectManager {
   }
 
   // Calculate exponential backoff delay: 5s, 10s, 20s, 40s, 80s, 160s, etc
-  // For duplicate_login, use minimum 30 seconds to allow server to clear session
+  // For duplicate_login, use minimum 60 seconds to allow server to fully clear session
   getBackoffDelay(attempt) {
     const baseDelay = this.baseBackoffDelay * Math.pow(2, Math.min(attempt, 7)); // Cap at 2^7 = 128x (10+ minutes)
-    
-    // If last disconnect was duplicate_login, enforce minimum 30 second delay
+
+    // If last disconnect was duplicate_login, enforce minimum 60 second delay
+    // Minecraft servers can take 30-60 seconds to clear a session after disconnect
     if (this.isDuplicateLogin) {
-      return Math.max(baseDelay, 30000); // Minimum 30 seconds for duplicate_login
+      // First attempt after duplicate_login: wait 60 seconds
+      // Subsequent attempts: exponential backoff with minimum 60 seconds
+      return Math.max(baseDelay, 60000); // Minimum 60 seconds for duplicate_login
     }
-    
+
     return baseDelay;
   }
 
   // Ensure old bot is fully cleaned up before reconnecting
   async ensureCleanup(bot) {
     try {
-      console.log(`[RECONNECT] Ensuring cleanup for ${this.username}...`);
+      console.log(`[RECONNECT] Ensuring cleanup for ${this.username}... (isDuplicate: ${this.isDuplicateLogin})`);
       
       // Remove all event listeners to prevent duplicate handlers
       if (bot && bot.removeAllListeners) {
-        bot.removeAllListeners('end');
-        bot.removeAllListeners('kicked');
-        bot.removeAllListeners('error');
-        bot.removeAllListeners('spawn');
+        try {
+          bot.removeAllListeners('end');
+          bot.removeAllListeners('kicked');
+          bot.removeAllListeners('error');
+          bot.removeAllListeners('spawn');
+          bot.removeAllListeners('login');
+          bot.removeAllListeners('connect');
+          bot.removeAllListeners('message');
+        } catch (err) {
+          console.warn(`[RECONNECT] Warning removing listeners: ${err.message}`);
+        }
       }
       
       // Stop any active pathfinding
@@ -31985,20 +32038,49 @@ class AutoReconnectManager {
         }
       }
       
-      // Explicitly end the connection if still connected
-      if (bot && bot._client && bot._client.socket) {
+      // Stop any active operations
+      if (bot && bot.pathfinder && bot.pathfinder._bot) {
         try {
-          bot._client.end();
+          bot.pathfinder._bot = null;
         } catch (err) {
-          // Ignore errors
+          // Ignore
         }
       }
       
-      // Wait for socket to fully close (especially important for duplicate_login)
-      const cleanupDelay = this.isDuplicateLogin ? 5000 : 1000; // 5s for duplicate_login, 1s otherwise
+      // Aggressively close the socket connection
+      if (bot && bot._client) {
+        try {
+          // Try multiple ways to close the connection
+          if (bot._client.socket) {
+            bot._client.socket.destroy();
+            console.log(`[RECONNECT] Socket destroyed for ${this.username}`);
+          }
+          if (bot._client.end && typeof bot._client.end === 'function') {
+            bot._client.end();
+            console.log(`[RECONNECT] Client ended for ${this.username}`);
+          }
+        } catch (err) {
+          console.warn(`[RECONNECT] Warning during socket cleanup: ${err.message}`);
+        }
+      }
+      
+      // Additional check for connection socket
+      if (bot && bot.client && bot.client.socket) {
+        try {
+          bot.client.socket.destroy();
+          console.log(`[RECONNECT] Alternative socket destroyed for ${this.username}`);
+        } catch (err) {
+          // Ignore
+        }
+      }
+      
+      // For duplicate_login, use much longer delay to let server clear session
+      // Standard: 1s, Duplicate: 20s initial cleanup wait
+      const cleanupDelay = this.isDuplicateLogin ? 20000 : 1000;
+      console.log(`[RECONNECT] Waiting ${cleanupDelay}ms for cleanup to complete...`);
       await new Promise(resolve => setTimeout(resolve, cleanupDelay));
       
-      console.log(`[RECONNECT] Cleanup complete for ${this.username}`);
+      console.log(`[RECONNECT] ✅ Cleanup complete for ${this.username} (cleanup delay: ${cleanupDelay}ms)`);
     } catch (error) {
       console.error(`[RECONNECT] Error during cleanup:`, error.message);
     }
@@ -32087,9 +32169,13 @@ class AutoReconnectManager {
     try {
       // Ensure old bot is fully cleaned up
       if (oldBot) {
+        console.log(`[RECONNECT] Cleaning up old bot instance for ${this.username}...`);
         await this.ensureCleanup(oldBot);
       } else if (this.currentBot) {
+        console.log(`[RECONNECT] Cleaning up current bot instance for ${this.username}...`);
         await this.ensureCleanup(this.currentBot);
+      } else {
+        console.log(`[RECONNECT] No old bot to clean up for ${this.username}`);
       }
 
       const delay = this.getBackoffDelay(this.reconnectAttempts);
@@ -32110,11 +32196,12 @@ class AutoReconnectManager {
       }
 
       // Attempt to spawn a new bot with the same configuration
-      console.log(`[RECONNECT] 🔄 Attempting to reconnect ${this.username}...`);
+      console.log(`[RECONNECT] 🔄 Attempting to reconnect ${this.username}... (attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})`);
       const newBot = await this.botSpawner.spawnBot(this.serverIP, this.options);
 
       if (newBot) {
         console.log(`[RECONNECT] ✅ Successfully reconnected ${this.username}`);
+        console.log(`[RECONNECT] Bot spawned and registered, waiting for 'spawn' event to confirm connection...`);
         this.reconnectAttempts = 0; // Reset attempts on successful reconnection
         this.currentBot = newBot; // Track new bot instance
         this.isDuplicateLogin = false; // Reset duplicate login flag
@@ -32128,15 +32215,23 @@ class AutoReconnectManager {
         this.reconnecting = false;
         this.connectionLock = false; // Release lock
         return newBot;
+      } else {
+        console.warn(`[RECONNECT] spawnBot returned null for ${this.username}, incrementing attempt counter`);
+        this.reconnectAttempts++;
       }
     } catch (error) {
-      console.error(`[RECONNECT] Reconnection attempt ${this.reconnectAttempts + 1} failed:`, error.message);
+      console.error(`[RECONNECT] ❌ Reconnection attempt ${this.reconnectAttempts + 1} failed: ${error.message}`);
       this.reconnectAttempts++;
       
       // Check if error is duplicate_login
-      if (error.message && error.message.includes('duplicate_login')) {
+      const errorMsg = error.message ? error.message.toLowerCase() : '';
+      if (errorMsg.includes('duplicate_login') || 
+          errorMsg.includes('multiplayer.disconnect.duplicate_login') ||
+          errorMsg.includes('you are already logged in')) {
         this.isDuplicateLogin = true;
-        console.log(`[RECONNECT] ⚠️ Duplicate login detected, will use extended backoff on next attempt`);
+        console.log(`[RECONNECT] ⚠️ DUPLICATE LOGIN ERROR detected in spawn attempt`);
+        console.log(`[RECONNECT] Full error: ${error.message}`);
+        console.log(`[RECONNECT] Will use extended backoff (60+ second delay) on next attempt`);
       }
     }
 
@@ -32147,7 +32242,7 @@ class AutoReconnectManager {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       const nextDelay = this.getBackoffDelay(this.reconnectAttempts);
       const nextDelaySeconds = (nextDelay / 1000).toFixed(1);
-      console.log(`[RECONNECT] Next reconnection attempt in ${nextDelaySeconds}s...`);
+      console.log(`[RECONNECT] ⏳ Next reconnection attempt in ${nextDelaySeconds}s (attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})...`);
     } else {
       // Clean up reconnect manager when giving up
       console.log(`[RECONNECT] Cleaning up reconnect manager for ${this.username}`);
