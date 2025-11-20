@@ -24778,81 +24778,40 @@ try {
       const topic = topicMatch[1].trim().toLowerCase();
       const info = this.getKnowledgeInfo(topic);
 
-       if (info) {
-         respond(true, `📚 ${topic.toUpperCase()}:`);
-         for (const line of info) {
-           respond(true, `  ${line}`);
-         }
-       } else {
-         respond(false, `❌ No information found for: ${topic}`);
-       }
-       return;
-       }
+      if (info) {
+        respond(true, `📚 ${topic.toUpperCase()}:`);
+        for (const line of info) {
+          respond(true, `  ${line}`);
+        }
+      } else {
+        respond(false, `❌ No information found for: ${topic}`);
+      }
+      return;
+    }
 
-      // Strategy and optimization queries
-      if (lower.includes('how to') || lower.includes('best way to') || lower.includes('strategy for') || lower.includes('optimal')) {
-       const strategyMatch = message.match(/(?:how to|best way to|strategy for|optimal)\s+(.+)$/i);
-       if (!strategyMatch) {
-         respond(false, "Usage: how to <activity> (e.g., 'how to mine diamonds')");
-         return;
-       }
-
-       const activity = strategyMatch[1].trim().toLowerCase();
-       const strategy = this.getStrategyInfo(activity);
-
-       if (strategy) {
-         respond(true, `🧠 Strategy for ${activity}:`);
-         for (const line of strategy) {
-           respond(true, `  💡 ${line}`);
-         }
-       } else {
-         respond(false, `❌ No strategy found for: ${activity}`);
-       }
-       return;
-       }
-
-      // Execute the command executor
-      try {
-        await commandExecutor();
-      } catch (error) {
-        console.error(`[CMD_DEBUG][COMMAND] Error in commandExecutor: ${error.message}`);
-        respond(false, `Command execution failed: ${error.message}`);
-        setOutcome('execution_error');
+    // Strategy and optimization queries
+    if (lower.includes('how to') || lower.includes('best way to') || lower.includes('strategy for') || lower.includes('optimal')) {
+      const strategyMatch = message.match(/(?:how to|best way to|strategy for|optimal)\s+(.+)$/i);
+      if (!strategyMatch) {
+        respond(false, "Usage: how to <activity> (e.g., 'how to mine diamonds')");
+        return;
       }
 
-      // Helper methods are defined outside this function
-    };
+      const activity = strategyMatch[1].trim().toLowerCase();
+      const strategy = this.getStrategyInfo(activity);
 
-    return commandExecutor()
-      .catch(err => {
-        error = err;
-        outcome = outcome && !outcome.startsWith('error') ? `error:${outcome}` : (outcome || 'error');
-        console.error(`[CMD_DEBUG][COMMAND] (${source}) Error processing command for ${username}: ${err.stack || err.message}`);
-        if (sendReply && source !== 'chat') {
-          sendReply({ success: false, message: err.message || 'Command failed' });
+      if (strategy) {
+        respond(true, `🧠 Strategy for ${activity}:`);
+        for (const line of strategy) {
+          respond(true, `  💡 ${line}`);
         }
-        throw err;
-      })
-      .finally(() => {
-        this._activeCommandContext = null;
-        console.log(`[CMD_DEBUG][COMMAND] (${source}) Completed for ${username}: outcome=${outcome}${error ? ' (error)' : ''}`);
-      });
+      } else {
+        respond(false, `❌ No strategy found for: ${activity}`);
+      }
+      return;
+    }
   }
-  }
-      .catch(err => {
-        error = err;
-        outcome = outcome && !outcome.startsWith('error') ? `error:${outcome}` : (outcome || 'error');
-        console.error(`[CMD_DEBUG][COMMAND] (${source}) Error processing command for ${username}: ${err.stack || err.message}`);
-        if (sendReply && source !== 'chat') {
-          sendReply({ success: false, message: err.message || 'Command failed' });
-        }
-        throw err;
-      })
-      .finally(() => {
-        this._activeCommandContext = null;
-        console.log(`[CMD_DEBUG][COMMAND] (${source}) Completed for ${username}: outcome=${outcome}${error ? ' (error)' : ''}`);
-      });
-  }
+}
 
 // === DIALOGUE REINFORCEMENT LEARNING ===
 class DialogueRL {
