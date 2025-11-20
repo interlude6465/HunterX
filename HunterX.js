@@ -10617,6 +10617,16 @@ class GearUpSystem {
     while (mined < quantity && attempts < maxAttempts) {
       attempts++;
       
+      // COMBAT CHECK: Pause mining if bot is in combat
+      if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+        console.log(`[GEAR-UP] ⚔️ Combat detected, pausing mining...`);
+        // Wait for combat to end before continuing
+        while (this.bot.combatAI && this.bot.combatAI.inCombat) {
+          await sleep(500);
+        }
+        console.log(`[GEAR-UP] ✓ Combat ended, resuming mining...`);
+      }
+      
       // INVENTORY MANAGEMENT: Check space every 5 attempts
       if (attempts > 0 && attempts % 5 === 0) {
         await this.manageInventorySpace(5);
@@ -10638,8 +10648,20 @@ class GearUpSystem {
       console.log(`[GEAR-UP] Found ${oreName} at ${closestOre.toString()}`);
       
       try {
+        // COMBAT CHECK: Don't mine if in combat
+        if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+          console.log(`[GEAR-UP] ⚔️ Skipping mining - bot is in combat`);
+          continue;
+        }
+        
         const block = this.bot.blockAt(closestOre);
         await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(closestOre.x, closestOre.y, closestOre.z), 3));
+        
+        // COMBAT CHECK: Don't equip pickaxe if in combat
+        if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+          console.log(`[GEAR-UP] ⚔️ Combat started - aborting mining operation`);
+          continue;
+        }
         
         const pickaxe = this.bot.inventory.items().find(i => 
           i.name.includes('pickaxe') && !i.name.includes('wood')
@@ -10647,6 +10669,12 @@ class GearUpSystem {
         
         if (pickaxe) {
           await this.bot.equip(pickaxe, 'hand');
+        }
+        
+        // COMBAT CHECK: Final check before digging
+        if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+          console.log(`[GEAR-UP] ⚔️ Combat started - aborting dig operation`);
+          continue;
         }
         
         await this.bot.dig(block);
@@ -11166,6 +11194,16 @@ class XPFarmer {
     const maxMining = levels * 5;
     
     while (this.bot.experience.level < this.bot.experience.level + levels && minedCount < maxMining) {
+      // COMBAT CHECK: Pause mining if bot is in combat
+      if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+        console.log(`[XP] ⚔️ Combat detected, pausing XP mining...`);
+        // Wait for combat to end before continuing
+        while (this.bot.combatAI && this.bot.combatAI.inCombat) {
+          await sleep(500);
+        }
+        console.log(`[XP] ✓ Combat ended, resuming XP mining...`);
+      }
+      
       let foundOre = false;
       
       for (const oreName of xpOres) {
@@ -11180,6 +11218,12 @@ class XPFarmer {
         
         if (ores.length > 0) {
           try {
+            // COMBAT CHECK: Skip if in combat
+            if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+              console.log(`[XP] ⚔️ Skipping mining - bot is in combat`);
+              break;
+            }
+            
             const orePos = ores[0];
             await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(orePos.x, orePos.y, orePos.z), 3));
             const block = this.bot.blockAt(orePos);
@@ -19275,6 +19319,16 @@ class BaritoneMiner {
     while (collected < quantity && attempts < maxAttempts) {
       attempts++;
       
+      // COMBAT CHECK: Pause mining if bot is in combat
+      if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+        console.log(`[MINE] ⚔️ Combat detected, pausing mining...`);
+        // Wait for combat to end before continuing
+        while (this.bot.combatAI && this.bot.combatAI.inCombat) {
+          await this.sleep(500);
+        }
+        console.log(`[MINE] ✓ Combat ended, resuming mining...`);
+      }
+      
       // INVENTORY MANAGEMENT: Check space every 3 attempts
       if (attempts > 0 && attempts % 3 === 0) {
         await this.checkAndClearInventory();
@@ -19435,6 +19489,12 @@ class BaritoneMiner {
   async mineBlock(blockPos) {
     console.log(`[MINE] Mining block at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
     
+    // COMBAT CHECK: Don't mine if in combat
+    if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+      console.log(`[MINE] ⚔️ Skipping mining - bot is in combat`);
+      return false;
+    }
+    
     const block = this.bot.blockAt(new Vec3(blockPos.x, blockPos.y, blockPos.z));
     
     if (!block) {
@@ -19453,11 +19513,23 @@ class BaritoneMiner {
         this.bot.loopDetector.recordAction('mining', true, { block: block.name, position: blockPos });
       }
       
+      // COMBAT CHECK: Don't equip pickaxe if in combat
+      if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+        console.log(`[MINE] ⚔️ Combat started - aborting mining operation`);
+        return false;
+      }
+      
       // Equip best tool for the block
       await this.equipBestTool(block);
       
       // Look at the block
       await this.bot.lookAt(block.position.offset(0.5, 0.5, 0.5));
+      
+      // COMBAT CHECK: Final check before digging
+      if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+        console.log(`[MINE] ⚔️ Combat started - aborting dig operation`);
+        return false;
+      }
       
       // Mine it
       await this.bot.dig(block, true); // true = force dig even if no tool
@@ -19726,6 +19798,16 @@ class AutoMiner {
     if (currentY > targetY) {
       // Need to go down - dig staircase
       while (this.bot.entity.position.y > targetY) {
+        // COMBAT CHECK: Pause mining if bot is in combat
+        if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+          console.log(`[HUNTER] ⚔️ Combat detected, pausing descent...`);
+          // Wait for combat to end before continuing
+          while (this.bot.combatAI && this.bot.combatAI.inCombat) {
+            await this.sleep(500);
+          }
+          console.log(`[HUNTER] ✓ Combat ended, resuming descent...`);
+        }
+        
         const below = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
         if (below && below.name !== 'air') {
           await this.bot.dig(below);
@@ -19761,6 +19843,16 @@ class AutoMiner {
     const maxLength = 1000; // Maximum tunnel length
     
     while (collected < quantity && tunnelLength < maxLength) {
+      // COMBAT CHECK: Pause mining if bot is in combat
+      if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+        console.log(`[HUNTER] ⚔️ Combat detected, pausing mining...`);
+        // Wait for combat to end before continuing
+        while (this.bot.combatAI && this.bot.combatAI.inCombat) {
+          await this.sleep(500);
+        }
+        console.log(`[HUNTER] ✓ Combat ended, resuming mining...`);
+      }
+      
       // Mine 2x1 tunnel
       await this.mineTunnel(50); // 50 blocks forward
       tunnelLength += 50;
@@ -19796,6 +19888,16 @@ class AutoMiner {
     const direction = this.bot.entity.yaw; // Current facing direction
     
     for (let i = 0; i < length; i++) {
+      // COMBAT CHECK: Pause mining if bot is in combat
+      if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+        console.log(`[HUNTER] ⚔️ Combat detected, pausing tunnel mining...`);
+        // Wait for combat to end before continuing
+        while (this.bot.combatAI && this.bot.combatAI.inCombat) {
+          await this.sleep(500);
+        }
+        console.log(`[HUNTER] ✓ Combat ended, resuming tunnel mining...`);
+      }
+      
       // Mine block in front
       const front = this.bot.blockAt(this.bot.entity.position.offset(0, 0, 1));
       if (front && front.name !== 'air' && front.name !== 'water' && front.name !== 'lava') {
@@ -19827,6 +19929,16 @@ class AutoMiner {
     const newDirection = this.bot.entity.yaw + (Math.PI / 2);
     
     for (let i = 0; i < length; i++) {
+      // COMBAT CHECK: Pause mining if bot is in combat
+      if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+        console.log(`[HUNTER] ⚔️ Combat detected, pausing branch mining...`);
+        // Wait for combat to end before continuing
+        while (this.bot.combatAI && this.bot.combatAI.inCombat) {
+          await this.sleep(500);
+        }
+        console.log(`[HUNTER] ✓ Combat ended, resuming branch mining...`);
+      }
+      
       const front = this.bot.blockAt(this.bot.entity.position.offset(0, 0, 1));
       if (front && front.name !== 'air' && front.name !== 'water' && front.name !== 'lava') {
         await this.bot.dig(front);
