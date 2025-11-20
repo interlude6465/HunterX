@@ -2549,6 +2549,121 @@ function queueMessageUntilOpen(wsClient, message, timeout) {
   });
 }
 
+// === NETWORK SAFETY HELPERS ===
+class PacketRateLimiter {
+  constructor(limit = 5, windowMs = 1000) {
+    this.limit = Math.max(1, limit);
+    this.windowMs = Math.max(1, windowMs);
+    this.timestamps = [];
+  }
+
+  tryConsume() {
+    const now = Date.now();
+    this.timestamps = this.timestamps.filter(ts => now - ts < this.windowMs);
+    if (this.timestamps.length >= this.limit) {
+      return false;
+    }
+    this.timestamps.push(now);
+    return true;
+  }
+
+  reset() {
+    this.timestamps = [];
+  }
+}
+
+function attachBotNetworkGuards(bot) {
+  if (!bot || !bot._client) {
+    return;
+  }
+
+  const client = bot._client;
+
+  if (!client.__connectionGuarded && typeof client.write === 'function') {
+    const originalWrite = client.write;
+    client.write = function patchedWrite(packetName, params) {
+      const socket = client.socket;
+      const socketHealthy = socket && !socket.destroyed && socket.writable !== false;
+      const connected = client.state === 'connected';
+
+      if (!socketHealthy || !connected) {
+        if (!client.__lastPacketWarning || Date.now() - client.__lastPacketWarning > 2000) {
+          console.warn(`[NET][${bot.username || 'bot'}] Dropping packet ${packetName} - socket not ready (state=${client.state || 'unknown'})`);
+          client.__lastPacketWarning = Date.now();
+        }
+        return;
+      }
+
+      return originalWrite.call(client, packetName, params);
+    };
+    client.__connectionGuarded = true;
+  }
+
+  if (!bot.__chatGuarded && typeof bot.chat === 'function') {
+    const rateConfig = config.network?.chatRateLimit || {};
+    const limiter = new PacketRateLimiter(
+      rateConfig.maxMessages ?? 5,
+      rateConfig.windowMs ?? 3000
+    );
+
+    const originalChat = bot.chat;
+    bot.chat = function guardedChat(message, ...rest) {
+      const socket = client?.socket;
+      if (!client || !socket || socket.destroyed || socket.writable === false || client.state !== 'connected') {
+        console.log(`[CHAT][${bot.username || 'bot'}] Skipping chat - connection not ready`);
+        return;
+      }
+
+      if (!limiter.tryConsume()) {
+        if (!bot.__lastChatDrop || Date.now() - bot.__lastChatDrop > 2000) {
+          console.warn(`[CHAT][${bot.username || 'bot'}] Chat rate limit exceeded, dropping outgoing message`);
+          bot.__lastChatDrop = Date.now();
+        }
+        return;
+      }
+
+      return originalChat.call(bot, message, ...rest);
+    };
+    bot.__chatGuarded = true;
+  }
+}
+
+function sendSwarmPacket(wsClient, payload, description = 'swarm message', options = {}) {
+  if (!wsClient) {
+    console.log(`[SWARM] Skipping ${description} - no WebSocket client`);
+    return Promise.resolve({ success: false, reason: 'missing_client' });
+  }
+
+  const sendOptions = {
+    queue: options.queue !== undefined ? options.queue : true,
+    timeout: options.timeout || 3000
+  };
+
+  try {
+    const result = safeSendWebSocket(wsClient, payload, sendOptions);
+
+    if (result && typeof result.then === 'function') {
+      return result.then(res => {
+        if (!res.success) {
+          console.log(`[SWARM] Failed to send ${description}: ${res.reason}`);
+        }
+        return res;
+      }).catch(err => {
+        console.error(`[SWARM] Error sending ${description}: ${err.message}`);
+        return { success: false, reason: err.message };
+      });
+    }
+
+    if (!result.success) {
+      console.log(`[SWARM] Failed to send ${description}: ${result.reason}`);
+    }
+    return Promise.resolve(result);
+  } catch (error) {
+    console.error(`[SWARM] Error sending ${description}: ${error.message}`);
+    return Promise.resolve({ success: false, reason: error.message });
+  }
+}
+
 // === SAFE PATHFINDING HELPER (Issue #10) ===
 async function safeGoTo(bot, position, timeout = 60000) {
   if (!bot.pathfinder) {
@@ -3509,7 +3624,15 @@ config = {
     queueLength: null,
     queueETA: null,
     connectionStatus: 'direct',
-    reconnectAttempts: 0
+    reconnectAttempts: 0,
+    reconnectBaseDelayMs: 5000,
+    reconnectMaxDelayMs: 120000,
+    connectionStabilityMs: 60000,
+    reconnectExponentCap: 7,
+    chatRateLimit: {
+      maxMessages: 5,
+      windowMs: 3000
+    }
   },
   
   // Movement framework
@@ -31436,9 +31559,10 @@ class BotSpawner {
        this.activeBots.push(entry);
      }
      this.refreshSwarmBotList();
+     attachBotNetworkGuards(bot);
 
      // Create or reuse an AutoReconnectManager for this bot
-     let reconnectManager = null;
+
      if (serverIP && options) {
        // Check if we already have a manager for this username (e.g., from a previous reconnection)
        if (this.reconnectManagers.has(username)) {
@@ -31938,7 +32062,13 @@ class AutoReconnectManager {
     this.username = options.username;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 10;
-    this.baseBackoffDelay = 5000; // 5 seconds
+
+    const networkCfg = config.network || {};
+    this.baseBackoffDelay = networkCfg.reconnectBaseDelayMs || 5000;
+    this.maxBackoffDelay = networkCfg.reconnectMaxDelayMs || 120000;
+    this.backoffExponentCap = typeof networkCfg.reconnectExponentCap === 'number' ? networkCfg.reconnectExponentCap : 7;
+    this.stabilityResetMs = networkCfg.connectionStabilityMs || 60000;
+
     this.reconnecting = false;
     this.lastPosition = null;
     this.lastHealth = 20;
@@ -31948,19 +32078,63 @@ class AutoReconnectManager {
     this.currentBot = null; // Track current bot instance
     this.isDuplicateLogin = false; // Track if last disconnect was duplicate_login
     this.disconnectTimestamp = null; // Track when disconnect occurred
+    this.consecutiveDisconnects = 0;
+    this.connectionStableTimer = null;
+    this.lastConnectionStart = null;
+    this.lastDisconnectReason = null;
+    this.lastErrorWasECONNABORTED = false;
   }
 
-  // Calculate exponential backoff delay: 5s, 10s, 20s, 40s, 80s, 160s, etc
-  // For duplicate_login, use minimum 30 seconds to allow server to clear session
+  // Calculate exponential backoff delay with duplicate login and error awareness
   getBackoffDelay(attempt) {
-    const baseDelay = this.baseBackoffDelay * Math.pow(2, Math.min(attempt, 7)); // Cap at 2^7 = 128x (10+ minutes)
-    
-    // If last disconnect was duplicate_login, enforce minimum 30 second delay
-    if (this.isDuplicateLogin) {
-      return Math.max(baseDelay, 30000); // Minimum 30 seconds for duplicate_login
+    const streakExponent = this.consecutiveDisconnects > 0 ? this.consecutiveDisconnects - 1 : 0;
+    const effectiveExponent = Math.min(Math.max(attempt, streakExponent), this.backoffExponentCap);
+
+    let delay = this.baseBackoffDelay * Math.pow(2, effectiveExponent);
+    delay = Math.min(delay, this.maxBackoffDelay);
+
+    if (this.lastErrorWasECONNABORTED) {
+      delay = Math.max(delay, this.baseBackoffDelay * 2);
     }
-    
-    return baseDelay;
+
+    if (this.isDuplicateLogin) {
+      delay = Math.max(delay, 30000);
+    }
+
+    return delay;
+  }
+
+  clearStabilityTimer() {
+    if (this.connectionStableTimer) {
+      clearTimeout(this.connectionStableTimer);
+      this.connectionStableTimer = null;
+    }
+  }
+
+  notifyConnectionEstablished() {
+    this.lastConnectionStart = Date.now();
+    this.lastErrorWasECONNABORTED = false;
+    this.clearStabilityTimer();
+    this.connectionStableTimer = setTimeout(() => {
+      this.consecutiveDisconnects = 0;
+      this.connectionStableTimer = null;
+    }, this.stabilityResetMs);
+  }
+
+  recordDisconnect(reason) {
+    const now = Date.now();
+    const uptime = this.lastConnectionStart ? now - this.lastConnectionStart : 0;
+
+    if (uptime < this.stabilityResetMs) {
+      this.consecutiveDisconnects = Math.min(this.consecutiveDisconnects + 1, this.maxReconnectAttempts);
+    } else {
+      this.consecutiveDisconnects = Math.max(1, this.consecutiveDisconnects || 1);
+    }
+
+    this.lastDisconnectReason = reason || null;
+    this.lastErrorWasECONNABORTED = Boolean(reason && reason.includes('ECONNABORTED'));
+    this.lastConnectionStart = null;
+    this.clearStabilityTimer();
   }
 
   // Ensure old bot is fully cleaned up before reconnecting
@@ -38097,14 +38271,62 @@ function ensureConfigStructure(targetConfig) {
   if (!cfg.privateMsg.rateLimit) {
     cfg.privateMsg.rateLimit = { windowMs: 60000, maxMessages: 10 };
   }
-  
+
+  if (!cfg.network) {
+    cfg.network = {
+      proxyEnabled: false,
+      proxyHost: null,
+      proxyPort: null,
+      queuePosition: null,
+      queueLength: null,
+      queueETA: null,
+      connectionStatus: 'direct',
+      reconnectAttempts: 0,
+      reconnectBaseDelayMs: 5000,
+      reconnectMaxDelayMs: 120000,
+      connectionStabilityMs: 60000,
+      reconnectExponentCap: 7,
+      chatRateLimit: { maxMessages: 5, windowMs: 3000 }
+    };
+  } else {
+    if (typeof cfg.network.reconnectBaseDelayMs !== 'number' || cfg.network.reconnectBaseDelayMs <= 0) {
+      cfg.network.reconnectBaseDelayMs = 5000;
+    }
+    if (typeof cfg.network.reconnectMaxDelayMs !== 'number' || cfg.network.reconnectMaxDelayMs < cfg.network.reconnectBaseDelayMs) {
+      cfg.network.reconnectMaxDelayMs = 120000;
+    }
+    if (typeof cfg.network.connectionStabilityMs !== 'number' || cfg.network.connectionStabilityMs <= 0) {
+      cfg.network.connectionStabilityMs = 60000;
+    }
+    if (typeof cfg.network.reconnectExponentCap !== 'number' || cfg.network.reconnectExponentCap < 1) {
+      cfg.network.reconnectExponentCap = 7;
+    }
+    if (!cfg.network.chatRateLimit || typeof cfg.network.chatRateLimit !== 'object') {
+      cfg.network.chatRateLimit = { maxMessages: 5, windowMs: 3000 };
+    } else {
+      if (typeof cfg.network.chatRateLimit.maxMessages !== 'number' || cfg.network.chatRateLimit.maxMessages <= 0) {
+        cfg.network.chatRateLimit.maxMessages = 5;
+      }
+      if (typeof cfg.network.chatRateLimit.windowMs !== 'number' || cfg.network.chatRateLimit.windowMs <= 0) {
+        cfg.network.chatRateLimit.windowMs = 3000;
+      }
+    }
+  }
+
   if (!cfg.neural) {
     cfg.neural = {
-      combat: null, placement: null, dupe: null, conversation: null,
-      dialogue: null, movement: null, available: false, type: 'fallback', manager: null
+      combat: null,
+      placement: null,
+      dupe: null,
+      conversation: null,
+      dialogue: null,
+      movement: null,
+      available: false,
+      type: 'fallback',
+      manager: null
     };
   }
-  
+
   // Initialize neural manager if not already initialized
   if (!cfg.neural.manager || typeof cfg.neural.manager !== 'object') {
     try {
@@ -38341,8 +38563,23 @@ function saveConfiguration() {
       stayMode: cfg.stayMode || { enabled: false },
       conversationalAI: cfg.conversationalAI || { enabled: false, useLLM: false, provider: {}, apiKey: '', requestTimeout: 30000, cacheTTL: 3600000, timeZoneAliases: {}, rateLimit: {}, autoReplyPrefix: '[AUTO]' },
       privateMsg: cfg.privateMsg || { enabled: false, defaultTemplate: '', trustLevelRequirement: 'trusted', rateLimit: {}, forwardToConsole: false },
+      network: cfg.network || {
+        proxyEnabled: false,
+        proxyHost: null,
+        proxyPort: null,
+        queuePosition: null,
+        queueLength: null,
+        queueETA: null,
+        connectionStatus: 'direct',
+        reconnectAttempts: 0,
+        reconnectBaseDelayMs: 5000,
+        reconnectMaxDelayMs: 120000,
+        connectionStabilityMs: 60000,
+        reconnectExponentCap: 7,
+        chatRateLimit: { maxMessages: 5, windowMs: 3000 }
+      },
       neural: cfg.neural || { combat: null, placement: null, dupe: null, conversation: null, dialogue: null, movement: null, available: false, type: 'fallback', manager: null },
-      combat: cfg.combat || {},
+
       analytics: cfg.analytics || { combat: {}, dupe: {}, pvp: {} },
       tasks: cfg.tasks || { current: null, queue: [], history: [], pausedForSafety: false, suspendedSnapshot: null },
       personality: cfg.personality || { friendly: true, helpful: true, curious: true, cautious: true, name: 'Hunter' },
