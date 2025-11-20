@@ -10611,6 +10611,14 @@ class GearUpSystem {
     const maxAttempts = 100;
     let attempts = 0;
     
+    // MINING RETRY TRACKING: Track failed attempts per ore block
+    const failedAttempts = new Map(); // position string -> attempt count
+    const maxRetriesPerBlock = 7; // Give up after 7 failed attempts on same block
+    const unreachableBlocks = new Set(); // Blacklist of unreachable blocks
+    
+    // Helper function to get position key for tracking
+    const getPositionKey = (pos) => `${pos.x},${pos.y},${pos.z}`;
+    
     // INVENTORY MANAGEMENT: Check and clear space before mining
     await this.manageInventorySpace(5);
     
@@ -10625,21 +10633,54 @@ class GearUpSystem {
       const oreBlocks = this.bot.findBlocks({
         matching: oreBlock.id,
         maxDistance: 64,
-        count: 10
+        count: 20 // Increase search count to find more alternatives
       });
       
-      if (oreBlocks.length === 0) {
-        console.log(`[GEAR-UP] No ${oreName} found nearby, moving to explore...`);
-        await this.exploreForOre(targetY);
+      // FILTER OUT UNREACHABLE/OVER-RETRIED BLOCKS
+      const availableOreBlocks = oreBlocks.filter(blockPos => {
+        const posKey = getPositionKey(blockPos);
+        const attempts = failedAttempts.get(posKey) || 0;
+        return !unreachableBlocks.has(posKey) && attempts < maxRetriesPerBlock;
+      });
+      
+      if (availableOreBlocks.length === 0) {
+        if (oreBlocks.length === 0) {
+          console.log(`[GEAR-UP] No ${oreName} found nearby, moving to explore...`);
+          await this.exploreForOre(targetY);
+        } else {
+          console.log(`[GEAR-UP] All nearby ${oreName} blocks are unreachable or over-retried, exploring new area...`);
+          await this.exploreForOre(targetY);
+          // Clear some history when exploring new area
+          if (failedAttempts.size > 15) {
+            failedAttempts.clear();
+            console.log(`[GEAR-UP] Cleared retry history for fresh start in new area`);
+          }
+        }
         continue;
       }
       
-      const closestOre = oreBlocks[0];
-      console.log(`[GEAR-UP] Found ${oreName} at ${closestOre.toString()}`);
+      // SORT BY FAILURE COUNT: Prefer blocks with fewer failed attempts
+      availableOreBlocks.sort((a, b) => {
+        const attemptsA = failedAttempts.get(getPositionKey(a)) || 0;
+        const attemptsB = failedAttempts.get(getPositionKey(b)) || 0;
+        return attemptsA - attemptsB;
+      });
+      
+      const targetOre = availableOreBlocks[0];
+      const posKey = getPositionKey(targetOre);
+      const currentAttempts = failedAttempts.get(posKey) || 0;
+      
+      console.log(`[GEAR-UP] Targeting ${oreName} at ${targetOre.toString()} (attempt ${currentAttempts + 1}/${maxRetriesPerBlock})`);
       
       try {
-        const block = this.bot.blockAt(closestOre);
-        await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(closestOre.x, closestOre.y, closestOre.z), 3));
+        const block = this.bot.blockAt(targetOre);
+        if (!block || block.type !== oreBlock.id) {
+          console.log(`[GEAR-UP] Block changed or no longer exists at ${targetOre.toString()}, skipping...`);
+          failedAttempts.set(posKey, maxRetriesPerBlock); // Mark as done
+          continue;
+        }
+        
+        await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(targetOre.x, targetOre.y, targetOre.z), 3));
         
         const pickaxe = this.bot.inventory.items().find(i => 
           i.name.includes('pickaxe') && !i.name.includes('wood')
@@ -10651,13 +10692,37 @@ class GearUpSystem {
         
         await this.bot.dig(block);
         mined++;
-        console.log(`[GEAR-UP] Mined ${oreName} (${mined}/${quantity})`);
+        console.log(`[GEAR-UP] ✅ Mined ${oreName} (${mined}/${quantity})`);
+        
+        // SUCCESS: Clear retry count for this position
+        failedAttempts.delete(posKey);
         
         // ITEM COLLECTION: Collect dropped items after mining
-        await this.collectNearbyItems(closestOre, 5, 3000);
+        await this.collectNearbyItems(targetOre, 5, 3000);
+        
       } catch (err) {
-        console.log(`[GEAR-UP] Failed to mine ${oreName}: ${err.message}`);
+        const newAttempts = currentAttempts + 1;
+        failedAttempts.set(posKey, newAttempts);
+        
+        console.log(`[GEAR-UP] ❌ Failed to mine ${oreName} at ${targetOre.toString()}: ${err.message} (${newAttempts}/${maxRetriesPerBlock})`);
+        
+        // MARK AS UNREACHABLE IF TOO MANY FAILURES
+        if (newAttempts >= maxRetriesPerBlock) {
+          unreachableBlocks.add(posKey);
+          console.log(`[GEAR-UP] 🚫 Marked ${oreName} at ${targetOre.toString()} as unreachable after ${maxRetriesPerBlock} failed attempts`);
+        }
+        
+        // ADD EXTRA DELAY FOR FAILED BLOCKS TO AVOID SPAM
+        if (newAttempts > 3) {
+          await this.sleep(500 * newAttempts); // Increasing delay for repeated failures
+        }
       }
+    }
+    
+    // SUMMARY: Report mining session results
+    console.log(`[GEAR-UP] Mining session complete: ${mined}/${quantity} ${oreName} mined`);
+    if (unreachableBlocks.size > 0) {
+      console.log(`[GEAR-UP] Skipped ${unreachableBlocks.size} unreachable ${oreName} blocks`);
     }
   }
   
@@ -11165,6 +11230,14 @@ class XPFarmer {
     let minedCount = 0;
     const maxMining = levels * 5;
     
+    // MINING RETRY TRACKING: Track failed attempts per ore block
+    const failedAttempts = new Map(); // position string -> attempt count
+    const maxRetriesPerBlock = 5; // Aggressive skipping for XP farming
+    const unreachableBlocks = new Set(); // Blacklist of unreachable blocks
+    
+    // Helper function to get position key for tracking
+    const getPositionKey = (pos) => `${pos.x},${pos.y},${pos.z}`;
+    
     while (this.bot.experience.level < this.bot.experience.level + levels && minedCount < maxMining) {
       let foundOre = false;
       
@@ -11175,25 +11248,72 @@ class XPFarmer {
         const ores = this.bot.findBlocks({
           matching: oreBlock.id,
           maxDistance: 32,
-          count: 3
+          count: 10 // Increase search count for more options
         });
         
-        if (ores.length > 0) {
+        // FILTER OUT UNREACHABLE/OVER-RETRIED BLOCKS
+        const availableOres = ores.filter(blockPos => {
+          const posKey = getPositionKey(blockPos);
+          const attempts = failedAttempts.get(posKey) || 0;
+          return !unreachableBlocks.has(posKey) && attempts < maxRetriesPerBlock;
+        });
+        
+        if (availableOres.length > 0) {
+          // SORT BY FAILURE COUNT: Prefer blocks with fewer failed attempts
+          availableOres.sort((a, b) => {
+            const attemptsA = failedAttempts.get(getPositionKey(a)) || 0;
+            const attemptsB = failedAttempts.get(getPositionKey(b)) || 0;
+            return attemptsA - attemptsB;
+          });
+          
+          const orePos = availableOres[0];
+          const posKey = getPositionKey(orePos);
+          const currentAttempts = failedAttempts.get(posKey) || 0;
+          
           try {
-            const orePos = ores[0];
             await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(orePos.x, orePos.y, orePos.z), 3));
             const block = this.bot.blockAt(orePos);
-            await this.bot.dig(block);
-            minedCount++;
-            foundOre = true;
-            break;
+            
+            if (block && block.type === oreBlock.id) {
+              await this.bot.dig(block);
+              minedCount++;
+              foundOre = true;
+              console.log(`[XP] ⛏️ Mined ${oreName} (attempt ${currentAttempts + 1})`);
+              
+              // SUCCESS: Clear retry count for this position
+              failedAttempts.delete(posKey);
+              break;
+            } else {
+              console.log(`[XP] Block changed or no longer exists at ${orePos.toString()}, skipping...`);
+              failedAttempts.set(posKey, maxRetriesPerBlock); // Mark as done
+            }
           } catch (err) {
-            continue;
+            const newAttempts = currentAttempts + 1;
+            failedAttempts.set(posKey, newAttempts);
+            
+            console.log(`[XP] ❌ Failed to mine ${oreName} at ${orePos.toString()}: ${err.message} (${newAttempts}/${maxRetriesPerBlock})`);
+            
+            // MARK AS UNREACHABLE IF TOO MANY FAILURES
+            if (newAttempts >= maxRetriesPerBlock) {
+              unreachableBlocks.add(posKey);
+              console.log(`[XP] 🚫 Marked ${oreName} at ${orePos.toString()} as unreachable after ${maxRetriesPerBlock} failed attempts`);
+            }
+            
+            // ADD EXTRA DELAY FOR FAILED BLOCKS TO AVOID SPAM
+            if (newAttempts > 2) {
+              await this.sleep(200 * newAttempts); // Increasing delay for repeated failures
+            }
           }
         }
       }
       
       if (!foundOre) {
+        // Clear some history when no ores found to avoid accumulating too many blocked positions
+        if (failedAttempts.size > 20) {
+          failedAttempts.clear();
+          console.log(`[XP] Cleared retry history for fresh start`);
+        }
+        
         console.log('[XP] No XP ores nearby, exploring...');
         const currentPos = this.bot.entity.position;
         const explorePos = currentPos.offset(
@@ -11211,6 +11331,9 @@ class XPFarmer {
     }
     
     console.log(`[XP] Mined ${minedCount} XP-giving ores`);
+    if (unreachableBlocks.size > 0) {
+      console.log(`[XP] Skipped ${unreachableBlocks.size} unreachable ore blocks`);
+    }
   }
   
   async huntMobsForXP(levels) {
@@ -11290,18 +11413,43 @@ class NetheriteUpgrader {
     const maxAttempts = 200;
     let attempts = 0;
     
+    // MINING RETRY TRACKING: Track failed attempts per debris block
+    const failedAttempts = new Map(); // position string -> attempt count
+    const maxRetriesPerBlock = 6; // Moderate retry limit for ancient debris (valuable)
+    const unreachableBlocks = new Set(); // Blacklist of unreachable blocks
+    
+    // Helper function to get position key for tracking
+    const getPositionKey = (pos) => `${pos.x},${pos.y},${pos.z}`;
+    
     while (mined < quantity && attempts < maxAttempts) {
       attempts++;
       
       const debris = this.bot.findBlocks({
         matching: debrisBlock.id,
         maxDistance: 32,
-        count: 5
+        count: 10 // Increase search count for more options
       });
       
-      if (debris.length > 0) {
-        for (const debrisPos of debris) {
+      // FILTER OUT UNREACHABLE/OVER-RETRIED BLOCKS
+      const availableDebris = debris.filter(blockPos => {
+        const posKey = getPositionKey(blockPos);
+        const attempts = failedAttempts.get(posKey) || 0;
+        return !unreachableBlocks.has(posKey) && attempts < maxRetriesPerBlock;
+      });
+      
+      if (availableDebris.length > 0) {
+        // SORT BY FAILURE COUNT: Prefer blocks with fewer failed attempts
+        availableDebris.sort((a, b) => {
+          const attemptsA = failedAttempts.get(getPositionKey(a)) || 0;
+          const attemptsB = failedAttempts.get(getPositionKey(b)) || 0;
+          return attemptsA - attemptsB;
+        });
+        
+        for (const debrisPos of availableDebris) {
           if (mined >= quantity) break;
+          
+          const posKey = getPositionKey(debrisPos);
+          const currentAttempts = failedAttempts.get(posKey) || 0;
           
           try {
             await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(debrisPos.x, debrisPos.y, debrisPos.z), 3));
@@ -11315,20 +11463,55 @@ class NetheriteUpgrader {
             }
             
             const block = this.bot.blockAt(debrisPos);
-            await this.bot.dig(block);
-            mined++;
-            console.log(`[UPGRADE] Mined ancient debris (${mined}/${quantity})`);
+            if (block && block.type === debrisBlock.id) {
+              await this.bot.dig(block);
+              mined++;
+              console.log(`[UPGRADE] ✅ Mined ancient debris (${mined}/${quantity}) (attempt ${currentAttempts + 1})`);
+              
+              // SUCCESS: Clear retry count for this position
+              failedAttempts.delete(posKey);
+            } else {
+              console.log(`[UPGRADE] Ancient debris block changed or no longer exists at ${debrisPos.toString()}, skipping...`);
+              failedAttempts.set(posKey, maxRetriesPerBlock); // Mark as done
+            }
           } catch (err) {
-            console.log(`[UPGRADE] Failed to mine debris: ${err.message}`);
+            const newAttempts = currentAttempts + 1;
+            failedAttempts.set(posKey, newAttempts);
+            
+            console.log(`[UPGRADE] ❌ Failed to mine debris at ${debrisPos.toString()}: ${err.message} (${newAttempts}/${maxRetriesPerBlock})`);
+            
+            // MARK AS UNREACHABLE IF TOO MANY FAILURES
+            if (newAttempts >= maxRetriesPerBlock) {
+              unreachableBlocks.add(posKey);
+              console.log(`[UPGRADE] 🚫 Marked ancient debris at ${debrisPos.toString()} as unreachable after ${maxRetriesPerBlock} failed attempts`);
+            }
+            
+            // ADD EXTRA DELAY FOR FAILED BLOCKS TO AVOID SPAM
+            if (newAttempts > 3) {
+              await this.sleep(400 * newAttempts); // Increasing delay for repeated failures
+            }
           }
         }
       } else {
-        console.log('[UPGRADE] No ancient debris nearby, mining at Y=15...');
+        if (debris.length > 0) {
+          console.log(`[UPGRADE] All nearby ancient debris blocks are unreachable or over-retried, strip mining instead...`);
+        } else {
+          console.log('[UPGRADE] No ancient debris nearby, mining at Y=15...');
+        }
         await this.stripMineForDebris();
+        
+        // Clear some history when strip mining to avoid accumulating too many blocked positions
+        if (failedAttempts.size > 10) {
+          failedAttempts.clear();
+          console.log(`[UPGRADE] Cleared retry history for fresh start`);
+        }
       }
     }
     
     console.log(`[UPGRADE] ✓ Mined ${mined} ancient debris`);
+    if (unreachableBlocks.size > 0) {
+      console.log(`[UPGRADE] Skipped ${unreachableBlocks.size} unreachable ancient debris blocks`);
+    }
   }
   
   async stripMineForDebris() {
@@ -19269,6 +19452,14 @@ class BaritoneMiner {
     const maxAttempts = 10;
     let attempts = 0;
     
+    // MINING RETRY TRACKING: Track failed attempts per block position
+    const failedAttempts = new Map(); // position string -> attempt count
+    const maxRetriesPerBlock = 4; // Aggressive skipping for baritone mining
+    const unreachableBlocks = new Set(); // Blacklist of unreachable blocks
+    
+    // Helper function to get position key for tracking
+    const getPositionKey = (pos) => `${pos.x},${pos.y},${pos.z}`;
+    
     // INVENTORY MANAGEMENT: Check and clear space before mining
     await this.checkAndClearInventory();
     
@@ -19280,27 +19471,44 @@ class BaritoneMiner {
         await this.checkAndClearInventory();
       }
       
-      // Step 1: Search loaded chunks first (fast)
-      let targetBlock = this.findInLoadedChunks(blockName);
+      // Step 1: Search loaded chunks first (fast) - with retry awareness
+      let targetBlock = this.findInLoadedChunks(blockName, failedAttempts, unreachableBlocks, maxRetriesPerBlock);
       
       if (!targetBlock) {
         console.log(`[MINE] Not in loaded chunks, exploring area`);
         
-        // Step 2: Explore nearby area
-        targetBlock = await this.exploreForBlock(blockName);
+        // Step 2: Explore nearby area - with retry awareness
+        targetBlock = await this.exploreForBlock(blockName, failedAttempts, unreachableBlocks, maxRetriesPerBlock);
       }
       
       if (!targetBlock) {
-        console.log(`[MINE] ${blockName} not found after exploration`);
+        if (failedAttempts.size > 0 || unreachableBlocks.size > 0) {
+          console.log(`[MINE] ${blockName} not found after exploration, skipping ${failedAttempts.size} retried and ${unreachableBlocks.size} unreachable blocks`);
+        } else {
+          console.log(`[MINE] ${blockName} not found after exploration`);
+        }
         break;
       }
       
+      const posKey = getPositionKey(targetBlock);
+      const currentAttempts = failedAttempts.get(posKey) || 0;
+      
       // Step 3: Pathfind to block
-      console.log(`[MINE] Found at ${targetBlock.x} ${targetBlock.y} ${targetBlock.z}`);
+      console.log(`[MINE] Found at ${targetBlock.x} ${targetBlock.y} ${targetBlock.z} (attempt ${currentAttempts + 1}/${maxRetriesPerBlock})`);
       const reached = await this.pathfindToBlock(targetBlock);
       
       if (!reached) {
-        console.log(`[MINE] Failed to reach block`);
+        const newAttempts = currentAttempts + 1;
+        failedAttempts.set(posKey, newAttempts);
+        
+        console.log(`[MINE] Failed to reach block (${newAttempts}/${maxRetriesPerBlock})`);
+        
+        // MARK AS UNREACHABLE IF TOO MANY FAILURES
+        if (newAttempts >= maxRetriesPerBlock) {
+          unreachableBlocks.add(posKey);
+          console.log(`[MINE] 🚫 Marked ${blockName} at ${targetBlock.toString()} as unreachable after ${maxRetriesPerBlock} failed attempts`);
+        }
+        
         continue;
       }
       
@@ -19310,6 +19518,21 @@ class BaritoneMiner {
       if (mined) {
         collected++;
         console.log(`[MINE] ✓ Progress: ${collected}/${quantity}`);
+        
+        // SUCCESS: Clear retry count for this position
+        failedAttempts.delete(posKey);
+      } else {
+        // Mining failed - track the attempt
+        const newAttempts = currentAttempts + 1;
+        failedAttempts.set(posKey, newAttempts);
+        
+        console.log(`[MINE] Mining failed (${newAttempts}/${maxRetriesPerBlock})`);
+        
+        // MARK AS UNREACHABLE IF TOO MANY FAILURES
+        if (newAttempts >= maxRetriesPerBlock) {
+          unreachableBlocks.add(posKey);
+          console.log(`[MINE] 🚫 Marked ${blockName} at ${targetBlock.toString()} as unreachable after ${maxRetriesPerBlock} failed attempts`);
+        }
       }
       
       // Short delay before next block
@@ -19321,11 +19544,14 @@ class BaritoneMiner {
       return true;
     } else {
       console.log(`[MINE] ⚠️ Mining incomplete: ${collected}/${quantity} ${resourceName}`);
+      if (unreachableBlocks.size > 0) {
+        console.log(`[MINE] Skipped ${unreachableBlocks.size} unreachable blocks`);
+      }
       return collected > 0; // Return true if we got at least something
     }
   }
   
-  findInLoadedChunks(blockName) {
+  findInLoadedChunks(blockName, failedAttempts = new Map(), unreachableBlocks = new Set(), maxRetries = 4) {
     console.log(`[MINE] Scanning loaded chunks for ${blockName}...`);
     
     const blockIds = this.getBlockIds(blockName);
@@ -19337,29 +19563,53 @@ class BaritoneMiner {
     const pos = this.bot.entity.position;
     const radius = 100; // 100 block radius
     
-    // Use bot.findBlocks for efficient search
+    // Helper function to get position key for tracking
+    const getPositionKey = (pos) => `${pos.x},${pos.y},${pos.z}`;
+    
+    // Use bot.findBlocks for efficient search - get more blocks to filter
     const blocks = this.bot.findBlocks({
       matching: blockIds,
       maxDistance: radius,
-      count: 1
+      count: 10 // Get more blocks to have alternatives
     });
     
     if (blocks && blocks.length > 0) {
-      const blockPos = blocks[0];
-      console.log(`[MINE] Found in loaded chunks at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
-      return { x: blockPos.x, y: blockPos.y, z: blockPos.z };
+      // FILTER OUT UNREACHABLE/OVER-RETRIED BLOCKS
+      const availableBlocks = blocks.filter(blockPos => {
+        const posKey = getPositionKey(blockPos);
+        const attempts = failedAttempts.get(posKey) || 0;
+        return !unreachableBlocks.has(posKey) && attempts < maxRetries;
+      });
+      
+      if (availableBlocks.length > 0) {
+        // SORT BY FAILURE COUNT: Prefer blocks with fewer failed attempts
+        availableBlocks.sort((a, b) => {
+          const attemptsA = failedAttempts.get(getPositionKey(a)) || 0;
+          const attemptsB = failedAttempts.get(getPositionKey(b)) || 0;
+          return attemptsA - attemptsB;
+        });
+        
+        const blockPos = availableBlocks[0];
+        console.log(`[MINE] Found in loaded chunks at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+        return { x: blockPos.x, y: blockPos.y, z: blockPos.z };
+      } else {
+        console.log(`[MINE] Found ${blocks.length} ${blockName} blocks but all are unreachable or over-retried`);
+      }
     }
     
     return null;
   }
   
-  async exploreForBlock(blockName) {
+  async exploreForBlock(blockName, failedAttempts = new Map(), unreachableBlocks = new Set(), maxRetries = 4) {
     console.log(`[MINE] Exploring area for ${blockName}...`);
     
     const blockIds = this.getBlockIds(blockName);
     const startPos = this.bot.entity.position.clone();
     const explorationRadius = 200; // Explore up to 200 blocks
     const checkInterval = 20; // Check every 20 blocks
+    
+    // Helper function to get position key for tracking
+    const getPositionKey = (pos) => `${pos.x},${pos.y},${pos.z}`;
     
     // Try exploring in different directions
     const directions = [
@@ -19394,17 +19644,35 @@ class BaritoneMiner {
           continue;
         }
         
-        // Check if we can find the block now
-        const foundBlock = this.bot.findBlocks({
+        // Check if we can find the block now - get more blocks to filter
+        const foundBlocks = this.bot.findBlocks({
           matching: blockIds,
           maxDistance: 50,
-          count: 1
+          count: 10 // Get more blocks to have alternatives
         });
         
-        if (foundBlock && foundBlock.length > 0) {
-          const blockPos = foundBlock[0];
-          console.log(`[MINE] ✓ Found during exploration at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
-          return { x: blockPos.x, y: blockPos.y, z: blockPos.z };
+        if (foundBlocks && foundBlocks.length > 0) {
+          // FILTER OUT UNREACHABLE/OVER-RETRIED BLOCKS
+          const availableBlocks = foundBlocks.filter(blockPos => {
+            const posKey = getPositionKey(blockPos);
+            const attempts = failedAttempts.get(posKey) || 0;
+            return !unreachableBlocks.has(posKey) && attempts < maxRetries;
+          });
+          
+          if (availableBlocks.length > 0) {
+            // SORT BY FAILURE COUNT: Prefer blocks with fewer failed attempts
+            availableBlocks.sort((a, b) => {
+              const attemptsA = failedAttempts.get(getPositionKey(a)) || 0;
+              const attemptsB = failedAttempts.get(getPositionKey(b)) || 0;
+              return attemptsA - attemptsB;
+            });
+            
+            const blockPos = availableBlocks[0];
+            console.log(`[MINE] ✓ Found during exploration at ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
+            return { x: blockPos.x, y: blockPos.y, z: blockPos.z };
+          } else {
+            console.log(`[MINE] Found ${foundBlocks.length} ${blockName} blocks during exploration but all are unreachable or over-retried`);
+          }
         }
       }
     }
@@ -19870,6 +20138,14 @@ class AutoMiner {
     let collected = 0;
     const radius = 16;
     
+    // MINING RETRY TRACKING: Track failed attempts per ore block
+    const failedAttempts = new Map(); // position string -> attempt count
+    const maxRetriesPerBlock = 5; // Lower limit for nearby collection (more aggressive skipping)
+    const unreachableBlocks = new Set(); // Blacklist of unreachable blocks
+    
+    // Helper function to get position key for tracking
+    const getPositionKey = (pos) => `${pos.x},${pos.y},${pos.z}`;
+    
     // Look for ore blocks
     const oreBlocks = this.bot.findBlocks({
       matching: this.getOreBlockIds(targetOre),
@@ -19877,18 +20153,67 @@ class AutoMiner {
       count: 20
     });
     
-    for (const orePos of oreBlocks) {
+    // FILTER OUT UNREACHABLE/OVER-RETRIED BLOCKS
+    const availableOreBlocks = oreBlocks.filter(blockPos => {
+      const posKey = getPositionKey(blockPos);
+      const attempts = failedAttempts.get(posKey) || 0;
+      return !unreachableBlocks.has(posKey) && attempts < maxRetriesPerBlock;
+    });
+    
+    if (availableOreBlocks.length === 0) {
+      if (oreBlocks.length > 0) {
+        console.log(`[HUNTER] All nearby ${targetOre} blocks are unreachable or over-retried`);
+      }
+      return collected;
+    }
+    
+    // SORT BY FAILURE COUNT: Prefer blocks with fewer failed attempts
+    availableOreBlocks.sort((a, b) => {
+      const attemptsA = failedAttempts.get(getPositionKey(a)) || 0;
+      const attemptsB = failedAttempts.get(getPositionKey(b)) || 0;
+      return attemptsA - attemptsB;
+    });
+    
+    for (const orePos of availableOreBlocks) {
+      const posKey = getPositionKey(orePos);
+      const currentAttempts = failedAttempts.get(posKey) || 0;
+      
       try {
         await safeGoTo(this.bot, orePos, 30000);
         const ore = this.bot.blockAt(orePos);
         if (ore) {
           await this.bot.dig(ore);
           collected++;
-          console.log(`[HUNTER] ⛏️ Mined ${targetOre}`);
+          console.log(`[HUNTER] ⛏️ Mined ${targetOre} (attempt ${currentAttempts + 1})`);
+          
+          // SUCCESS: Clear retry count for this position
+          failedAttempts.delete(posKey);
+        } else {
+          console.log(`[HUNTER] Ore block no longer exists at ${orePos.x}, ${orePos.y}, ${orePos.z}`);
+          failedAttempts.set(posKey, maxRetriesPerBlock); // Mark as done
         }
       } catch (err) {
-        console.log(`[HUNTER] ⚠️ Failed to reach ore at ${orePos.x}, ${orePos.y}, ${orePos.z}: ${err.message}`);
+        const newAttempts = currentAttempts + 1;
+        failedAttempts.set(posKey, newAttempts);
+        
+        console.log(`[HUNTER] ⚠️ Failed to reach ore at ${orePos.x}, ${orePos.y}, ${orePos.z}: ${err.message} (${newAttempts}/${maxRetriesPerBlock})`);
+        
+        // MARK AS UNREACHABLE IF TOO MANY FAILURES
+        if (newAttempts >= maxRetriesPerBlock) {
+          unreachableBlocks.add(posKey);
+          console.log(`[HUNTER] 🚫 Marked ${targetOre} at ${orePos.toString()} as unreachable after ${maxRetriesPerBlock} failed attempts`);
+        }
+        
+        // ADD EXTRA DELAY FOR FAILED BLOCKS TO AVOID SPAM
+        if (newAttempts > 2) {
+          await this.sleep(300 * newAttempts); // Increasing delay for repeated failures
+        }
       }
+    }
+    
+    // SUMMARY: Report collection results
+    if (unreachableBlocks.size > 0) {
+      console.log(`[HUNTER] Skipped ${unreachableBlocks.size} unreachable ${targetOre} blocks`);
     }
     
     return collected;
