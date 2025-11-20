@@ -19719,38 +19719,127 @@ class AutoMiner {
   async descendTo(targetY) {
     console.log(`[HUNTER] ⬇️ Descending to Y=${targetY}...`);
     
-    const currentY = this.bot.entity.position.y;
-    if (Math.abs(currentY - targetY) < 5) return; // Already at target level
-    
-    // Dig down or find cave
-    if (currentY > targetY) {
-      // Need to go down - dig staircase
-      while (this.bot.entity.position.y > targetY) {
-        const below = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
-        if (below && below.name !== 'air') {
-          await this.bot.dig(below);
-          await this.bot.pathfinder.goto(new goals.GoalNear(
-            this.bot.entity.position.x,
-            this.bot.entity.position.y - 1,
-            this.bot.entity.position.z,
-            1
-          ));
-        } else {
-          await this.bot.pathfinder.goto(new goals.GoalNear(
-            this.bot.entity.position.x,
-            this.bot.entity.position.y - 1,
-            this.bot.entity.position.z,
-            1
-          ));
-        }
-        await this.sleep(500);
-      }
-    } else {
-      // Need to go up - find cave or dig up
-      console.log(`[HUNTER] ⬆️ Need to go up - finding cave...`);
+    if (!this.bot?.entity?.position) {
+      console.log('[HUNTER] ⚠️ Cannot descend - bot entity missing');
+      return false;
     }
     
-    console.log(`[HUNTER] ✅ Reached target Y level`);
+    const currentY = Math.floor(this.bot.entity.position.y);
+    if (Math.abs(currentY - targetY) < 1) {
+      console.log('[HUNTER] ✅ Already near target Y level');
+      return true;
+    }
+    
+    if (currentY > targetY) {
+      const success = await this.digVerticalShaft(targetY);
+      if (success) {
+        console.log('[HUNTER] ✅ Reached target Y level');
+      } else {
+        console.log(`[HUNTER] ⚠️ Failed to reach Y=${targetY} via vertical shaft`);
+      }
+      return success;
+    }
+    
+    console.log(`[HUNTER] ⬆️ Need to go up - finding cave...`);
+    return false;
+  }
+  
+  async digVerticalShaft(targetY) {
+    console.log('[HUNTER] 🕳️ Digging 1x1 vertical shaft...');
+    
+    if (!this.bot?.entity?.position) {
+      return false;
+    }
+    
+    if (this.bot.toolSelector?.verifyAndEnsurePickaxe) {
+      try {
+        await this.bot.toolSelector.verifyAndEnsurePickaxe();
+      } catch (err) {
+        console.log(`[HUNTER] ⚠️ Pickaxe verification failed: ${err.message}`);
+      }
+    } else if (this.bot.equipmentManager?.switchToTaskMode) {
+      try {
+        await this.bot.equipmentManager.switchToTaskMode('mining');
+      } catch (err) {
+        console.log(`[HUNTER] ⚠️ Failed to switch equipment for mining: ${err.message}`);
+      }
+    }
+    
+    const maxSteps = 512;
+    let steps = 0;
+    
+    while (this.bot?.entity?.position && Math.floor(this.bot.entity.position.y) > targetY && steps < maxSteps) {
+      steps++;
+      const currentPos = this.bot.entity.position;
+      const belowPos = currentPos.offset(0, -1, 0);
+      const blockBelow = this.bot.blockAt(belowPos);
+      const twoBelow = this.bot.blockAt(belowPos.offset(0, -1, 0));
+      
+      if (this.isDangerousBlock(blockBelow) || this.isDangerousBlock(twoBelow)) {
+        console.log('[HUNTER] ⚠️ Dangerous block below - stopping shaft excavation');
+        return false;
+      }
+      
+      if (!blockBelow || blockBelow.name === 'air') {
+        await this.waitForFallDistance(0.2);
+        await this.sleep(50);
+        continue;
+      }
+      
+      if (!blockBelow.diggable) {
+        console.log(`[HUNTER] ⚠️ Cannot dig ${blockBelow.name}, stopping descent`);
+        return false;
+      }
+      
+      try {
+        await this.bot.lookAt(blockBelow.position.offset(0.5, 0.5, 0.5));
+      } catch (err) {}
+      
+      try {
+        await this.bot.dig(blockBelow, true);
+      } catch (err) {
+        console.log(`[HUNTER] ⚠️ Failed to dig block during descent: ${err.message}`);
+        return false;
+      }
+      
+      await this.waitForFallDistance(0.6);
+      await this.sleep(100);
+    }
+    
+    if (!this.bot?.entity?.position) {
+      return false;
+    }
+    
+    if (steps >= maxSteps) {
+      console.log('[HUNTER] ⚠️ Vertical shaft step limit reached before hitting target Y');
+    }
+    
+    return Math.floor(this.bot.entity.position.y) <= targetY;
+  }
+  
+  isDangerousBlock(block) {
+    if (!block || !block.name) return false;
+    return block.name.includes('lava') || block.name.includes('fire');
+  }
+  
+  async waitForFallDistance(minDelta = 0.6, timeout = 2000) {
+    if (!this.bot?.entity?.position) {
+      return false;
+    }
+    
+    const startY = this.bot.entity.position.y;
+    const deadline = Date.now() + timeout;
+    
+    while (Date.now() < deadline) {
+      if (!this.bot?.entity?.position) break;
+      const delta = startY - this.bot.entity.position.y;
+      if (delta >= minDelta || (this.bot.entity.onGround && delta > 0)) {
+        return true;
+      }
+      await this.sleep(20);
+    }
+    
+    return false;
   }
   
   async stripMine(targetOre, quantity) {
