@@ -24787,7 +24787,7 @@ try {
          respond(false, `❌ No information found for: ${topic}`);
        }
        return;
-      }
+       }
 
       // Strategy and optimization queries
       if (lower.includes('how to') || lower.includes('best way to') || lower.includes('strategy for') || lower.includes('optimal')) {
@@ -24809,8 +24809,7 @@ try {
          respond(false, `❌ No strategy found for: ${activity}`);
        }
        return;
-      }
-      };
+       }
 
       // Execute the command executor
       try {
@@ -24820,135 +24819,25 @@ try {
         respond(false, `Command execution failed: ${error.message}`);
         setOutcome('execution_error');
       }
-      }
 
-      // Knowledge base helper methods
-      getKnowledgeInfo(topic) {
-      const kb = this.knowledgeBase;
+      // Helper methods are defined outside this function
+    };
 
-      // Try to find info in different categories
-      if (kb.getBlockInfo(topic)) {
-       const block = kb.getBlockInfo(topic);
-       return [
-         `Tool required: ${block.tool}`,
-         `Hardness: ${block.hardness}`,
-         `Drops: ${block.drops.join(', ')}`
-       ];
-      }
-
-      if (kb.getItemInfo(topic)) {
-       const item = kb.getItemInfo(topic);
-       const details = [];
-       if (item.durability) details.push(`Durability: ${item.durability}`);
-       if (item.damage) details.push(`Damage: ${item.damage}`);
-       if (item.defense) details.push(`Defense: ${item.defense}`);
-       if (item.material) details.push(`Material: ${item.material}`);
-       return details;
-      }
-
-      if (kb.getMobInfo(topic)) {
-       const mob = kb.getMobInfo(topic);
-       return [
-         `Health: ${mob.health}`,
-         `Damage: ${mob.damage}`,
-         `Drops: ${mob.drops.join(', ')}`,
-         `XP: ${mob.xp}`,
-         `Weaknesses: ${mob.weaknesses?.join(', ') || 'None'}`
-       ];
-      }
-
-      if (kb.getBiomeInfo(topic)) {
-       const biome = kb.getBiomeInfo(topic);
-       return [
-         `Temperature: ${biome.temperature}`,
-         `Resources: ${biome.resources?.join(', ') || 'None'}`,
-         `Structures: ${biome.structures?.join(', ') || 'None'}`,
-         `Danger: ${biome.danger}`
-       ];
-      }
-
-      if (kb.getRecipe(topic)) {
-       const recipe = kb.getRecipe(topic);
-       return [
-         `Requires: ${recipe.requires.join(', ')}`,
-         `Result: ${recipe.result}`,
-         `Crafting table: ${recipe.table}`
-       ];
-      }
-
-      return null;
-      }
-
-      getStrategyInfo(activity) {
-      const kb = this.knowledgeBase;
-
-      // Mining strategies
-      if (activity.includes('mine') || activity.includes('mining')) {
-       const oreMatch = activity.match(/mine\s+(\w+)/i);
-       if (oreMatch) {
-         const ore = oreMatch[1];
-         const strategy = kb.getOptimalMiningStrategy(ore);
-         if (strategy) {
-           return [
-             `Best level: ${strategy.level_range}`,
-             `Required tool: ${strategy.required_tool}`,
-             `Strategy: ${strategy.recommended_strategy}`,
-             `Tips: ${strategy.efficiency_tips.branch_mining || strategy.efficiency_tips.cave_exploring}`
-           ];
-         }
-       }
-
-       return [
-         "Branch mining at Y=11 for diamonds",
-         "Cave exploring for exposed ores",
-         "Always bring proper tools and food",
-         "Use torches to prevent mob spawns"
-       ];
-      }
-
-      // Combat strategies
-      if (activity.includes('fight') || activity.includes('combat')) {
-       const mobMatch = activity.match(/fight\s+(\w+)/i);
-       if (mobMatch) {
-         const mob = mobMatch[1];
-         const tactics = kb.getCombatTactics(`vs_${mob}`);
-         if (tactics) {
-           return [
-             `Strategy: ${tactics.strategy}`,
-             `Weaknesses: ${tactics.weakness}`,
-             `Tactics: ${tactics.tactics?.join(', ') || 'Use general combat'}`
-           ];
-         }
-       }
-
-       return [
-         "Always wear armor for protection",
-         "Use shield to block attacks",
-         "Strafe while attacking",
-         "Retreat and heal when low on health"
-       ];
-      }
-
-      // Farming strategies
-      if (activity.includes('farm') || activity.includes('farming')) {
-       return [
-         "Ensure proper water hydration (4 blocks radius)",
-         "Use bone meal for faster growth",
-         "Harvest at full maturity for maximum yield",
-         "Consider automated farms with pistons and hoppers"
-       ];
-      }
-
-      // General optimization tips
-      const tips = kb.getOptimizationTips(activity);
-      if (tips) {
-       return Object.values(tips);
-      }
-
-      return null;
-      }
-   }
- }
+    return commandExecutor()
+      .catch(err => {
+        error = err;
+        outcome = outcome && !outcome.startsWith('error') ? `error:${outcome}` : (outcome || 'error');
+        console.error(`[CMD_DEBUG][COMMAND] (${source}) Error processing command for ${username}: ${err.stack || err.message}`);
+        if (sendReply && source !== 'chat') {
+          sendReply({ success: false, message: err.message || 'Command failed' });
+        }
+        throw err;
+      })
+      .finally(() => {
+        this._activeCommandContext = null;
+        console.log(`[CMD_DEBUG][COMMAND] (${source}) Completed for ${username}: outcome=${outcome}${error ? ' (error)' : ''}`);
+      });
+  }
 
 // === DIALOGUE REINFORCEMENT LEARNING ===
 class DialogueRL {
