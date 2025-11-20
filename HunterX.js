@@ -24838,6 +24838,21 @@ try {
         console.log(`[CMD_DEBUG][COMMAND] (${source}) Completed for ${username}: outcome=${outcome}${error ? ' (error)' : ''}`);
       });
   }
+  }
+      .catch(err => {
+        error = err;
+        outcome = outcome && !outcome.startsWith('error') ? `error:${outcome}` : (outcome || 'error');
+        console.error(`[CMD_DEBUG][COMMAND] (${source}) Error processing command for ${username}: ${err.stack || err.message}`);
+        if (sendReply && source !== 'chat') {
+          sendReply({ success: false, message: err.message || 'Command failed' });
+        }
+        throw err;
+      })
+      .finally(() => {
+        this._activeCommandContext = null;
+        console.log(`[CMD_DEBUG][COMMAND] (${source}) Completed for ${username}: outcome=${outcome}${error ? ' (error)' : ''}`);
+      });
+  }
 
 // === DIALOGUE REINFORCEMENT LEARNING ===
 class DialogueRL {
