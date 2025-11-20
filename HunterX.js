@@ -10788,8 +10788,13 @@ class GearUpSystem {
       
       const animal = animals[0];
       try {
-        await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(animal.position.x, animal.position.y, animal.position.z), 2));
-        await this.bot.attack(animal);
+        const animalPos = new Vec3(animal.position.x, animal.position.y, animal.position.z);
+        await this.bot.pathfinder.goto(new goals.GoalNear(animalPos, 2));
+        
+        if (animal.isValid) {
+          await this.continuousAttackForGearUp(animal);
+        }
+        
         collected++;
         console.log(`[GEAR-UP] Hunted animal (${collected}/${quantity})`);
       } catch (err) {
@@ -10797,6 +10802,99 @@ class GearUpSystem {
       }
       
       await sleep(500);
+    }
+  }
+  
+  async continuousAttackForGearUp(entity) {
+    if (!entity) return false;
+    
+    const startTime = Date.now();
+    const maxDuration = 15000; // Max 15 seconds to attack one entity
+    
+    while (entity.isValid && (Date.now() - startTime) < maxDuration) {
+      try {
+        await this.bot.attack(entity);
+        await sleep(100);
+        
+        // Ensure we're still close to the entity
+        if (entity.position) {
+          const distance = this.bot.entity.position.distanceTo(entity.position);
+          if (distance > 3) {
+            try {
+              const goal = new goals.GoalNear(entity.position.x, entity.position.y, entity.position.z, 2);
+              await this.bot.pathfinder.goto(goal, { timeout: 1000 });
+            } catch (err) {
+              // Continue attacking
+            }
+          }
+        }
+      } catch (err) {
+        break;
+      }
+    }
+    
+    // Collect drops from the dead entity
+    if (entity.position) {
+      await this.collectDropsFromAnimalDeath(entity.position);
+    }
+    
+    return true;
+  }
+  
+  async collectDropsFromAnimalDeath(animalPosition) {
+    if (!animalPosition) return;
+    
+    try {
+      // Wait for items to spawn
+      await sleep(500);
+      
+      // Find item entities near the death location
+      const itemEntities = Object.values(this.bot.entities || {}).filter(e => {
+        if (!e || !e.position || e.type !== 'object' || e.name !== 'item') {
+          return false;
+        }
+        
+        const dist = e.position.distanceTo(animalPosition);
+        return dist <= 10;
+      });
+      
+      if (itemEntities.length === 0) {
+        return;
+      }
+      
+      console.log(`[GEAR-UP] 📦 Collecting ${itemEntities.length} drops from killed animal...`);
+      
+      // Move to and collect each item
+      for (const item of itemEntities) {
+        try {
+          const distance = this.bot.entity.position.distanceTo(item.position);
+          
+          // If already close enough, just wait for auto-pickup
+          if (distance < 1.5) {
+            await sleep(200);
+            continue;
+          }
+          
+          // Move to item if within reasonable range
+          if (distance <= 10) {
+            try {
+              await this.bot.pathfinder.goto(new goals.GoalNear(
+                item.position.x,
+                item.position.y,
+                item.position.z,
+                0.5
+              ), { timeout: 2000 });
+              await sleep(200);
+            } catch (err) {
+              // Item collection failure is not critical
+            }
+          }
+        } catch (err) {
+          // Continue to next item
+        }
+      }
+    } catch (err) {
+      // Item collection errors are not critical
     }
   }
   
@@ -39289,29 +39387,87 @@ class AFKGatherer {
     let hunted = 0;
     const maxAttempts = Math.min(needed * 2, 20);
     
+    console.log(`[AFK_GATHER] 🐄 Starting mob farm - target: ${needed} animals`);
+    
     for (let i = 0; i < maxAttempts && hunted < needed; i++) {
       if (!this.currentlyGathering) break;
       
       const animal = this.findNearestAnimal(animalTypes);
       if (!animal) {
-        console.log(`[AFK_GATHER] No animals nearby (attempt ${i+1}/${maxAttempts})`);
-        await this.sleep(2000);
+        console.log(`[AFK_GATHER] No animals nearby (attempt ${i+1}/${maxAttempts}), exploring...`);
+        // Optionally move around to find animals
+        await this.sleep(1000);
         continue;
       }
       
       try {
+        console.log(`[AFK_GATHER] 🎯 Targeting ${animal.name} at (${Math.round(animal.position.x)}, ${Math.round(animal.position.y)}, ${Math.round(animal.position.z)})`);
         await this.attackEntity(animal);
         hunted++;
-        console.log(`[AFK_GATHER] Hunted animal (${hunted}/${needed})`);
-        await this.sleep(500);
+        console.log(`[AFK_GATHER] ✅ Hunted animal (${hunted}/${needed})`);
+        await this.sleep(300);
       } catch (err) {
         console.log(`[AFK_GATHER] Failed to hunt: ${err.message}`);
       }
     }
     
+    console.log(`[AFK_GATHER] 🏁 Hunting complete: ${hunted}/${needed} animals hunted`);
+    
+    // Collect any remaining items in the area
+    await this.collectNearbyItems();
+    
     // Try to cook what we got
     if (hunted > 0) {
       await this.cookFood('beef', hunted);
+    }
+  }
+  
+  async collectNearbyItems() {
+    try {
+      // Collect any item entities near the bot
+      const itemEntities = Object.values(this.bot.entities || {}).filter(e => {
+        if (!e || !e.position || e.type !== 'object' || e.name !== 'item') {
+          return false;
+        }
+        
+        const dist = this.bot.entity.position.distanceTo(e.position);
+        return dist <= 15;
+      });
+      
+      if (itemEntities.length === 0) {
+        return;
+      }
+      
+      console.log(`[AFK_GATHER] 📦 Found ${itemEntities.length} nearby items, collecting...`);
+      
+      for (const item of itemEntities) {
+        try {
+          const distance = this.bot.entity.position.distanceTo(item.position);
+          
+          if (distance < 1.5) {
+            await this.sleep(150);
+            continue;
+          }
+          
+          if (distance <= 15) {
+            try {
+              await this.bot.pathfinder.goto(new goals.GoalNear(
+                item.position.x,
+                item.position.y,
+                item.position.z,
+                0.5
+              ), { timeout: 1500 });
+              await this.sleep(150);
+            } catch (err) {
+              // Non-critical
+            }
+          }
+        } catch (err) {
+          // Continue to next item
+        }
+      }
+    } catch (err) {
+      // Non-critical
     }
   }
   
@@ -39341,15 +39497,220 @@ class AFKGatherer {
     await this.bot.pathfinder.goto(goal);
     
     if (entity.isValid) {
-      await this.bot.attack(entity);
+      await this.continuousAttack(entity);
+    }
+  }
+  
+  async continuousAttack(entity) {
+    if (!entity) return false;
+    
+    const startTime = Date.now();
+    const maxDuration = 15000; // Max 15 seconds to attack one entity
+    let lastValidCheck = Date.now();
+    
+    while (entity.isValid && (Date.now() - startTime) < maxDuration) {
+      try {
+        await this.bot.attack(entity);
+        await this.sleep(100); // Small delay between attacks
+        
+        // Check if entity is still valid
+        lastValidCheck = Date.now();
+      } catch (err) {
+        console.log(`[AFK_GATHER] Attack error: ${err.message}`);
+        break;
+      }
+      
+      // Ensure we're still close to the entity
+      if (entity.position) {
+        const distance = this.bot.entity.position.distanceTo(entity.position);
+        if (distance > 3) {
+          // Move closer
+          try {
+            const goal = new goals.GoalNear(entity.position.x, entity.position.y, entity.position.z, 2);
+            await this.bot.pathfinder.goto(goal, { timeout: 1000 });
+          } catch (err) {
+            // Pathfinding timeout or error, continue attacking anyway
+          }
+        }
+      }
+    }
+    
+    // Entity is now dead, collect the drops from last known position
+    if (entity.position) {
+      await this.collectDropsFromKilledEntity(entity.position);
+    }
+    
+    return true;
+  }
+  
+  async collectDropsFromKilledEntity(entityPosition) {
+    if (!entityPosition) return;
+    
+    try {
+      // Wait a moment for items to spawn
+      await this.sleep(500);
+      
+      // Find item entities near the death location
+      const itemEntities = Object.values(this.bot.entities || {}).filter(e => {
+        if (!e || !e.position || e.type !== 'object' || e.name !== 'item') {
+          return false;
+        }
+        
+        const dist = e.position.distanceTo(entityPosition);
+        return dist <= 10;
+      });
+      
+      if (itemEntities.length === 0) {
+        return;
+      }
+      
+      console.log(`[AFK_GATHER] 📦 Collecting ${itemEntities.length} drops from killed mob...`);
+      
+      // Move to and collect each item
+      for (const item of itemEntities) {
+        try {
+          const distance = this.bot.entity.position.distanceTo(item.position);
+          
+          // If already close enough, just wait for auto-pickup
+          if (distance < 1.5) {
+            await this.sleep(200);
+            continue;
+          }
+          
+          // Move to item if within reasonable range
+          if (distance <= 10) {
+            try {
+              await this.bot.pathfinder.goto(new goals.GoalNear(
+                item.position.x,
+                item.position.y,
+                item.position.z,
+                0.5
+              ), { timeout: 2000 });
+              await this.sleep(200);
+            } catch (err) {
+              // Item collection failure is not critical
+            }
+          }
+        } catch (err) {
+          // Continue to next item
+        }
+      }
+    } catch (err) {
+      // Item collection errors are not critical
     }
   }
   
   async cookFood(rawFoodName, amount) {
     console.log(`[AFK_GATHER] 🔥 Cooking ${amount}x ${rawFoodName}...`);
-    // This would require finding/placing a furnace and using it
-    // For simplicity, we'll skip the cooking implementation for now
-    // In a full implementation, this would use furnace automation
+    
+    if (!this.currentlyGathering) return;
+    
+    // Map raw food to cooked food
+    const foodMap = {
+      'beef': 'cooked_beef',
+      'porkchop': 'cooked_porkchop',
+      'chicken': 'cooked_chicken',
+      'mutton': 'cooked_mutton',
+      'cod': 'cooked_cod',
+      'salmon': 'cooked_salmon'
+    };
+    
+    const rawItemName = rawFoodName === 'beef' ? 'beef' : rawFoodName;
+    const cookedItemName = foodMap[rawFoodName] || `cooked_${rawFoodName}`;
+    
+    // Check if we have raw food to cook
+    const rawFood = this.bot.inventory.items().find(i => 
+      i.name === rawItemName || i.name.includes(rawFoodName)
+    );
+    
+    if (!rawFood) {
+      console.log(`[AFK_GATHER] No raw ${rawFoodName} to cook`);
+      return;
+    }
+    
+    try {
+      // Find or place furnace
+      const furnace = await this.findOrPlaceFurnaceForCooking();
+      if (!furnace) {
+        console.log(`[AFK_GATHER] Could not find furnace for cooking`);
+        return;
+      }
+      
+      // Open furnace
+      const furnaceWindow = await this.bot.openFurnace(furnace);
+      if (!furnaceWindow) {
+        console.log(`[AFK_GATHER] Failed to open furnace`);
+        return;
+      }
+      
+      // Check fuel
+      const fuelItems = ['coal', 'charcoal', 'oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'coal_block', 'lava_bucket'];
+      const fuel = this.bot.inventory.items().find(i => fuelItems.includes(i.name));
+      
+      if (!fuel) {
+        console.log(`[AFK_GATHER] No fuel available for cooking`);
+        furnaceWindow.close();
+        return;
+      }
+      
+      // Put raw food in input slot
+      const rawFoodItem = this.bot.inventory.items().find(i => i.name === rawItemName);
+      if (rawFoodItem && rawFoodItem.count > 0) {
+        const quantityToCook = Math.min(rawFoodItem.count, amount);
+        await furnaceWindow.putInput(rawFoodItem, 1);
+        
+        // Put fuel in fuel slot
+        await furnaceWindow.putFuel(fuel, 1);
+        
+        // Wait for items to cook
+        const cookTime = 10000 + (quantityToCook * 200); // Rough estimate
+        await this.sleep(Math.min(cookTime, 30000)); // Max 30 seconds wait
+        
+        // Collect output
+        try {
+          const output = furnaceWindow.outputItem();
+          if (output && output.count > 0) {
+            await furnaceWindow.takeOutput(output);
+            console.log(`[AFK_GATHER] ✅ Cooked ${quantityToCook}x ${cookedItemName}`);
+          }
+        } catch (err) {
+          console.log(`[AFK_GATHER] Error taking output: ${err.message}`);
+        }
+      }
+      
+      furnaceWindow.close();
+    } catch (err) {
+      console.log(`[AFK_GATHER] Cooking error: ${err.message}`);
+    }
+  }
+  
+  async findOrPlaceFurnaceForCooking() {
+    try {
+      // Try to find an existing furnace nearby
+      const furnaceBlock = this.bot.findBlock({
+        matching: this.bot.registry.blocksByName['furnace']?.id,
+        maxDistance: 32
+      });
+      
+      if (furnaceBlock) {
+        // Move to furnace
+        try {
+          await this.bot.pathfinder.goto(new goals.GoalNear(
+            furnaceBlock.position.x,
+            furnaceBlock.position.y,
+            furnaceBlock.position.z,
+            2
+          ), { timeout: 5000 });
+          return furnaceBlock;
+        } catch (err) {
+          // Couldn't reach it
+        }
+      }
+    } catch (err) {
+      // Furnace not found
+    }
+    
+    return null;
   }
   
   async gatherWaterBucket(needed) {
