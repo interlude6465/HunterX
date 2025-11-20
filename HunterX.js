@@ -24811,6 +24811,7 @@ try {
       return;
     }
   }
+}
 
 // === DIALOGUE REINFORCEMENT LEARNING ===
 class DialogueRL {
