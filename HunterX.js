@@ -42741,15 +42741,15 @@ class MinecraftKnowledgeBase {
         spawn: ['darkness', 'surface_night'], 
         weaknesses: ['fire', 'close_combat'] 
       },
-      creeper: { 
-        health: 20, 
-        damage: 49 (explosion), 
-        drops: ['gunpowder', 'rare:music_disc'], 
-        xp: 5, 
-        spawn: ['surface_night'], 
-        weaknesses: ['fire', 'cats'], 
-        special: 'explodes when near player' 
-      },
+      creeper: {
+         health: 20,
+         damage: 49,
+         drops: ['gunpowder', 'rare:music_disc'],
+         xp: 5,
+         spawn: ['surface_night'],
+         weaknesses: ['fire', 'cats'],
+         special: 'explodes when near player'
+       },
       spider: { 
         health: 16, 
         damage: 2, 
@@ -42767,34 +42767,34 @@ class MinecraftKnowledgeBase {
         weaknesses: ['water', 'staring'], 
         special: 'teleports and aggressive when stared at' 
       },
-      witch: { 
-        health: 26, 
-        damage: 6 (potions), 
-        drops: ['stick', 'glowstone_dust', 'gunpowder', 'redstone', 'spider_eye', 'sugar', 'bottle'], 
-        xp: 5, 
-        spawn: ['swamp_hut', 'raids'], 
-        abilities: ['throw_potions', 'drink_potions'] 
-      },
+      witch: {
+         health: 26,
+         damage: 6,
+         drops: ['stick', 'glowstone_dust', 'gunpowder', 'redstone', 'spider_eye', 'sugar', 'bottle'],
+         xp: 5,
+         spawn: ['swamp_hut', 'raids'],
+         abilities: ['throw_potions', 'drink_potions']
+       },
       
       // Nether mobs
-      blaze: { 
-        health: 20, 
-        damage: 6 (fireballs), 
-        drops: ['blaze_rod'], 
-        xp: 10, 
-        spawn: ['nether_fortress'], 
-        weaknesses: ['snowballs', 'water'], 
-        abilities: ['fly', 'shoot_fireballs'] 
-      },
-      ghast: { 
-        health: 10, 
-        damage: 17 (fireballs), 
-        drops: ['ghast_tear', 'gunpowder'], 
-        xp: 5, 
-        spawn: ['nether_wastes', 'soul_sand_valley'], 
-        weaknesses: ['arrows'], 
-        abilities: ['fly', 'shoot_fireballs'] 
-      },
+      blaze: {
+         health: 20,
+         damage: 6,
+         drops: ['blaze_rod'],
+         xp: 10,
+         spawn: ['nether_fortress'],
+         weaknesses: ['snowballs', 'water'],
+         abilities: ['fly', 'shoot_fireballs']
+       },
+      ghast: {
+         health: 10,
+         damage: 17,
+         drops: ['ghast_tear', 'gunpowder'],
+         xp: 5,
+         spawn: ['nether_wastes', 'soul_sand_valley'],
+         weaknesses: ['arrows'],
+         abilities: ['fly', 'shoot_fireballs']
+       },
       wither_skeleton: { 
         health: 20, 
         damage: 8, 
@@ -42823,24 +42823,24 @@ class MinecraftKnowledgeBase {
       },
       
       // Boss mobs
-      wither: { 
-        health: 300, 
-        damage: 8 (explosive), 
-        drops: ['nether_star'], 
-        xp: 50, 
-        spawn: ['constructed_by_player'], 
-        abilities: ['wither_effect', 'explosions', 'invulnerable_phases'], 
-        strategy: 'need armor, weapons, healing items' 
-      },
-      ender_dragon: { 
-        health: 200, 
-        damage: 15 (charge), 
-        drops: ['dragon_egg', 'huge_experience'], 
-        xp: 12000, 
-        spawn: ['end_dimension'], 
-        abilities: ['fly', 'heal_via_crystals', 'knockback'], 
-        strategy: 'destroy crystals first, then attack' 
-      },
+      wither: {
+         health: 300,
+         damage: 8,
+         drops: ['nether_star'],
+         xp: 50,
+         spawn: ['constructed_by_player'],
+         abilities: ['wither_effect', 'explosions', 'invulnerable_phases'],
+         strategy: 'need armor, weapons, healing items'
+       },
+      ender_dragon: {
+         health: 200,
+         damage: 15,
+         drops: ['dragon_egg', 'huge_experience'],
+         xp: 12000,
+         spawn: ['end_dimension'],
+         abilities: ['fly', 'heal_via_crystals', 'knockback'],
+         strategy: 'destroy crystals first, then attack'
+       },
       
       // Passive mobs
       cow: { 
