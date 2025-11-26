@@ -2578,6 +2578,12 @@ function attachBotNetworkGuards(bot) {
   }
 
   const client = bot._client;
+  const packetRateConfig = config.network?.packetRateLimit || {};
+  const packetLimiter = client.__packetLimiter || new PacketRateLimiter(
+    packetRateConfig.maxPackets ?? 80,
+    packetRateConfig.windowMs ?? 1000
+  );
+  client.__packetLimiter = packetLimiter;
 
   if (!client.__connectionGuarded && typeof client.write === 'function') {
     const originalWrite = client.write;
@@ -2590,6 +2596,14 @@ function attachBotNetworkGuards(bot) {
         if (!client.__lastPacketWarning || Date.now() - client.__lastPacketWarning > 2000) {
           console.warn(`[NET][${bot.username || 'bot'}] Dropping packet ${packetName} - socket not ready (state=${client.state || 'unknown'})`);
           client.__lastPacketWarning = Date.now();
+        }
+        return;
+      }
+
+      if (packetLimiter && !packetLimiter.tryConsume()) {
+        if (!client.__lastPacketLimitWarning || Date.now() - client.__lastPacketLimitWarning > 2000) {
+          console.warn(`[NET][${bot.username || 'bot'}] Packet rate limit reached, dropping ${packetName}`);
+          client.__lastPacketLimitWarning = Date.now();
         }
         return;
       }
@@ -3632,6 +3646,10 @@ config = {
     chatRateLimit: {
       maxMessages: 5,
       windowMs: 3000
+    },
+    packetRateLimit: {
+      maxPackets: 80,
+      windowMs: 1000
     }
   },
   
@@ -6177,11 +6195,7 @@ class SwarmCoordinator {
       case 'HEARTBEAT':
         const now = Date.now();
         const previousLastSeen = bot.lastHeartbeat;
-        bot.lastHeartbeat = now;
-        bot.position = message.position || bot.position;
-        bot.health = message.health || bot.health;
-        bot.task = message.task || bot.task;
-        bot.status = message.status || bot.status;
+        this.applyStatusUpdate(bot, message);
         
         // If bot was previously disconnected, mark it as reconnected
         if (bot.status === 'disconnected') {
@@ -6190,6 +6204,13 @@ class SwarmCoordinator {
         }
         
         this.sendAck(botId, message.id);
+        break;
+        
+      case 'telemetry':
+      case 'TELEMETRY':
+      case 'status':
+      case 'STATUS':
+        this.applyStatusUpdate(bot, message);
         break;
         
       case 'STASH_ALERT':
@@ -6345,6 +6366,45 @@ class SwarmCoordinator {
           timestamp: Date.now()
         });
         break;
+    }
+  }
+  
+  applyStatusUpdate(botEntry, message) {
+    if (!botEntry) return;
+    const payload = {
+      ...(message && typeof message === 'object' ? message : {}),
+      ...(message && typeof message.data === 'object' ? message.data : {})
+    };
+
+    botEntry.lastHeartbeat = Date.now();
+
+    if (payload.position) {
+      if (payload.position.distanceTo) {
+        botEntry.position = payload.position;
+      } else if (
+        typeof payload.position.x === 'number' &&
+        typeof payload.position.y === 'number' &&
+        typeof payload.position.z === 'number'
+      ) {
+        botEntry.position = new Vec3(payload.position.x, payload.position.y, payload.position.z);
+      } else {
+        botEntry.position = payload.position;
+      }
+    }
+    if (typeof payload.health === 'number') {
+      botEntry.health = payload.health;
+    }
+    if (payload.status) {
+      botEntry.status = payload.status;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'task')) {
+      botEntry.task = payload.task;
+    }
+    if (payload.activity) {
+      botEntry.activity = payload.activity;
+    }
+    if (payload.telemetry || payload.metrics) {
+      botEntry.telemetry = payload.telemetry || payload.metrics;
     }
   }
   
@@ -8838,47 +8898,45 @@ class BuilderWorker {
   
   async requestMaterials(materials) {
     const requestId = `mat_req_${Date.now()}`;
-    
-    this.wsClient.send(JSON.stringify({
+    await sendSwarmPacket(this.wsClient, {
       type: 'MATERIAL_REQUEST',
       requestId,
       projectId: this.projectId,
       position: this.bot.entity.position,
       materials
-    }));
+    }, 'material request');
     
     await this.sleep(5000);
   }
   
   reportProgress() {
     const progress = (this.placedBlocks / this.totalBlocks) * 100;
-    
-    this.wsClient.send(JSON.stringify({
+    sendSwarmPacket(this.wsClient, {
       type: 'BUILD_PROGRESS',
       projectId: this.projectId,
       assignmentId: this.assignment.id,
       progress,
       placedBlocks: this.placedBlocks,
       totalBlocks: this.totalBlocks
-    }));
+    }, 'build progress update');
   }
   
   reportComplete() {
-    this.wsClient.send(JSON.stringify({
+    sendSwarmPacket(this.wsClient, {
       type: 'BUILD_COMPLETE',
       projectId: this.projectId,
       assignmentId: this.assignment.id,
       placedBlocks: this.placedBlocks
-    }));
+    }, 'build completion notice');
   }
   
   reportConflict(position) {
-    this.wsClient.send(JSON.stringify({
+    sendSwarmPacket(this.wsClient, {
       type: 'BUILD_CONFLICT',
       projectId: this.projectId,
       assignmentId: this.assignment.id,
       position
-    }));
+    }, 'build conflict');
   }
   
   pause() {
@@ -11766,10 +11824,55 @@ class SwarmManager {
         this.registerBot(message, ws);
         break;
       case 'HEARTBEAT':
-        // Keep-alive ping, acknowledge silently
+        this.applyStatusUpdate(this.bots.get(message.username), message);
+        break;
+      case 'telemetry':
+      case 'TELEMETRY':
+      case 'status':
+      case 'STATUS':
+        this.applyStatusUpdate(this.bots.get(message.username), message);
         break;
       default:
         console.log(`[SWARM] Unknown message type: ${message.type}`);
+    }
+  }
+  
+  applyStatusUpdate(botInfo, message) {
+    if (!botInfo) return;
+    const payload = {
+      ...(message && typeof message === 'object' ? message : {}),
+      ...(message && typeof message.data === 'object' ? message.data : {})
+    };
+
+    botInfo.lastSeen = Date.now();
+
+    if (payload.position) {
+      if (payload.position.distanceTo) {
+        botInfo.position = payload.position;
+      } else if (
+        typeof payload.position.x === 'number' &&
+        typeof payload.position.y === 'number' &&
+        typeof payload.position.z === 'number'
+      ) {
+        botInfo.position = new Vec3(payload.position.x, payload.position.y, payload.position.z);
+      } else {
+        botInfo.position = payload.position;
+      }
+    }
+    if (typeof payload.health === 'number') {
+      botInfo.health = payload.health;
+    }
+    if (payload.status) {
+      botInfo.status = payload.status;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'task')) {
+      botInfo.task = payload.task;
+    }
+    if (payload.activity) {
+      botInfo.activity = payload.activity;
+    }
+    if (payload.telemetry || payload.metrics) {
+      botInfo.telemetry = payload.telemetry || payload.metrics;
     }
   }
   
@@ -31586,6 +31689,9 @@ class BotSpawner {
       
       // Start loop detection when bot spawns
       bot.once('spawn', () => {
+        if (reconnectManager && typeof reconnectManager.notifyConnectionEstablished === 'function') {
+          reconnectManager.notifyConnectionEstablished();
+        }
         console.log(`[LOOP_DETECT] Initializing loop detection for ${username}`);
         loopDetector.start();
       });
@@ -31614,6 +31720,10 @@ class BotSpawner {
             reconnectManager.isDuplicateLogin = true;
             reconnectManager.disconnectTimestamp = Date.now();
           }
+        }
+
+        if (reconnectManager) {
+          reconnectManager.recordDisconnect(reason || 'unknown');
         }
 
         // Stop combat when bot disconnects
@@ -32119,6 +32229,11 @@ class AutoReconnectManager {
       this.consecutiveDisconnects = 0;
       this.connectionStableTimer = null;
     }, this.stabilityResetMs);
+
+    if (config.network) {
+      config.network.connectionStatus = 'connected';
+      config.network.reconnectAttempts = 0;
+    }
   }
 
   recordDisconnect(reason) {
@@ -32134,7 +32249,13 @@ class AutoReconnectManager {
     this.lastDisconnectReason = reason || null;
     this.lastErrorWasECONNABORTED = Boolean(reason && reason.includes('ECONNABORTED'));
     this.lastConnectionStart = null;
+    this.disconnectTimestamp = now;
     this.clearStabilityTimer();
+
+    if (config.network) {
+      config.network.connectionStatus = 'disconnected';
+      config.network.reconnectAttempts = this.consecutiveDisconnects;
+    }
   }
 
   // Ensure old bot is fully cleaned up before reconnecting
@@ -32163,6 +32284,11 @@ class AutoReconnectManager {
       if (bot && bot._client && bot._client.socket) {
         try {
           bot._client.end();
+        } catch (err) {
+          // Ignore errors
+        }
+        try {
+          bot._client.socket.destroy();
         } catch (err) {
           // Ignore errors
         }
@@ -32236,7 +32362,6 @@ class AutoReconnectManager {
 
   // Attempt to reconnect with connection lock to prevent simultaneous attempts
   async attemptReconnect(oldBot = null) {
-    // Check connection lock to prevent simultaneous connection attempts
     if (this.connectionLock) {
       console.log(`[RECONNECT] ⚠️ Connection attempt already in progress for ${this.username}, ignoring duplicate`);
       return null;
@@ -32249,17 +32374,24 @@ class AutoReconnectManager {
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error(`[RECONNECT] ❌ Max reconnection attempts (${this.maxReconnectAttempts}) reached for ${this.username}. Giving up.`);
-      // Clean up reconnect manager
+      this.clearStabilityTimer();
+      if (config.network) {
+        config.network.connectionStatus = 'offline';
+        config.network.reconnectAttempts = this.reconnectAttempts;
+      }
       this.botSpawner.reconnectManagers.delete(this.username);
       return null;
     }
 
-    // Acquire connection lock
     this.connectionLock = true;
     this.reconnecting = true;
 
+    if (config.network) {
+      config.network.connectionStatus = 'reconnecting';
+      config.network.reconnectAttempts = this.reconnectAttempts + 1;
+    }
+
     try {
-      // Ensure old bot is fully cleaned up
       if (oldBot) {
         await this.ensureCleanup(oldBot);
       } else if (this.currentBot) {
@@ -32268,46 +32400,45 @@ class AutoReconnectManager {
 
       const delay = this.getBackoffDelay(this.reconnectAttempts);
       const delaySeconds = (delay / 1000).toFixed(1);
-
       const duplicateLoginNote = this.isDuplicateLogin ? ' (duplicate_login detected - using extended delay)' : '';
+
       console.log(`[RECONNECT] Bot ${this.username} disconnected. Attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts}${duplicateLoginNote}`);
       console.log(`[RECONNECT] Waiting ${delaySeconds}s before reconnection attempt...`);
 
-      // Wait for backoff delay
       await new Promise(resolve => setTimeout(resolve, delay));
 
-      // Double-check that no other instance is trying to connect
       if (!this.connectionLock) {
         console.log(`[RECONNECT] Connection lock released during wait, aborting reconnect for ${this.username}`);
         this.reconnecting = false;
         return null;
       }
 
-      // Attempt to spawn a new bot with the same configuration
       console.log(`[RECONNECT] 🔄 Attempting to reconnect ${this.username}...`);
       const newBot = await this.botSpawner.spawnBot(this.serverIP, this.options);
 
       if (newBot) {
         console.log(`[RECONNECT] ✅ Successfully reconnected ${this.username}`);
-        this.reconnectAttempts = 0; // Reset attempts on successful reconnection
-        this.currentBot = newBot; // Track new bot instance
-        this.isDuplicateLogin = false; // Reset duplicate login flag
+        this.reconnectAttempts = 0;
+        this.currentBot = newBot;
+        this.isDuplicateLogin = false;
+        this.consecutiveDisconnects = 0;
+        this.notifyConnectionEstablished();
 
-        // Restore bot state
         await this.restoreBotState(newBot);
 
-        // NOTE: SwarmCoordinator registration is handled by registerBot() which was
-        // already called by spawnBot(), so we don't need to register again here
-
         this.reconnecting = false;
-        this.connectionLock = false; // Release lock
+        this.connectionLock = false;
         return newBot;
       }
     } catch (error) {
       console.error(`[RECONNECT] Reconnection attempt ${this.reconnectAttempts + 1} failed:`, error.message);
       this.reconnectAttempts++;
-      
-      // Check if error is duplicate_login
+      this.lastErrorWasECONNABORTED = Boolean(error?.message && error.message.includes('ECONNABORTED'));
+
+      if (config.network) {
+        config.network.reconnectAttempts = this.reconnectAttempts;
+      }
+
       if (error.message && error.message.includes('duplicate_login')) {
         this.isDuplicateLogin = true;
         console.log(`[RECONNECT] ⚠️ Duplicate login detected, will use extended backoff on next attempt`);
@@ -32315,16 +32446,19 @@ class AutoReconnectManager {
     }
 
     this.reconnecting = false;
-    this.connectionLock = false; // Release lock
+    this.connectionLock = false;
 
-    // Schedule next attempt if not exceeded max
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       const nextDelay = this.getBackoffDelay(this.reconnectAttempts);
       const nextDelaySeconds = (nextDelay / 1000).toFixed(1);
       console.log(`[RECONNECT] Next reconnection attempt in ${nextDelaySeconds}s...`);
     } else {
-      // Clean up reconnect manager when giving up
       console.log(`[RECONNECT] Cleaning up reconnect manager for ${this.username}`);
+      this.clearStabilityTimer();
+      if (config.network) {
+        config.network.connectionStatus = 'offline';
+        config.network.reconnectAttempts = this.reconnectAttempts;
+      }
       this.botSpawner.reconnectManagers.delete(this.username);
     }
 
@@ -36245,18 +36379,14 @@ async function launchBot(username, role = 'fighter') {
         // Start heartbeat
         const heartbeatInterval = safeSetInterval(() => {
           if (wsClient && wsClient.readyState === WebSocket.OPEN) {
-            try {
-              wsClient.send(JSON.stringify({
-                type: 'HEARTBEAT',
-                id: Date.now(),
-                position: bot.entity ? bot.entity.position : { x: 0, y: 0, z: 0 },
-                health: bot.health || 20,
-                task: config.tasks.current?.item || null,
-                status: combatAI.inCombat ? 'combat' : (config.tasks.current ? 'busy' : 'idle')
-              }));
-            } catch (error) {
-              console.log(`[SWARM] Failed to send heartbeat for ${username}:`, error.message);
-            }
+            sendSwarmPacket(wsClient, {
+              type: 'HEARTBEAT',
+              id: Date.now(),
+              position: bot.entity ? bot.entity.position : { x: 0, y: 0, z: 0 },
+              health: bot.health || 20,
+              task: config.tasks.current?.item || null,
+              status: combatAI.inCombat ? 'combat' : (config.tasks.current ? 'busy' : 'idle')
+            }, 'swarm heartbeat', { queue: false, timeout: 1000 });
           } else if (wsClient && wsClient.readyState === WebSocket.CLOSED) {
             console.log(`[SWARM] WebSocket connection closed for ${username}, attempting reconnect...`);
             // Note: Reconnection logic would need to be implemented here if needed
@@ -36914,17 +37044,17 @@ async function launchBot(username, role = 'fighter') {
           // Proximity-based swarm help: Alert swarm for bots within 200 blocks
           if (wsClient && wsClient.readyState === WebSocket.OPEN) {
             const helpRadius = config.swarm.combat?.helpRadius || 200;
-            wsClient.send(JSON.stringify({
+            sendSwarmPacket(wsClient, {
               type: 'ATTACK_ALERT',
               attacker: attacker.username,
               victim: username,
               location: bot.entity.position,
               helpRadius: helpRadius,
               timestamp: Date.now()
-            }));
+            }, 'attack alert', { queue: false, timeout: 1000 });
             console.log(`[SWARM] ${username} under attack at ${bot.entity.position.x.toFixed(0)}, ${bot.entity.position.y.toFixed(0)}, ${bot.entity.position.z.toFixed(0)}!`);
           }
-          
+
           if (combatAI && typeof combatAI.handleCombat === 'function') {
             await combatAI.handleCombat(attacker);
           }
@@ -37313,11 +37443,7 @@ function startVideoFeedStreaming(bot, wsClient) {
       activity: determineBotActivity(bot)
     };
 
-    try {
-      wsClient.send(JSON.stringify(payload));
-    } catch (err) {
-      console.log(`[VIDEO] Failed to send frame for ${bot.username}: ${err.message}`);
-    }
+    sendSwarmPacket(wsClient, payload, 'video frame', { queue: true, timeout: 2000 });
   };
 
   sendFrame();
@@ -38141,12 +38267,28 @@ function loadConfiguration() {
         if (typeof privateMsgSettings.forwardToConsole === 'boolean') {
           workingConfig.privateMsg.forwardToConsole = privateMsgSettings.forwardToConsole;
         }
-      }
+        }
 
-      // Neural Networks
-      if (savedConfig.neural && typeof savedConfig.neural === 'object') {
+        if (savedConfig.network && typeof savedConfig.network === 'object') {
+          workingConfig.network = { ...workingConfig.network, ...savedConfig.network };
+          if (savedConfig.network.chatRateLimit && typeof savedConfig.network.chatRateLimit === 'object') {
+            workingConfig.network.chatRateLimit = {
+              ...workingConfig.network.chatRateLimit,
+              ...savedConfig.network.chatRateLimit
+            };
+          }
+          if (savedConfig.network.packetRateLimit && typeof savedConfig.network.packetRateLimit === 'object') {
+            workingConfig.network.packetRateLimit = {
+              ...workingConfig.network.packetRateLimit,
+              ...savedConfig.network.packetRateLimit
+            };
+          }
+        }
+
+        // Neural Networks
+        if (savedConfig.neural && typeof savedConfig.neural === 'object') {
         workingConfig.neural = { ...workingConfig.neural, ...savedConfig.neural };
-      }
+        }
 
       // Combat
       if (savedConfig.combat && typeof savedConfig.combat === 'object') {
@@ -38286,7 +38428,8 @@ function ensureConfigStructure(targetConfig) {
       reconnectMaxDelayMs: 120000,
       connectionStabilityMs: 60000,
       reconnectExponentCap: 7,
-      chatRateLimit: { maxMessages: 5, windowMs: 3000 }
+      chatRateLimit: { maxMessages: 5, windowMs: 3000 },
+      packetRateLimit: { maxPackets: 80, windowMs: 1000 }
     };
   } else {
     if (typeof cfg.network.reconnectBaseDelayMs !== 'number' || cfg.network.reconnectBaseDelayMs <= 0) {
@@ -38309,6 +38452,16 @@ function ensureConfigStructure(targetConfig) {
       }
       if (typeof cfg.network.chatRateLimit.windowMs !== 'number' || cfg.network.chatRateLimit.windowMs <= 0) {
         cfg.network.chatRateLimit.windowMs = 3000;
+      }
+    }
+    if (!cfg.network.packetRateLimit || typeof cfg.network.packetRateLimit !== 'object') {
+      cfg.network.packetRateLimit = { maxPackets: 80, windowMs: 1000 };
+    } else {
+      if (typeof cfg.network.packetRateLimit.maxPackets !== 'number' || cfg.network.packetRateLimit.maxPackets <= 0) {
+        cfg.network.packetRateLimit.maxPackets = 80;
+      }
+      if (typeof cfg.network.packetRateLimit.windowMs !== 'number' || cfg.network.packetRateLimit.windowMs <= 0) {
+        cfg.network.packetRateLimit.windowMs = 1000;
       }
     }
   }
@@ -38576,7 +38729,8 @@ function saveConfiguration() {
         reconnectMaxDelayMs: 120000,
         connectionStabilityMs: 60000,
         reconnectExponentCap: 7,
-        chatRateLimit: { maxMessages: 5, windowMs: 3000 }
+        chatRateLimit: { maxMessages: 5, windowMs: 3000 },
+        packetRateLimit: { maxPackets: 80, windowMs: 1000 }
       },
       neural: cfg.neural || { combat: null, placement: null, dupe: null, conversation: null, dialogue: null, movement: null, available: false, type: 'fallback', manager: null },
 
