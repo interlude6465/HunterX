@@ -42989,7 +42989,7 @@ class SpeedOptimizer {
     return this.bot.food && this.bot.food >= 6;
   }
 
-  // Optimized mining with minimal delays
+  // Optimized mining with minimal delays and proper tool selection
   async mineBlockFast(block) {
     if (!block) return false;
 
@@ -42997,6 +42997,12 @@ class SpeedOptimizer {
       // Stop any current movement
       if (this.bot.pathfinder) {
         this.bot.pathfinder.stop();
+      }
+
+      // Select and equip the correct tool for this block type
+      const toolSelected = await this.selectAndEquipTool(block);
+      if (!toolSelected) {
+        console.log(`[SPEED] ⚠️ No suitable tool found for ${block.name}, using hand`);
       }
 
       // Look at block immediately
@@ -43014,6 +43020,265 @@ class SpeedOptimizer {
       console.log(`[SPEED] ❌ Fast mine failed: ${err.message}`);
       return false;
     }
+  }
+
+  // Select and equip the correct tool for a given block type
+  async selectAndEquipTool(block) {
+    const toolType = this.getRequiredToolType(block.name);
+    if (!toolType) {
+      return false; // No tool needed or hand is sufficient
+    }
+
+    // Find the best available tool of the required type
+    const tool = this.findBestTool(toolType);
+    if (!tool) {
+      console.log(`[SPEED] ❌ No ${toolType} found in inventory`);
+      return false;
+    }
+
+    // Equip the tool
+    try {
+      await this.bot.equip(tool, 'hand');
+      console.log(`[SPEED] ✅ Equipped ${tool.name} for ${block.name}`);
+      return true;
+    } catch (err) {
+      console.log(`[SPEED] ❌ Failed to equip ${tool.name}: ${err.message}`);
+      return false;
+    }
+  }
+
+  // Get the required tool type for a block
+  getRequiredToolType(blockName) {
+    // Comprehensive tool mapping based on Minecraft mechanics
+    const toolMap = {
+      // Pickaxe blocks (stone, ores, deepslate, etc.)
+      'stone': 'pickaxe',
+      'cobblestone': 'pickaxe',
+      'andesite': 'pickaxe',
+      'diorite': 'pickaxe',
+      'granite': 'pickaxe',
+      'deepslate': 'pickaxe',
+      'cobbled_deepslate': 'pickaxe',
+      'tuff': 'pickaxe',
+      'coal_ore': 'pickaxe',
+      'iron_ore': 'pickaxe',
+      'gold_ore': 'pickaxe',
+      'copper_ore': 'pickaxe',
+      'diamond_ore': 'pickaxe',
+      'emerald_ore': 'pickaxe',
+      'lapis_ore': 'pickaxe',
+      'redstone_ore': 'pickaxe',
+      'nether_gold_ore': 'pickaxe',
+      'ancient_debris': 'pickaxe',
+      'nether_quartz_ore': 'pickaxe',
+      'obsidian': 'pickaxe',
+      'ender_chest': 'pickaxe',
+      'furnace': 'pickaxe',
+      'crafting_table': 'axe', // Can be mined with axe, but pickaxe works too
+      'chest': 'axe',
+      'trapped_chest': 'axe',
+      'hopper': 'pickaxe',
+      'dropper': 'pickaxe',
+      'dispenser': 'pickaxe',
+      'iron_block': 'pickaxe',
+      'gold_block': 'pickaxe',
+      'diamond_block': 'pickaxe',
+      'emerald_block': 'pickaxe',
+      'lapis_block': 'pickaxe',
+      'coal_block': 'pickaxe',
+      'redstone_block': 'pickaxe',
+      'copper_block': 'pickaxe',
+      'netherite_block': 'pickaxe',
+      
+      // Shovel blocks (dirt, sand, gravel, etc.)
+      'dirt': 'shovel',
+      'grass_block': 'shovel',
+      'podzol': 'shovel',
+      'mycelium': 'shovel',
+      'coarse_dirt': 'shovel',
+      'rooted_dirt': 'shovel',
+      'farmland': 'shovel',
+      'sand': 'shovel',
+      'red_sand': 'shovel',
+      'gravel': 'shovel',
+      'clay': 'shovel',
+      'soul_sand': 'shovel',
+      'soul_soil': 'shovel',
+      'snow': 'shovel',
+      'snow_block': 'shovel',
+      'powder_snow': 'shovel',
+      'mud': 'shovel',
+      
+      // Axe blocks (wood, logs, planks, etc.)
+      'oak_log': 'axe',
+      'birch_log': 'axe',
+      'spruce_log': 'axe',
+      'jungle_log': 'axe',
+      'acacia_log': 'axe',
+      'dark_oak_log': 'axe',
+      'mangrove_log': 'axe',
+      'cherry_log': 'axe',
+      'oak_wood': 'axe',
+      'birch_wood': 'axe',
+      'spruce_wood': 'axe',
+      'jungle_wood': 'axe',
+      'acacia_wood': 'axe',
+      'dark_oak_wood': 'axe',
+      'mangrove_wood': 'axe',
+      'cherry_wood': 'axe',
+      'stripped_oak_log': 'axe',
+      'stripped_birch_log': 'axe',
+      'stripped_spruce_log': 'axe',
+      'stripped_jungle_log': 'axe',
+      'stripped_acacia_log': 'axe',
+      'stripped_dark_oak_log': 'axe',
+      'stripped_mangrove_log': 'axe',
+      'stripped_cherry_log': 'axe',
+      'oak_planks': 'axe',
+      'birch_planks': 'axe',
+      'spruce_planks': 'axe',
+      'jungle_planks': 'axe',
+      'acacia_planks': 'axe',
+      'dark_oak_planks': 'axe',
+      'mangrove_planks': 'axe',
+      'cherry_planks': 'axe',
+      'fence': 'axe',
+      'oak_fence': 'axe',
+      'birch_fence': 'axe',
+      'spruce_fence': 'axe',
+      'jungle_fence': 'axe',
+      'acacia_fence': 'axe',
+      'dark_oak_fence': 'axe',
+      'mangrove_fence': 'axe',
+      'cherry_fence': 'axe',
+      'fence_gate': 'axe',
+      'oak_fence_gate': 'axe',
+      'birch_fence_gate': 'axe',
+      'spruce_fence_gate': 'axe',
+      'jungle_fence_gate': 'axe',
+      'acacia_fence_gate': 'axe',
+      'dark_oak_fence_gate': 'axe',
+      'mangrove_fence_gate': 'axe',
+      'cherry_fence_gate': 'axe',
+      'door': 'axe',
+      'oak_door': 'axe',
+      'birch_door': 'axe',
+      'spruce_door': 'axe',
+      'jungle_door': 'axe',
+      'acacia_door': 'axe',
+      'dark_oak_door': 'axe',
+      'mangrove_door': 'axe',
+      'cherry_door': 'axe',
+      'trapdoor': 'axe',
+      'oak_trapdoor': 'axe',
+      'birch_trapdoor': 'axe',
+      'spruce_trapdoor': 'axe',
+      'jungle_trapdoor': 'axe',
+      'acacia_trapdoor': 'axe',
+      'dark_oak_trapdoor': 'axe',
+      'mangrove_trapdoor': 'axe',
+      'cherry_trapdoor': 'axe',
+      'sign': 'axe',
+      'oak_sign': 'axe',
+      'birch_sign': 'axe',
+      'spruce_sign': 'axe',
+      'jungle_sign': 'axe',
+      'acacia_sign': 'axe',
+      'dark_oak_sign': 'axe',
+      'mangrove_sign': 'axe',
+      'cherry_sign': 'axe',
+      'bookshelf': 'axe',
+      'jukebox': 'axe',
+      'note_block': 'axe',
+      'chest': 'axe',
+      'trapped_chest': 'axe',
+      'crafting_table': 'axe',
+      
+      // Hoe blocks (crops, plants)
+      'wheat': 'hoe',
+      'carrots': 'hoe',
+      'potatoes': 'hoe',
+      'beetroots': 'hoe',
+      'pumpkin_stem': 'hoe',
+      'melon_stem': 'hoe',
+      'nether_wart': 'hoe',
+      'cocoa': 'hoe',
+      'sugar_cane': 'hoe', // Actually breaks instantly, but hoe is more appropriate
+      
+      // Shears blocks (wool, leaves, etc.)
+      'white_wool': 'shears',
+      'orange_wool': 'shears',
+      'magenta_wool': 'shears',
+      'light_blue_wool': 'shears',
+      'yellow_wool': 'shears',
+      'lime_wool': 'shears',
+      'pink_wool': 'shears',
+      'gray_wool': 'shears',
+      'light_gray_wool': 'shears',
+      'cyan_wool': 'shears',
+      'purple_wool': 'shears',
+      'blue_wool': 'shears',
+      'brown_wool': 'shears',
+      'green_wool': 'shears',
+      'red_wool': 'shears',
+      'black_wool': 'shears',
+      'oak_leaves': 'shears',
+      'birch_leaves': 'shears',
+      'spruce_leaves': 'shears',
+      'jungle_leaves': 'shears',
+      'acacia_leaves': 'shears',
+      'dark_oak_leaves': 'shears',
+      'mangrove_leaves': 'shears',
+      'cherry_leaves': 'shears',
+      'azalea_leaves': 'shears',
+      'flowering_azalea_leaves': 'shears',
+      'vine': 'shears',
+      'cobweb': 'shears',
+      'grass': 'shears',
+      'tall_grass': 'shears',
+      'fern': 'shears',
+      'large_fern': 'shears',
+      'dead_bush': 'shears',
+      'seagrass': 'shears',
+      'tall_seagrass': 'shears',
+      'kelp': 'shears',
+      'kelp_plant': 'shears'
+    };
+
+    return toolMap[blockName.toLowerCase()] || null;
+  }
+
+  // Find the best available tool of a given type
+  findBestTool(toolType) {
+    if (!this.bot || !this.bot.inventory) {
+      return null;
+    }
+
+    const items = this.bot.inventory.items();
+    
+    // Tool priority by material (best to worst)
+    const toolPriority = {
+      'pickaxe': ['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe', 'golden_pickaxe'],
+      'axe': ['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'wooden_axe', 'golden_axe'],
+      'shovel': ['netherite_shovel', 'diamond_shovel', 'iron_shovel', 'stone_shovel', 'wooden_shovel', 'golden_shovel'],
+      'hoe': ['netherite_hoe', 'diamond_hoe', 'iron_hoe', 'stone_hoe', 'wooden_hoe', 'golden_hoe'],
+      'shears': ['shears']
+    };
+
+    const priority = toolPriority[toolType];
+    if (!priority) {
+      return null;
+    }
+
+    // Find the best tool available in inventory
+    for (const toolName of priority) {
+      const tool = items.find(item => item.name === toolName);
+      if (tool) {
+        return tool;
+      }
+    }
+
+    return null;
   }
 
   // Optimized bridging with continuous placement
@@ -43225,35 +43490,105 @@ class MinecraftKnowledgeBase {
     this.blocks = {
       // Mining requirements (tool tier + hardness)
       dirt: { tool: 'hand', hardness: 0.5, drops: ['dirt'] },
-      grass: { tool: 'hand', hardness: 0.6, drops: ['dirt'] },
+      grass_block: { tool: 'shovel', hardness: 0.6, drops: ['dirt'] },
       stone: { tool: 'wooden_pickaxe', hardness: 1.5, drops: ['cobblestone'] },
       cobblestone: { tool: 'wooden_pickaxe', hardness: 2, drops: ['cobblestone'] },
+      andesite: { tool: 'wooden_pickaxe', hardness: 1.5, drops: ['andesite'] },
+      diorite: { tool: 'wooden_pickaxe', hardness: 1.5, drops: ['diorite'] },
+      granite: { tool: 'wooden_pickaxe', hardness: 1.5, drops: ['granite'] },
+      deepslate: { tool: 'wooden_pickaxe', hardness: 3, drops: ['cobbled_deepslate'] },
+      cobbled_deepslate: { tool: 'wooden_pickaxe', hardness: 3.5, drops: ['cobbled_deepslate'] },
+      tuff: { tool: 'wooden_pickaxe', hardness: 1.5, drops: ['tuff'] },
       coal_ore: { tool: 'wooden_pickaxe', hardness: 3, drops: ['coal'] },
       iron_ore: { tool: 'stone_pickaxe', hardness: 3, drops: ['iron_ore'] },
       gold_ore: { tool: 'iron_pickaxe', hardness: 3, drops: ['gold_ore'] },
-      diamond_ore: { tool: 'iron_pickaxe', hardness: 3, drops: ['diamond'] },
-      emerald_ore: { tool: 'iron_pickaxe', hardness: 3, drops: ['emerald'] },
-      lapis_ore: { tool: 'stone_pickaxe', hardness: 3, drops: ['lapis_lazuli', 'dye'] },
+      lapis_ore: { tool: 'stone_pickaxe', hardness: 3, drops: ['lapis_lazuli'] },
       redstone_ore: { tool: 'iron_pickaxe', hardness: 3, drops: ['redstone'] },
       copper_ore: { tool: 'stone_pickaxe', hardness: 3, drops: ['copper_ore'] },
+      nether_gold_ore: { tool: 'iron_pickaxe', hardness: 3, drops: ['gold_nugget'] },
       ancient_debris: { tool: 'diamond_pickaxe', hardness: 3, drops: ['ancient_debris'] },
+      nether_quartz_ore: { tool: 'wooden_pickaxe', hardness: 3, drops: ['nether_quartz'] },
       obsidian: { tool: 'diamond_pickaxe', hardness: 50, drops: ['obsidian'] },
+      crying_obsidian: { tool: 'diamond_pickaxe', hardness: 50, drops: ['crying_obsidian'] },
+      ender_chest: { tool: 'diamond_pickaxe', hardness: 22.5, drops: ['ender_chest'] },
+      
+      // Storage blocks (pickaxe)
+      furnace: { tool: 'wooden_pickaxe', hardness: 3.5, drops: ['furnace'] },
+      chest: { tool: 'axe', hardness: 2.5, drops: ['chest'] },
+      trapped_chest: { tool: 'axe', hardness: 2.5, drops: ['trapped_chest'] },
+      hopper: { tool: 'wooden_pickaxe', hardness: 3.5, drops: ['hopper'] },
+      dropper: { tool: 'wooden_pickaxe', hardness: 3.5, drops: ['dropper'] },
+      dispenser: { tool: 'wooden_pickaxe', hardness: 3.5, drops: ['dispenser'] },
+      iron_block: { tool: 'stone_pickaxe', hardness: 5, drops: ['iron_block'] },
+      gold_block: { tool: 'iron_pickaxe', hardness: 5, drops: ['gold_block'] },
+      diamond_block: { tool: 'iron_pickaxe', hardness: 5, drops: ['diamond_block'] },
+      emerald_block: { tool: 'iron_pickaxe', hardness: 5, drops: ['emerald_block'] },
+      lapis_block: { tool: 'stone_pickaxe', hardness: 5, drops: ['lapis_block'] },
+      coal_block: { tool: 'wooden_pickaxe', hardness: 5, drops: ['coal_block'] },
+      redstone_block: { tool: 'wooden_pickaxe', hardness: 5, drops: ['redstone_block'] },
+      copper_block: { tool: 'stone_pickaxe', hardness: 5, drops: ['copper_block'] },
+      netherite_block: { tool: 'diamond_pickaxe', hardness: 5, drops: ['netherite_block'] },
+      
       deepslate: { tool: 'wooden_pickaxe', hardness: 3, drops: ['cobbled_deepslate'] },
       netherrack: { tool: 'wooden_pickaxe', hardness: 0.4, drops: ['netherrack'] },
       end_stone: { tool: 'pickaxe', hardness: 3, drops: ['end_stone'] },
       
-      // Wood types
-      oak_log: { tool: 'axe_or_hand', hardness: 2, drops: ['oak_log'] },
-      spruce_log: { tool: 'axe_or_hand', hardness: 2, drops: ['spruce_log'] },
-      birch_log: { tool: 'axe_or_hand', hardness: 2, drops: ['birch_log'] },
-      jungle_log: { tool: 'axe_or_hand', hardness: 2, drops: ['jungle_log'] },
-      acacia_log: { tool: 'axe_or_hand', hardness: 2, drops: ['acacia_log'] },
-      dark_oak_log: { tool: 'axe_or_hand', hardness: 2, drops: ['dark_oak_log'] },
+      // Axe blocks (wood, logs, planks, etc.)
+      oak_log: { tool: 'axe', hardness: 2, drops: ['oak_log'] },
+      spruce_log: { tool: 'axe', hardness: 2, drops: ['spruce_log'] },
+      birch_log: { tool: 'axe', hardness: 2, drops: ['birch_log'] },
+      jungle_log: { tool: 'axe', hardness: 2, drops: ['jungle_log'] },
+      acacia_log: { tool: 'axe', hardness: 2, drops: ['acacia_log'] },
+      dark_oak_log: { tool: 'axe', hardness: 2, drops: ['dark_oak_log'] },
+      mangrove_log: { tool: 'axe', hardness: 2, drops: ['mangrove_log'] },
+      cherry_log: { tool: 'axe', hardness: 2, drops: ['cherry_log'] },
+      oak_planks: { tool: 'axe', hardness: 2, drops: ['oak_planks'] },
+      birch_planks: { tool: 'axe', hardness: 2, drops: ['birch_planks'] },
+      spruce_planks: { tool: 'axe', hardness: 2, drops: ['spruce_planks'] },
+      jungle_planks: { tool: 'axe', hardness: 2, drops: ['jungle_planks'] },
+      acacia_planks: { tool: 'axe', hardness: 2, drops: ['acacia_planks'] },
+      dark_oak_planks: { tool: 'axe', hardness: 2, drops: ['dark_oak_planks'] },
+      mangrove_planks: { tool: 'axe', hardness: 2, drops: ['mangrove_planks'] },
+      cherry_planks: { tool: 'axe', hardness: 2, drops: ['cherry_planks'] },
+      bookshelf: { tool: 'axe', hardness: 1.5, drops: ['book', 'planks'] },
+      jukebox: { tool: 'axe', hardness: 2, drops: ['jukebox'] },
+      note_block: { tool: 'axe', hardness: 0.8, drops: ['note_block'] },
       
-      // Other materials
-      sand: { tool: 'shovel_or_hand', hardness: 0.5, drops: ['sand'] },
-      gravel: { tool: 'shovel_or_hand', hardness: 0.6, drops: ['gravel', 'flint'] },
-      clay: { tool: 'shovel_or_hand', hardness: 0.6, drops: ['clay_ball'] },
+      // Shovel blocks (dirt, sand, gravel, etc.)
+      sand: { tool: 'shovel', hardness: 0.5, drops: ['sand'] },
+      red_sand: { tool: 'shovel', hardness: 0.5, drops: ['red_sand'] },
+      gravel: { tool: 'shovel', hardness: 0.6, drops: ['gravel', 'flint'] },
+      clay: { tool: 'shovel', hardness: 0.6, drops: ['clay_ball'] },
+      soul_sand: { tool: 'shovel', hardness: 0.5, drops: ['soul_sand'] },
+      soul_soil: { tool: 'shovel', hardness: 0.5, drops: ['soul_soil'] },
+      snow: { tool: 'shovel', hardness: 0.1, drops: ['snowball'] },
+      snow_block: { tool: 'shovel', hardness: 0.2, drops: ['snowball'] },
+      powder_snow: { tool: 'shovel', hardness: 0.25, drops: ['snowball'] },
+      mud: { tool: 'shovel', hardness: 0.5, drops: ['mud'] },
+      podzol: { tool: 'shovel', hardness: 0.5, drops: ['podzol'] },
+      mycelium: { tool: 'shovel', hardness: 0.5, drops: ['mycelium'] },
+      coarse_dirt: { tool: 'shovel', hardness: 0.5, drops: ['coarse_dirt'] },
+      rooted_dirt: { tool: 'shovel', hardness: 0.5, drops: ['rooted_dirt'] },
+      farmland: { tool: 'shovel', hardness: 0.6, drops: ['dirt'] },
+      
+      // Hoe blocks (crops, plants)
+      wheat: { tool: 'hoe', hardness: 0, drops: ['wheat', 'seeds'] },
+      carrots: { tool: 'hoe', hardness: 0, drops: ['carrots'] },
+      potatoes: { tool: 'hoe', hardness: 0, drops: ['potatos'] },
+      beetroots: { tool: 'hoe', hardness: 0, drops: ['beetroots', 'seeds'] },
+      pumpkin_stem: { tool: 'hoe', hardness: 0, drops: ['pumpkin_stem'] },
+      melon_stem: { tool: 'hoe', hardness: 0, drops: ['melon_stem'] },
+      nether_wart: { tool: 'hoe', hardness: 0, drops: ['nether_wart'] },
+      cocoa: { tool: 'hoe', hardness: 0, drops: ['cocoa_beans'] },
+      
+      // Shears blocks (wool, leaves, etc.)
+      white_wool: { tool: 'shears', hardness: 0.8, drops: ['white_wool'] },
+      oak_leaves: { tool: 'shears', hardness: 0.2, drops: ['oak_leaves', 'apple', 'stick'] },
+      vine: { tool: 'shears', hardness: 0.2, drops: ['vine'] },
+      cobweb: { tool: 'shears', hardness: 4, drops: ['string'] },
+      grass: { tool: 'shears', hardness: 0, drops: ['grass'] },
+      
+      // Special blocks
       ice: { tool: 'pickaxe', hardness: 0.5, drops: ['water'] }
     };
 
@@ -44234,6 +44569,41 @@ class MinecraftKnowledgeBase {
     };
   }
 
+  // Get required tool type for a block (simplified version for SpeedOptimizer)
+  getRequiredToolType(blockName) {
+    const block = this.getBlockInfo(blockName);
+    if (!block) return null;
+    
+    // Map tool names to tool types
+    const toolTypeMap = {
+      'hand': 'hand',
+      'axe_or_hand': 'axe',
+      'shovel_or_hand': 'shovel',
+      'hoe': 'hoe',
+      'shears': 'shears'
+    };
+    
+    // Extract base tool type from specific tool names
+    const toolName = block.tool;
+    let toolType = 'hand'; // default
+    
+    if (toolName.includes('pickaxe')) {
+      toolType = 'pickaxe';
+    } else if (toolName.includes('axe')) {
+      toolType = 'axe';
+    } else if (toolName.includes('shovel')) {
+      toolType = 'shovel';
+    } else if (toolName.includes('hoe')) {
+      toolType = 'hoe';
+    } else if (toolName.includes('shears')) {
+      toolType = 'shears';
+    } else if (toolTypeMap[toolName]) {
+      toolType = toolTypeMap[toolName];
+    }
+    
+    return toolType;
+  }
+
   getMinimumToolTier(toolRequirement) {
     const tiers = {
       'hand': 0,
@@ -45067,9 +45437,109 @@ class AIPlanningEngine {
   async executeMiningStep(step) {
     console.log(`[AI_PLANNING] Mining ${step.target}`);
     
-    // This would integrate with the existing mining system
-    // For now, return true as placeholder
-    return true;
+    try {
+      // Get the bot instance from the planning engine
+      const bot = this.bot;
+      if (!bot) {
+        console.log(`[AI_PLANNING] ❌ No bot available for mining`);
+        return false;
+      }
+
+      // Create speed optimizer if not exists
+      if (!bot.speedOptimizer) {
+        bot.speedOptimizer = new SpeedOptimizer(bot);
+      }
+
+      // Find blocks to mine
+      const targetBlocks = this.findBlocksToMine(step.target, step.quantity || 1);
+      if (targetBlocks.length === 0) {
+        console.log(`[AI_PLANNING] ❌ No ${step.target} blocks found nearby`);
+        return false;
+      }
+
+      console.log(`[AI_PLANNING] Found ${targetBlocks.length} ${step.target} blocks to mine`);
+
+      // Mine each block with proper tool selection
+      let minedCount = 0;
+      const targetCount = step.quantity || 1;
+      
+      for (const block of targetBlocks) {
+        if (minedCount >= targetCount) break;
+        
+        // Move to block if too far
+        const distance = bot.entity.position.distanceTo(block.position);
+        if (distance > 4.5) {
+          console.log(`[AI_PLANNING] Moving to ${step.target} at ${block.position.x},${block.position.y},${block.position.z}`);
+          await bot.speedOptimizer.moveToFast(block.position, 15000);
+        }
+
+        // Mine block with proper tool selection
+        const success = await bot.speedOptimizer.mineBlockFast(block);
+        if (success) {
+          minedCount++;
+          console.log(`[AI_PLANNING] ✅ Mined ${step.target} (${minedCount}/${targetCount})`);
+        } else {
+          console.log(`[AI_PLANNING] ❌ Failed to mine ${step.target}`);
+        }
+
+        // Small delay between blocks
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      const success = minedCount >= (step.quantity || 1);
+      console.log(`[AI_PLANNING] Mining ${step.target} ${success ? 'completed' : 'failed'}: ${minedCount}/${targetCount} blocks`);
+      return success;
+
+    } catch (error) {
+      console.error(`[AI_PLANNING] Error during mining step: ${error.message}`);
+      return false;
+    }
+  }
+
+  // Find blocks of a specific type to mine
+  findBlocksToMine(blockType, maxCount = 1) {
+    const bot = this.bot;
+    if (!bot || !bot.entity) {
+      return [];
+    }
+
+    // Get block name variations
+    const possibleNames = [blockType.toLowerCase()];
+    if (!blockType.includes('_ore') && !blockType.includes('_block')) {
+      possibleNames.push(blockType.toLowerCase() + '_ore');
+      possibleNames.push(blockType.toLowerCase() + '_block');
+    }
+
+    // Search for blocks
+    const foundBlocks = [];
+    const searchRadius = 64; // Search in 64 block radius
+    
+    for (const name of possibleNames) {
+      const blocks = bot.findBlocks({
+        matching: bot.registry.blocksByName[name]?.id,
+        maxDistance: searchRadius,
+        count: maxCount - foundBlocks.length
+      });
+
+      for (const pos of blocks) {
+        const block = bot.blockAt(pos);
+        if (block && block.type !== 0) { // Not air
+          foundBlocks.push(block);
+          if (foundBlocks.length >= maxCount) break;
+        }
+      }
+      
+      if (foundBlocks.length >= maxCount) break;
+    }
+
+    // Sort by distance (closest first)
+    foundBlocks.sort((a, b) => {
+      const distA = bot.entity.position.distanceTo(a.position);
+      const distB = bot.entity.position.distanceTo(b.position);
+      return distA - distB;
+    });
+
+    return foundBlocks;
   }
 
   async executeCraftingStep(step) {
