@@ -18060,34 +18060,45 @@ class ItemHunter {
   }
 
   async findItemViaStrategies(itemName, quantity, knowledge) {
-    const resolvedKnowledge = knowledge || ITEM_KNOWLEDGE[itemName];
-    if (!resolvedKnowledge) {
-      return this.guessStrategy(itemName, quantity);
-    }
-    
-    if (resolvedKnowledge.type === 'crafted') {
-      return this.recursiveGather(resolvedKnowledge.recipe, quantity);
-    }
-    
-    const strategies = resolvedKnowledge.sources.map(source => ({
-      source,
-      score: this.scoreStrategy(source),
-      estimatedTime: this.estimateTime(source, quantity),
-      risk: this.assessRisk(source),
-      currentFeasibility: this.checkFeasibility(source)
-    }));
-    
-    const availableStrategies = strategies.filter(s => s.currentFeasibility);
-    if (availableStrategies.length === 0) {
-      console.log(`[HUNTER] ❌ No feasible strategies found for ${itemName}`);
-      return false;
-    }
-    
-    const best = availableStrategies.sort((a, b) => b.score - a.score)[0];
-    console.log(`[HUNTER] 📋 Strategy selected: ${best.source.type} (Score: ${best.score})`);
-    
-    return this.executeStrategy(best.source, itemName, quantity);
-  }
+     const resolvedKnowledge = knowledge || ITEM_KNOWLEDGE[itemName];
+     if (!resolvedKnowledge) {
+       return this.guessStrategy(itemName, quantity);
+     }
+
+     // SIMPLIFIED MINING: For ore/mining items, use ONLY Baritone
+     const miningItems = ['diamond', 'diamonds', 'iron', 'iron_ore', 'gold', 'gold_ore', 'coal', 'coal_ore',
+                          'obsidian', 'ancient_debris', 'lapis', 'lapis_lazuli', 'lapis_ore',
+                          'redstone', 'redstone_ore', 'emerald', 'emerald_ore', 'copper', 'copper_ore',
+                          'wood', 'log', 'oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log',
+                          'stone', 'cobblestone', 'dirt', 'sand', 'gravel'];
+     if (miningItems.includes(itemName.toLowerCase())) {
+       console.log(`[HUNTER] ⛏️ BARITONE MINING: ${itemName} (Baritone find & mine)`);
+       return await this.autoMiner.mineForItem(itemName, quantity);
+     }
+
+     if (resolvedKnowledge.type === 'crafted') {
+       return this.recursiveGather(resolvedKnowledge.recipe, quantity);
+     }
+
+     const strategies = resolvedKnowledge.sources.map(source => ({
+       source,
+       score: this.scoreStrategy(source),
+       estimatedTime: this.estimateTime(source, quantity),
+       risk: this.assessRisk(source),
+       currentFeasibility: this.checkFeasibility(source)
+     }));
+
+     const availableStrategies = strategies.filter(s => s.currentFeasibility);
+     if (availableStrategies.length === 0) {
+       console.log(`[HUNTER] ❌ No feasible strategies found for ${itemName}`);
+       return false;
+     }
+
+     const best = availableStrategies.sort((a, b) => b.score - a.score)[0];
+     console.log(`[HUNTER] 📋 Strategy selected: ${best.source.type} (Score: ${best.score})`);
+
+     return this.executeStrategy(best.source, itemName, quantity);
+   }
   
   scoreStrategy(source) {
     let score = 100;
@@ -24544,12 +24555,21 @@ try {
       return;
     }
     
-    const strategyText = knowledge?.optimal_strategy || `Direct pathfinding to known ${itemName} locations`;
-    
+    // Simplified Baritone-only mining: no strategy text for mining items
+    const miningItems = ['diamond', 'diamonds', 'iron', 'iron_ore', 'gold', 'gold_ore', 'coal', 'coal_ore',
+                         'obsidian', 'ancient_debris', 'lapis', 'lapis_lazuli', 'lapis_ore',
+                         'redstone', 'redstone_ore', 'emerald', 'emerald_ore', 'copper', 'copper_ore',
+                         'wood', 'log', 'oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log',
+                         'stone', 'cobblestone', 'dirt', 'sand', 'gravel'];
+    const isOre = miningItems.includes(itemName.toLowerCase());
+
     // Announce the hunt
     this.bot.chat(`[HUNTER] 🔍 Starting hunt for ${quantity}x ${itemName} for ${username}!`);
-    this.bot.chat(`[HUNTER] 📋 Strategy: ${strategyText}`);
-    
+    if (!isOre) {
+      const strategyText = knowledge?.optimal_strategy || `Direct pathfinding to known ${itemName} locations`;
+      this.bot.chat(`[HUNTER] 📋 Strategy: ${strategyText}`);
+    }
+
     // Start the hunt in background
     this.huntForItem(username, itemName, quantity, knowledge || null);
   }
