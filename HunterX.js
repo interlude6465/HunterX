@@ -2112,6 +2112,178 @@ function safeBotMethod(bot, methodName, ...args) {
   }
 }
 
+// Connection state validation functions to prevent ECONNABORTED errors
+function isConnectionHealthy(bot) {
+  if (!bot) {
+    console.warn('[CONN] Bot is null');
+    return false;
+  }
+  
+  if (!bot._client) {
+    console.warn('[CONN] Bot client is null');
+    return false;
+  }
+  
+  if (!bot._client.socket) {
+    console.warn('[CONN] Bot socket is null');
+    return false;
+  }
+  
+  const socket = bot._client.socket;
+  
+  // Check if socket is destroyed
+  if (socket.destroyed) {
+    console.warn('[CONN] Socket is destroyed');
+    return false;
+  }
+  
+  // Check if socket is writable
+  if (!socket.writable) {
+    console.warn('[CONN] Socket is not writable');
+    return false;
+  }
+  
+  // Check ready state (if available)
+  if (socket.readyState !== undefined && socket.readyState !== 'open') {
+    console.warn(`[CONN] Socket readyState is ${socket.readyState}, expected 'open'`);
+    return false;
+  }
+  
+  // Check if bot is still connected
+  if (!bot.player) {
+    console.warn('[CONN] Bot player is null - disconnected');
+    return false;
+  }
+  
+  return true;
+}
+
+function isConnectionStable(bot) {
+  if (!isConnectionHealthy(bot)) {
+    return false;
+  }
+  
+  // Additional stability checks
+  const socket = bot._client.socket;
+  
+  // Check for recent errors
+  if (socket._lastError && Date.now() - socket._lastError < 5000) {
+    console.warn('[CONN] Socket had recent error');
+    return false;
+  }
+  
+  // Check if bot is in a stable state (not in the middle of critical operations)
+  if (bot._client.state && bot._client.state !== 'play') {
+    console.warn(`[CONN] Bot client state is ${bot._client.state}, expected 'play'`);
+    return false;
+  }
+  
+  return true;
+}
+
+async function safeBotOperation(bot, operation, operationName, maxRetries = 3) {
+  if (!bot) {
+    throw new Error(`[CONN] Bot is null for operation: ${operationName}`);
+  }
+  
+  let lastError;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Check connection before attempting operation
+      if (!isConnectionStable(bot)) {
+        console.warn(`[CONN] Connection unstable for ${operationName}, attempt ${attempt}/${maxRetries}`);
+        
+        if (attempt === maxRetries) {
+          // Force disconnect on final attempt to trigger reconnect
+          console.error(`[CONN] Connection failed after ${maxRetries} attempts for ${operationName}, forcing disconnect`);
+          if (typeof bot.end === 'function') {
+            bot.end();
+          }
+          throw new Error(`Connection unstable for ${operationName} after ${maxRetries} attempts`);
+        }
+        
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        continue;
+      }
+      
+      // Add backpressure handling - check socket write buffer
+      if (bot._client && bot._client.socket && bot._client.socket.bufferSize > 0) {
+        console.warn(`[CONN] Socket buffer has data (${bot._client.socket.bufferSize} bytes), waiting before ${operationName}`);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      // Perform the operation
+      console.log(`[CONN] Executing ${operationName} (attempt ${attempt}/${maxRetries})`);
+      const result = await operation();
+      console.log(`[CONN] Successfully completed ${operationName}`);
+      return result;
+      
+    } catch (err) {
+      lastError = err;
+      
+      // Check if this is a connection-related error
+      if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET' || err.message.includes('socket')) {
+        console.warn(`[CONN] Connection error during ${operationName}: ${err.message}`);
+        
+        if (attempt === maxRetries) {
+          console.error(`[CONN] Connection error persisted for ${operationName}, forcing disconnect`);
+          if (typeof bot.end === 'function') {
+            bot.end();
+          }
+        }
+      } else {
+        // Non-connection error, don't retry
+        console.error(`[CONN] Non-connection error during ${operationName}: ${err.message}`);
+        throw err;
+      }
+      
+      // Wait before retry (with exponential backoff)
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  // If we get here, all retries failed
+  throw lastError || new Error(`Operation ${operationName} failed after ${maxRetries} attempts`);
+}
+
+// Rate limiting for rapid operations to prevent socket overload
+class RateLimiter {
+  constructor(maxOperations = 10, windowMs = 1000) {
+    this.maxOperations = maxOperations;
+    this.windowMs = windowMs;
+    this.operations = [];
+  }
+  
+  async waitForSlot() {
+    const now = Date.now();
+    
+    // Remove old operations outside the window
+    this.operations = this.operations.filter(time => now - time < this.windowMs);
+    
+    // Check if we're at the limit
+    if (this.operations.length >= this.maxOperations) {
+      const oldestOperation = Math.min(...this.operations);
+      const waitTime = this.windowMs - (now - oldestOperation);
+      
+      if (waitTime > 0) {
+        console.log(`[RATE] Rate limit reached, waiting ${waitTime}ms`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
+    }
+    
+    // Record this operation
+    this.operations.push(now);
+  }
+}
+
+// Global rate limiter for mining operations
+const miningRateLimiter = new RateLimiter(5, 1000); // Max 5 mining operations per second
+
 function getNearbyPlayers(bot, radius) {
   if (!bot || !bot.entity || !bot.entity.position) {
     return [];
@@ -10679,39 +10851,53 @@ class GearUpSystem {
           failedAttempts.set(posKey, maxRetriesPerBlock); // Mark as done
           continue;
         }
-        
+
         await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(targetOre.x, targetOre.y, targetOre.z), 3));
-        
-        const pickaxe = this.bot.inventory.items().find(i => 
+
+        const pickaxe = this.bot.inventory.items().find(i =>
           i.name.includes('pickaxe') && !i.name.includes('wood')
         );
-        
+
         if (pickaxe) {
           await this.bot.equip(pickaxe, 'hand');
         }
-        
-        await this.bot.dig(block);
+
+        // Use safe connection validation for mining operation
+        await miningRateLimiter.waitForSlot(); // Rate limit mining operations
+        await safeBotOperation(
+          this.bot,
+          async () => {
+            // Double-check connection before digging
+            if (!isConnectionStable(this.bot)) {
+              throw new Error('Connection became unstable before digging');
+            }
+            return await this.bot.dig(block);
+          },
+          `mining ${oreName} at ${targetOre.toString()}`,
+          2 // Reduce retries for mining to avoid delays
+        );
+
         mined++;
         console.log(`[GEAR-UP] ✅ Mined ${oreName} (${mined}/${quantity})`);
-        
+
         // SUCCESS: Clear retry count for this position
         failedAttempts.delete(posKey);
-        
+
         // ITEM COLLECTION: Collect dropped items after mining
         await this.collectNearbyItems(targetOre, 5, 3000);
-        
+
       } catch (err) {
         const newAttempts = currentAttempts + 1;
         failedAttempts.set(posKey, newAttempts);
-        
+
         console.log(`[GEAR-UP] ❌ Failed to mine ${oreName} at ${targetOre.toString()}: ${err.message} (${newAttempts}/${maxRetriesPerBlock})`);
-        
+
         // MARK AS UNREACHABLE IF TOO MANY FAILURES
         if (newAttempts >= maxRetriesPerBlock) {
           unreachableBlocks.add(posKey);
           console.log(`[GEAR-UP] 🚫 Marked ${oreName} at ${targetOre.toString()} as unreachable after ${maxRetriesPerBlock} failed attempts`);
         }
-        
+
         // ADD EXTRA DELAY FOR FAILED BLOCKS TO AVOID SPAM
         if (newAttempts > 3) {
           await this.sleep(500 * newAttempts); // Increasing delay for repeated failures
@@ -10801,7 +10987,21 @@ class GearUpSystem {
             const logPos = logs[0];
             await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(logPos.x, logPos.y, logPos.z), 3));
             const block = this.bot.blockAt(logPos);
-            await this.bot.dig(block);
+
+            // Use safe connection validation for wood gathering
+            await miningRateLimiter.waitForSlot(); // Rate limit mining operations
+            await safeBotOperation(
+              this.bot,
+              async () => {
+                if (!isConnectionStable(this.bot)) {
+                  throw new Error('Connection became unstable before gathering wood');
+                }
+                return await this.bot.dig(block);
+              },
+              `gathering ${logType} at ${logPos.toString()}`,
+              2
+            );
+
             gathered++;
             foundLog = true;
             break;
@@ -20468,10 +20668,23 @@ class AutoMiner {
         await safeGoTo(this.bot, orePos, 30000);
         const ore = this.bot.blockAt(orePos);
         if (ore) {
-          await this.bot.dig(ore);
+          // Use safe connection validation for Hunter mining
+          await miningRateLimiter.waitForSlot(); // Rate limit mining operations
+          await safeBotOperation(
+            this.bot,
+            async () => {
+              if (!isConnectionStable(this.bot)) {
+                throw new Error('Connection became unstable before Hunter mining');
+              }
+              return await this.bot.dig(ore);
+            },
+            `Hunter mining ${targetOre} at ${orePos.toString()}`,
+            2
+          );
+
           collected++;
           console.log(`[HUNTER] ⛏️ Mined ${targetOre} (attempt ${currentAttempts + 1})`);
-          
+
           // SUCCESS: Clear retry count for this position
           failedAttempts.delete(posKey);
         } else {
@@ -20481,9 +20694,9 @@ class AutoMiner {
       } catch (err) {
         const newAttempts = currentAttempts + 1;
         failedAttempts.set(posKey, newAttempts);
-        
+
         console.log(`[HUNTER] ⚠️ Failed to reach ore at ${orePos.x}, ${orePos.y}, ${orePos.z}: ${err.message} (${newAttempts}/${maxRetriesPerBlock})`);
-        
+
         // MARK AS UNREACHABLE IF TOO MANY FAILURES
         if (newAttempts >= maxRetriesPerBlock) {
           unreachableBlocks.add(posKey);
@@ -36624,7 +36837,60 @@ async function launchBot(username, role = 'fighter') {
   }
   
   globalBot = bot;
-  
+
+  // === SOCKET MONITORING FOR ECONNABORTED PREVENTION ===
+  if (bot._client && bot._client.socket) {
+    const socket = bot._client.socket;
+
+    // Track last error time for connection stability detection
+    socket._lastError = null;
+
+    // Monitor socket errors for early detection
+    socket.on('error', (err) => {
+      socket._lastError = Date.now();
+      console.warn(`[SOCKET] Socket error detected: ${err.code || err.message}`);
+
+      // Force disconnect on critical socket errors to prevent ECONNABORTED
+      if (err.code === 'ECONNABORTED' || err.code === 'ECONNRESET') {
+        console.error(`[SOCKET] Critical socket error ${err.code} - forcing clean disconnect`);
+        if (typeof bot.end === 'function') {
+          bot.end();
+        }
+      }
+    });
+
+    // Monitor socket close events
+    socket.on('close', (hadError) => {
+      console.log(`[SOCKET] Socket closed (hadError: ${hadError})`);
+      if (hadError) {
+        console.warn('[SOCKET] Socket closed with error - connection was unstable');
+      }
+    });
+
+    // Monitor socket writable state
+    const originalWrite = socket.write;
+    socket.write = function(...args) {
+      if (!socket.writable) {
+        console.error('[SOCKET] Attempted write to non-writable socket - preventing ECONNABORTED');
+        const err = new Error('Socket is not writable');
+        err.code = 'ECONNABORTED';
+        throw err;
+      }
+
+      try {
+        return originalWrite.apply(this, args);
+      } catch (writeErr) {
+        socket._lastError = Date.now();
+        console.error(`[SOCKET] Write error: ${writeErr.message}`);
+        throw writeErr;
+      }
+    };
+
+    console.log('[SOCKET] Socket monitoring enabled for ECONNABORTED prevention');
+  } else {
+    console.warn('[SOCKET] Could not enable socket monitoring - client or socket not available');
+  }
+
   // Set up dashboard chat relay
   bot.on('message', (jsonMsg) => {
     try {
@@ -37836,6 +38102,21 @@ async function launchBot(username, role = 'fighter') {
           break;
         case 'ECONNRESET':
           console.log('[ERROR] Connection reset by server - possible kick/ban. Reconnecting...');
+          break;
+        case 'ECONNABORTED':
+          console.log('[ERROR] Socket write aborted - connection unstable. Forcing clean disconnect...');
+          // Force clean disconnect to prevent reconnection loop
+          if (bot && bot._client && bot._client.socket) {
+            try {
+              bot._client.socket.destroy();
+            } catch (destroyErr) {
+              console.log(`[ERROR] Failed to destroy socket: ${destroyErr.message}`);
+            }
+          }
+          // End the bot connection to trigger proper reconnect
+          if (bot && typeof bot.end === 'function') {
+            bot.end();
+          }
           break;
         case 'ETIMEDOUT':
           console.log('[ERROR] Connection timeout - server not responding. Retrying...');
@@ -40556,7 +40837,18 @@ class AFKGatherer {
       await this.bot.toolSelector.equipToolForAction('mining');
     }
     
-    await this.bot.dig(block);
+    // Use safe connection validation for fallback mining
+    await safeBotOperation(
+      this.bot,
+      async () => {
+        if (!isConnectionStable(this.bot)) {
+          throw new Error('Connection became unstable before fallback mining');
+        }
+        return await this.bot.dig(block);
+      },
+      `fallback mining ${block.name}`,
+      2
+    );
   }
   
   async gatherCobblestone(needed) {
@@ -43243,7 +43535,21 @@ class SpeedOptimizer {
 
       // Start digging IMMEDIATELY with no delays
       const startTime = Date.now();
-      await this.bot.dig(block);
+      
+      // Use safe connection validation for speed mining
+      await miningRateLimiter.waitForSlot(); // Rate limit mining operations
+      await safeBotOperation(
+        this.bot,
+        async () => {
+          if (!isConnectionStable(this.bot)) {
+            throw new Error('Connection became unstable before speed mining');
+          }
+          return await this.bot.dig(block);
+        },
+        `speed mining ${block.name}`,
+        1 // Only 1 retry for speed mining to maintain performance
+      );
+      
       const digTime = Date.now() - startTime;
 
       console.log(`[SPEED] ⚡ Mined ${block.name} in ${digTime}ms`);
