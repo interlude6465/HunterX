@@ -2112,6 +2112,28 @@ function safeBotMethod(bot, methodName, ...args) {
   }
 }
 
+// === MINING PREPARATION HELPER ===
+// Ensures pathfinder is stopped and bot is stable before mining operations
+async function prepareForMining(bot, targetName = 'block') {
+  // Stop pathfinder immediately to prevent punching/digging delays
+  if (bot.pathfinder) {
+    bot.pathfinder.stop();
+  }
+  
+  // Stop all movement controls
+  bot.setControlState('forward', false);
+  bot.setControlState('back', false);
+  bot.setControlState('left', false);
+  bot.setControlState('right', false);
+  bot.setControlState('jump', false);
+  bot.setControlState('sprint', false);
+  
+  // Small delay to ensure pathfinder is fully stopped and bot is stable
+  await new Promise(resolve => setTimeout(resolve, 100));
+  
+  console.log(`[MINING] 🛑 Pathfinder stopped, prepared to mine ${targetName}`);
+}
+
 // Connection state validation functions to prevent ECONNABORTED errors
 function isConnectionHealthy(bot) {
   if (!bot) {
@@ -10854,6 +10876,9 @@ class GearUpSystem {
 
         await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(targetOre.x, targetOre.y, targetOre.z), 3));
 
+        // CRITICAL FIX: Prepare for mining to prevent punching/digging delays
+        await prepareForMining(this.bot, oreName);
+
         const pickaxe = this.bot.inventory.items().find(i =>
           i.name.includes('pickaxe') && !i.name.includes('wood')
         );
@@ -10987,6 +11012,9 @@ class GearUpSystem {
             const logPos = logs[0];
             await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(logPos.x, logPos.y, logPos.z), 3));
             const block = this.bot.blockAt(logPos);
+
+            // CRITICAL FIX: Prepare for mining to prevent punching/digging delays
+            await prepareForMining(this.bot, logType);
 
             // Use safe connection validation for wood gathering
             await miningRateLimiter.waitForSlot(); // Rate limit mining operations
@@ -20127,6 +20155,9 @@ class BaritoneMiner {
     }
     
     try {
+      // CRITICAL FIX: Prepare for mining to prevent punching/digging delays
+      await prepareForMining(this.bot, block.name || 'unknown block');
+      
       // COMBAT PAUSE: Check if bot is in combat before mining block
       if (this.bot.combatAI && this.bot.combatAI.inCombat) {
         console.log(`[MINE] ⚔️ Combat detected, pausing block mining...`);
@@ -20504,9 +20535,12 @@ class AutoMiner {
       }
       
       try {
+        // CRITICAL FIX: Prepare for mining to prevent punching/digging delays
+        await prepareForMining(this.bot, blockBelow.name || 'block');
+
         await this.bot.lookAt(blockBelow.position.offset(0.5, 0.5, 0.5));
       } catch (err) {}
-      
+
       try {
         await this.bot.dig(blockBelow, true);
       } catch (err) {
@@ -20735,6 +20769,10 @@ class AutoMiner {
       
       try {
         await safeGoTo(this.bot, orePos, 30000);
+        
+        // CRITICAL FIX: Prepare for mining to prevent punching/digging delays
+        await prepareForMining(this.bot, targetOre);
+        
         const ore = this.bot.blockAt(orePos);
         if (ore) {
           // Use safe connection validation for Hunter mining
@@ -43584,10 +43622,8 @@ class SpeedOptimizer {
     if (!block) return false;
 
     try {
-      // Stop any current movement immediately
-      if (this.bot.pathfinder) {
-        this.bot.pathfinder.stop();
-      }
+      // CRITICAL FIX: Prepare for mining to prevent punching/digging delays
+      await prepareForMining(this.bot, block.name);
 
       // Select and equip the correct tool for this block type INSTANTLY
       const toolSelected = await this.selectAndEquipTool(block);
