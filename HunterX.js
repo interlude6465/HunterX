@@ -17597,6 +17597,12 @@ class ItemHunter {
     let steps = 0;
     let stagnationCount = 0;
     
+    // Track floor support attempts to prevent infinite loops
+    const floorSupportAttempts = new Map(); // Key: "x,y,z", Value: attempt count
+    const MAX_FLOOR_SUPPORT_RETRIES = 5;
+    let totalFloorSupportFailures = 0; // Track total failures across all positions
+    const MAX_TOTAL_FAILURES = 20; // Give up after 20 total floor support failures
+    
     const cloneAndFloor = (vec) => {
       if (!vec) return null;
       const copy = vec.clone ? vec.clone() : new Vec3(vec.x, vec.y, vec.z);
@@ -17610,6 +17616,12 @@ class ItemHunter {
     let previousDistance = previousVec ? previousVec.distanceTo(tunnelTarget) : Infinity;
     
     while (steps < maxSteps) {
+      // Check if we've had too many total floor support failures
+      if (totalFloorSupportFailures >= MAX_TOTAL_FAILURES) {
+        console.log(`[HUNTER] 🛑 Tunneling stopped - exceeded floor support failure limit (${totalFloorSupportFailures})`);
+        return false;
+      }
+      
       const current = cloneAndFloor(this.bot.entity.position);
       if (!current) {
         return false;
@@ -17623,9 +17635,9 @@ class ItemHunter {
       const stepVec = new Vec3(0, direction, 0);
       const next = current.offset(stepVec.x, stepVec.y, stepVec.z);
       
-      const cleared = await this.clearTunnelSegmentBlocks(next, stepVec, tunnelTarget);
+      const cleared = await this.clearTunnelSegmentBlocks(next, stepVec, tunnelTarget, floorSupportAttempts);
       if (!cleared) {
-        const alternate = await this.tryAlternateTunnelStep(current, stepVec, tunnelTarget);
+        const alternate = await this.tryAlternateTunnelStep(current, stepVec, tunnelTarget, floorSupportAttempts);
         if (!alternate) {
           return false;
         }
@@ -17646,6 +17658,12 @@ class ItemHunter {
     }
     
     while (steps < maxSteps) {
+      // Check if we've had too many total floor support failures
+      if (totalFloorSupportFailures >= MAX_TOTAL_FAILURES) {
+        console.log(`[HUNTER] 🛑 Tunneling stopped - exceeded floor support failure limit (${totalFloorSupportFailures})`);
+        return false;
+      }
+      
       const current = cloneAndFloor(this.bot.entity.position);
       if (!current) {
         return false;
@@ -17666,9 +17684,9 @@ class ItemHunter {
       }
       
       const next = current.offset(stepVec.x, stepVec.y, stepVec.z);
-      const cleared = await this.clearTunnelSegmentBlocks(next, stepVec, tunnelTarget);
+      const cleared = await this.clearTunnelSegmentBlocks(next, stepVec, tunnelTarget, floorSupportAttempts);
       if (!cleared) {
-        const alternate = await this.tryAlternateTunnelStep(current, stepVec, tunnelTarget);
+        const alternate = await this.tryAlternateTunnelStep(current, stepVec, tunnelTarget, floorSupportAttempts);
         if (!alternate) {
           return false;
         }
@@ -17718,7 +17736,7 @@ class ItemHunter {
     return null;
   }
   
-  async tryAlternateTunnelStep(current, stepVec, tunnelTarget) {
+  async tryAlternateTunnelStep(current, stepVec, tunnelTarget, floorSupportAttempts = null) {
     const alternatives = [];
     
     if (Math.abs(stepVec.x) === 1) {
@@ -17736,7 +17754,7 @@ class ItemHunter {
     
     for (const alternative of alternatives) {
       const next = current.offset(alternative.x, alternative.y, alternative.z);
-      const cleared = await this.clearTunnelSegmentBlocks(next, alternative, tunnelTarget);
+      const cleared = await this.clearTunnelSegmentBlocks(next, alternative, tunnelTarget, floorSupportAttempts);
       if (!cleared) {
         continue;
       }
@@ -17751,7 +17769,7 @@ class ItemHunter {
     return false;
   }
   
-  async clearTunnelSegmentBlocks(next, stepVec, tunnelTarget) {
+  async clearTunnelSegmentBlocks(next, stepVec, tunnelTarget, floorSupportAttempts = null) {
     if (!next) {
       return false;
     }
@@ -17797,9 +17815,32 @@ class ItemHunter {
     const floorPos = next.offset(0, -1, 0);
     const floorBlock = this.bot.blockAt(floorPos);
     if (!floorBlock || this.isBlockPassableForTunnel(floorBlock)) {
+      // Check retry tracking for this floor position
+      if (floorSupportAttempts) {
+        const posKey = `${floorPos.x},${floorPos.y},${floorPos.z}`;
+        const currentAttempts = floorSupportAttempts.get(posKey) || 0;
+        
+        if (currentAttempts >= 5) {
+          console.log(`[HUNTER] ⚠️ Skipping floor support at ${floorPos.x}, ${floorPos.y}, ${floorPos.z} - max retries (5) reached`);
+          // Continue without floor support - tunneling can proceed without it
+          return true;
+        }
+        
+        floorSupportAttempts.set(posKey, currentAttempts + 1);
+      }
+      
       const placed = await this.placeSolidTunnelBlock(floorPos);
       if (!placed) {
-        console.log(`[HUNTER] ⚠️ Unable to secure floor support at ${floorPos.x}, ${floorPos.y}, ${floorPos.z}`);
+        totalFloorSupportFailures++;
+        const attemptCount = floorSupportAttempts ? floorSupportAttempts.get(`${floorPos.x},${floorPos.y},${floorPos.z}`) || 1 : 1;
+        console.log(`[HUNTER] ⚠️ Unable to secure floor support at ${floorPos.x}, ${floorPos.y}, ${floorPos.z} (attempt ${attemptCount}/5, total failures: ${totalFloorSupportFailures}/${MAX_TOTAL_FAILURES})`);
+        
+        // Give up entirely if we've had too many total floor support failures
+        if (totalFloorSupportFailures >= MAX_TOTAL_FAILURES) {
+          console.log(`[HUNTER] 🛑 Aborting tunneling - too many floor support failures (${totalFloorSupportFailures}). Bot may be out of building materials.`);
+          return false;
+        }
+        
         return false;
       }
     }
