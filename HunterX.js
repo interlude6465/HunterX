@@ -36612,6 +36612,10 @@ async function launchBot(username, role = 'fighter') {
     bot.movementManager = new MovementModeManager(bot);
     console.log('[MOVEMENT] Movement manager initialized');
     
+    // Initialize SpeedOptimizer for ULTRA-fast mining
+    bot.speedOptimizer = new SpeedOptimizer(bot);
+    console.log('[SPEED] SpeedOptimizer initialized - ULTRA mining speed enabled!');
+    
     // Initialize swimming behavior
     bot.swimmingBehavior = new SwimmingBehavior(bot);
     bot.swimmingBehavior.start();
@@ -37502,6 +37506,11 @@ async function launchBot(username, role = 'fighter') {
       if (bot.movementManager) {
         bot.movementManager.bot = null;
         bot.movementManager = null;
+      }
+      
+      if (bot.speedOptimizer) {
+        bot.speedOptimizer.bot = null;
+        bot.speedOptimizer = null;
       }
       
       if (bot.schematicBuilder) {
@@ -40325,6 +40334,12 @@ class AFKGatherer {
     const goal = new goals.GoalNear(block.position.x, block.position.y, block.position.z, 3);
     await this.bot.pathfinder.goto(goal);
     
+    // Use OPTIMIZED SpeedOptimizer for instant mining
+    if (this.bot.speedOptimizer) {
+      return await this.bot.speedOptimizer.mineBlockFast(block);
+    }
+    
+    // Fallback to original method
     // Equip appropriate tool
     if (this.bot.toolSelector) {
       await this.bot.toolSelector.equipToolForAction('mining');
@@ -42960,13 +42975,16 @@ class SpeedOptimizer {
     this.actionBuffer = [];
     this.processingActions = false;
     
-    // Speed configuration
+    // Speed configuration - OPTIMIZED FOR INSTANT MINING
     this.config = {
-      miningDelay: 50,        // Delay between mining blocks
-      bridgingDelay: 100,     // Delay between placing bridge blocks
+      miningDelay: 0,         // NO delay between mining blocks - INSTANT
+      bridgingDelay: 0,       // NO delay between placing bridge blocks - INSTANT
       movementDelay: 0,       // No delay between movements
       sprintThreshold: 3,      // Start sprinting after 3 blocks
-      maxReachDistance: 5.5   // Maximum block reach distance
+      maxReachDistance: 5.5,  // Maximum block reach distance
+      instantRotation: true,   // Use instant rotation for mining
+      batchMining: true,       // Enable batch mining for continuous operation
+      prequeueNextBlock: true  // Pre-queue next block before current finishes
     };
   }
 
@@ -42989,26 +43007,30 @@ class SpeedOptimizer {
     return this.bot.food && this.bot.food >= 6;
   }
 
-  // Optimized mining with minimal delays and proper tool selection
+  // ULTRA-OPTIMIZED mining with ZERO delays and instant operations
   async mineBlockFast(block) {
     if (!block) return false;
 
     try {
-      // Stop any current movement
+      // Stop any current movement immediately
       if (this.bot.pathfinder) {
         this.bot.pathfinder.stop();
       }
 
-      // Select and equip the correct tool for this block type
+      // Select and equip the correct tool for this block type INSTANTLY
       const toolSelected = await this.selectAndEquipTool(block);
       if (!toolSelected) {
         console.log(`[SPEED] ⚠️ No suitable tool found for ${block.name}, using hand`);
       }
 
-      // Look at block immediately
-      await this.bot.lookAt(block.position.offset(0.5, 0.5, 0.5));
+      // INSTANT rotation - no smooth turning, immediate look at block
+      if (this.config.instantRotation) {
+        this.lookAtInstant(block.position.offset(0.5, 0.5, 0.5));
+      } else {
+        await this.bot.lookAt(block.position.offset(0.5, 0.5, 0.5));
+      }
 
-      // Start digging without delay
+      // Start digging IMMEDIATELY with no delays
       const startTime = Date.now();
       await this.bot.dig(block);
       const digTime = Date.now() - startTime;
@@ -43019,6 +43041,29 @@ class SpeedOptimizer {
     } catch (err) {
       console.log(`[SPEED] ❌ Fast mine failed: ${err.message}`);
       return false;
+    }
+  }
+
+  // INSTANT rotation - bypass smooth turning for immediate block targeting
+  lookAtInstant(position) {
+    if (!position) return;
+    
+    // Calculate immediate look angles without smoothing
+    const delta = position.minus(this.bot.entity.position.offset(0, this.bot.entity.height, 0));
+    const distance = Math.sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+    
+    if (distance > 0) {
+      const yaw = Math.atan2(-delta.x, -delta.z);
+      const pitch = Math.atan2(delta.y, Math.sqrt(delta.x * delta.x + delta.z * delta.z));
+      
+      // Set rotation immediately without waiting
+      this.bot.entity.yaw = yaw;
+      this.bot.entity.pitch = pitch;
+      this.bot.sendPacket('look', {
+        yaw: yaw,
+        pitch: pitch,
+        onGround: this.bot.entity.onGround
+      });
     }
   }
 
@@ -43281,6 +43326,90 @@ class SpeedOptimizer {
     return null;
   }
 
+  // BATCH mining - mine multiple blocks continuously without ANY delays
+  async mineBlocksBatch(blocks, options = {}) {
+    if (!blocks || blocks.length === 0) return { success: 0, total: 0 };
+
+    const {
+      maxConsecutive = 10,  // Max blocks to mine before tiny pause
+      skipFailed = true,     // Continue mining even if some fail
+      prequeueNext = this.config.prequeueNextBlock
+    } = options;
+
+    console.log(`[SPEED] 🔥 Starting BATCH mining: ${blocks.length} blocks`);
+    const startTime = Date.now();
+    let mined = 0;
+    let failed = 0;
+
+    try {
+      // Pre-select tool for first block type
+      let currentToolType = null;
+      if (blocks.length > 0) {
+        currentToolType = this.getRequiredToolType(blocks[0].name);
+        if (currentToolType) {
+          const tool = this.findBestTool(currentToolType);
+          if (tool) {
+            await this.bot.equip(tool, 'hand');
+          }
+        }
+      }
+
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        
+        // Skip if block no longer exists
+        if (!block || !this.bot.blockAt(block.position)) {
+          failed++;
+          continue;
+        }
+
+        // Pre-queue next block tool selection if enabled
+        if (prequeueNext && i < blocks.length - 1) {
+          const nextBlock = blocks[i + 1];
+          const nextToolType = this.getRequiredToolType(nextBlock.name);
+          
+          // Switch tools if needed for next block
+          if (nextToolType && nextToolType !== currentToolType) {
+            const nextTool = this.findBestTool(nextToolType);
+            if (nextTool) {
+              await this.bot.equip(nextTool, 'hand');
+              currentToolType = nextToolType;
+            }
+          }
+        }
+
+        // Mine current block instantly
+        const success = await this.mineBlockFast(block);
+        if (success) {
+          mined++;
+          console.log(`[SPEED] ⚡ Batch mine ${i + 1}/${blocks.length}: ${block.name}`);
+        } else if (!skipFailed) {
+          console.log(`[SPEED] ❌ Batch mining failed at block ${i + 1}, stopping`);
+          break;
+        } else {
+          failed++;
+          console.log(`[SPEED] ⚠️ Failed to mine block ${i + 1}, continuing`);
+        }
+
+        // Tiny pause every maxConsecutive blocks to prevent overwhelming
+        if ((i + 1) % maxConsecutive === 0 && i < blocks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 10)); // Only 10ms pause
+        }
+      }
+
+      const totalTime = Date.now() - startTime;
+      const avgTime = totalTime / blocks.length;
+      
+      console.log(`[SPEED] 🔥 BATCH mining complete: ${mined}/${blocks.length} blocks in ${totalTime}ms (${avgTime.toFixed(1)}ms/block)`);
+      
+      return { success: mined, failed, total: blocks.length, totalTime, avgTime };
+
+    } catch (err) {
+      console.log(`[SPEED] ❌ Batch mining error: ${err.message}`);
+      return { success: mined, failed, total: blocks.length };
+    }
+  }
+
   // Optimized bridging with continuous placement
   async bridgeFast(distance, direction = 'forward') {
     console.log(`[SPEED] 🌉 Starting fast bridge: ${distance} blocks`);
@@ -43316,12 +43445,12 @@ class SpeedOptimizer {
           // Move forward immediately after placing
           this.bot.setControlState('forward', true);
           
-          // Minimal delay between placements
-          await this.sleep(this.config.bridgingDelay);
+          // NO delay between placements - INSTANT bridging
+          // await this.sleep(this.config.bridgingDelay); // REMOVED - ZERO DELAY
           
-          // Stop movement briefly for next placement
+          // Minimal movement pause for next placement
           this.bot.setControlState('forward', false);
-          await this.sleep(20); // Tiny pause for block placement
+          await this.sleep(5); // Reduced to 5ms for instant placement
         } else {
           console.log(`[SPEED] ⚠️ Failed to place bridge block at ${i + 1}/${distance}`);
           break;
@@ -43343,6 +43472,28 @@ class SpeedOptimizer {
       this.disableSprint();
       return false;
     }
+  }
+
+  // Enable/disable instant mining mode
+  setInstantMining(enabled = true) {
+    this.config.miningDelay = enabled ? 0 : 50;
+    this.config.instantRotation = enabled;
+    this.config.batchMining = enabled;
+    this.config.prequeueNextBlock = enabled;
+    
+    console.log(`[SPEED] Instant mining ${enabled ? 'ENABLED 🔥' : 'DISABLED'} - Zero delays: ${enabled}`);
+  }
+
+  // Get current mining speed stats
+  getMiningStats() {
+    return {
+      instantMining: this.config.miningDelay === 0,
+      instantRotation: this.config.instantRotation,
+      batchMining: this.config.batchMining,
+      prequeueNextBlock: this.config.prequeueNextBlock,
+      miningDelay: this.config.miningDelay,
+      bridgingDelay: this.config.bridgingDelay
+    };
   }
 
   // Get best block for bridging
@@ -43440,6 +43591,11 @@ class SpeedOptimizer {
     }
 
     this.processingActions = false;
+  }
+
+  // Sleep method for delays (when absolutely necessary)
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   // Optimized equipment switching
@@ -45473,7 +45629,7 @@ class AIPlanningEngine {
           await bot.speedOptimizer.moveToFast(block.position, 15000);
         }
 
-        // Mine block with proper tool selection
+        // Mine block with proper tool selection - NO DELAYS
         const success = await bot.speedOptimizer.mineBlockFast(block);
         if (success) {
           minedCount++;
@@ -45482,8 +45638,7 @@ class AIPlanningEngine {
           console.log(`[AI_PLANNING] ❌ Failed to mine ${step.target}`);
         }
 
-        // Small delay between blocks
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // NO DELAY between blocks - INSTANT continuous mining
       }
 
       const success = minedCount >= (step.quantity || 1);
@@ -45492,6 +45647,54 @@ class AIPlanningEngine {
 
     } catch (error) {
       console.error(`[AI_PLANNING] Error during mining step: ${error.message}`);
+      return false;
+    }
+  }
+
+  // BATCH mining execution - mine multiple blocks with ULTRA speed
+  async executeBatchMiningStep(step) {
+    const bot = this.bot;
+    if (!bot || !bot.entity || !bot.speedOptimizer) {
+      console.log('[AI_PLANNING] Bot or SpeedOptimizer not available for batch mining');
+      return false;
+    }
+
+    try {
+      const targetCount = step.quantity || 5; // Default to 5 blocks for batch
+      console.log(`[AI_PLANNING] 🔥 Starting BATCH mining: ${step.target} x${targetCount}`);
+
+      // Find all blocks to mine
+      const blocks = this.findBlocksToMine(step.target, targetCount);
+      if (blocks.length === 0) {
+        console.log(`[AI_PLANNING] No ${step.target} blocks found for batch mining`);
+        return false;
+      }
+
+      console.log(`[AI_PLANNING] Found ${blocks.length} ${step.target} blocks for batch mining`);
+
+      // Check if we need to move closer to the batch
+      const centerPoint = blocks[0].position;
+      const distance = bot.entity.position.distanceTo(centerPoint);
+      
+      if (distance > 4.5) {
+        console.log(`[AI_PLANNING] Moving to batch location at ${centerPoint.x},${centerPoint.y},${centerPoint.z}`);
+        await bot.speedOptimizer.moveToFast(centerPoint, 15000);
+      }
+
+      // Use BATCH mining for ULTRA speed
+      const result = await bot.speedOptimizer.mineBlocksBatch(blocks, {
+        maxConsecutive: 20,    // Mine up to 20 blocks before tiny pause
+        skipFailed: true,      // Continue even if some fail
+        prequeueNext: true     // Pre-queue tool selection
+      });
+
+      const success = result.success >= (step.quantity || Math.min(targetCount, blocks.length));
+      console.log(`[AI_PLANNING] 🔥 BATCH mining ${step.target} ${success ? 'completed' : 'failed'}: ${result.success}/${result.total} blocks in ${result.totalTime}ms (${result.avgTime?.toFixed(1)}ms/block)`);
+      
+      return success;
+
+    } catch (error) {
+      console.error(`[AI_PLANNING] Error during batch mining step: ${error.message}`);
       return false;
     }
   }
