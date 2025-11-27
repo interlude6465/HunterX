@@ -11612,21 +11612,68 @@ class NetheriteUpgrader {
     }
   }
   
+  // DISABLED: Strip mining for debris replaced with simple individual block mining
   async stripMineForDebris() {
+    console.log(`[UPGRADE] ⛏️ Simple ancient debris mining (strip mining disabled)`);
+    
     const targetY = 15;
     const currentPos = this.bot.entity.position;
+    let mined = 0;
+    const maxAttempts = 20;
     
-    const minePos = new Vec3(
-      currentPos.x + Math.floor(Math.random() * 20) - 10,
-      targetY,
-      currentPos.z + Math.floor(Math.random() * 20) - 10
-    );
-    
+    // Go to target Y level first
     try {
-      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(minePos.x, minePos.y, minePos.z), 2));
+      await this.bot.pathfinder.goto(new goals.GoalNear(new Vec3(currentPos.x, targetY, currentPos.z), 2));
     } catch (err) {
-      console.log(`[UPGRADE] Strip mining move failed: ${err.message}`);
+      console.log(`[UPGRADE] Failed to reach Y=${targetY}: ${err.message}`);
+      return 0;
     }
+    
+    for (let attempt = 0; attempt < maxAttempts && mined < 3; attempt++) {
+      // Find ancient debris blocks using simple search
+      const debrisBlocks = this.bot.findBlocks({
+        matching: [this.bot.registry.blocksByName.ancient_debris?.id].filter(Boolean),
+        maxDistance: 64,
+        count: 5
+      });
+      
+      if (debrisBlocks.length === 0) {
+        console.log(`[UPGRADE] No ancient debris found nearby, moving to new location...`);
+        // Move to random location at Y=15 and search again
+        const randomPos = new Vec3(
+          currentPos.x + (Math.random() - 0.5) * 100,
+          targetY,
+          currentPos.z + (Math.random() - 0.5) * 100
+        );
+        
+        try {
+          await this.bot.pathfinder.goto(new goals.GoalNear(randomPos, 2));
+        } catch (err) {
+          console.log(`[UPGRADE] Failed to move to new location: ${err.message}`);
+        }
+        continue;
+      }
+      
+      // Mine individual debris blocks (no patterns)
+      for (const debrisPos of debrisBlocks) {
+        if (mined >= 3) break;
+        
+        try {
+          await this.bot.pathfinder.goto(new goals.GoalNear(debrisPos, 2));
+          const debris = this.bot.blockAt(debrisPos);
+          if (debris && debris.name === 'ancient_debris') {
+            await this.bot.dig(debris);
+            mined++;
+            console.log(`[UPGRADE] ✅ Mined ancient debris (${mined}/3)`);
+          }
+        } catch (err) {
+          console.log(`[UPGRADE] Failed to mine ancient debris: ${err.message}`);
+        }
+      }
+    }
+    
+    console.log(`[UPGRADE] ✓ Simple debris mining complete: ${mined} ancient debris`);
+    return mined;
   }
   
   async smeltToScrap(quantity) {
@@ -20307,105 +20354,127 @@ class AutoMiner {
     return false;
   }
   
+  // DISABLED: Strip mining replaced with simple individual block mining
   async stripMine(targetOre, quantity) {
-    console.log(`[HUNTER] ⛏️ Strip mining for ${targetOre}...`);
+    console.log(`[HUNTER] ⛏️ Simple mining for ${targetOre} (strip mining disabled)`);
     
     let collected = 0;
-    let tunnelLength = 0;
-    const maxLength = 1000; // Maximum tunnel length
+    const maxAttempts = quantity * 3; // Allow more attempts for scattered ores
     
-    while (collected < quantity && tunnelLength < maxLength) {
-      // Mine 2x1 tunnel
-      await this.mineTunnel(50); // 50 blocks forward
-      tunnelLength += 50;
+    for (let attempt = 0; attempt < maxAttempts && collected < quantity; attempt++) {
+      // Find ore blocks using simple search
+      const oreBlocks = this.bot.findBlocks({
+        matching: this.getOreBlockIds(targetOre),
+        maxDistance: 64,
+        count: 10
+      });
       
-      // Check for ore
-      collected += await this.collectNearbyOre(targetOre);
-      console.log(`[HUNTER] 📊 Progress: ${collected}/${quantity} ${targetOre}`);
-      
-      // Make perpendicular branches every 3 blocks
-      if (tunnelLength % 3 === 0) {
-        await this.mineBranch(10);
-        collected += await this.collectNearbyOre(targetOre);
+      if (oreBlocks.length === 0) {
+        console.log(`[HUNTER] No ${targetOre} found nearby, expanding search...`);
+        // Move to random location and search again
+        const randomPos = this.bot.entity.position.offset(
+          (Math.random() - 0.5) * 50,
+          0,
+          (Math.random() - 0.5) * 50
+        );
+        await safeGoTo(this.bot, randomPos, 15000);
+        continue;
       }
       
-      // Safety check
-      if (this.bot && this.bot.health < 10) {
-        await this.heal();
+      // Mine individual blocks (no patterns)
+      for (const orePos of oreBlocks) {
+        if (collected >= quantity) break;
+        
+        try {
+          await safeGoTo(this.bot, orePos, 30000);
+          const ore = this.bot.blockAt(orePos);
+          if (ore && ore.name.includes(targetOre)) {
+            await this.bot.dig(ore);
+            collected++;
+            console.log(`[HUNTER] ✅ Mined ${targetOre} (${collected}/${quantity})`);
+          }
+        } catch (err) {
+          console.log(`[HUNTER] Failed to mine ${targetOre}: ${err.message}`);
+        }
       }
     }
     
     if (collected >= quantity) {
-      console.log(`[HUNTER] ✅ Strip mining complete: ${collected}x ${targetOre}`);
+      console.log(`[HUNTER] ✅ Simple mining complete: ${collected}x ${targetOre}`);
       return true;
     } else {
-      console.log(`[HUNTER] ⚠️ Strip mining incomplete: ${collected}/${quantity} ${targetOre}`);
+      console.log(`[HUNTER] ⚠️ Simple mining incomplete: ${collected}/${quantity} ${targetOre}`);
       return false;
     }
   }
   
+  // DISABLED: Tunnel mining replaced with simple individual block mining
   async mineTunnel(length) {
-    console.log(`[HUNTER] 🕳️ Mining ${length} block tunnel...`);
-    
-    const direction = this.bot.entity.yaw; // Current facing direction
-    
-    for (let i = 0; i < length; i++) {
-      // Mine block in front
-      const front = this.bot.blockAt(this.bot.entity.position.offset(0, 0, 1));
-      if (front && front.name !== 'air' && front.name !== 'water' && front.name !== 'lava') {
-        await this.bot.dig(front);
-      }
-      
-      // Mine block above (for 2 high tunnel)
-      const above = this.bot.blockAt(this.bot.entity.position.offset(0, 1, 1));
-      if (above && above.name !== 'air' && above.name !== 'water' && above.name !== 'lava') {
-        await this.bot.dig(above);
-      }
-      
-      // Move forward
-      await this.bot.pathfinder.goto(new goals.GoalNear(
-        this.bot.entity.position.x + Math.sin(direction),
-        this.bot.entity.position.y,
-        this.bot.entity.position.z + Math.cos(direction),
-        1
-      ));
-      
-      await this.sleep(200);
-    }
+    console.log(`[HUNTER] ❌ Tunnel mining disabled - using simple block mining instead`);
+    // Do nothing - tunnel mining creates unwanted patterns
+    return true;
   }
   
+  // DISABLED: Branch mining replaced with simple individual block mining
   async mineBranch(length) {
-    console.log(`[HUNTER] 🌿 Mining side branch...`);
+    console.log(`[HUNTER] ❌ Branch mining disabled - using simple block mining instead`);
+    // Do nothing - branch mining creates unwanted patterns
+    return true;
+  }
+  
+  // Simple 1x1 vertical shaft mining - digs straight down only
+  async mineVerticalDown(depth) {
+    console.log(`[HUNTER] ⬇️ Mining 1x1 vertical shaft down ${depth} blocks`);
     
-    // Turn 90 degrees
-    const newDirection = this.bot.entity.yaw + (Math.PI / 2);
-    
-    for (let i = 0; i < length; i++) {
-      const front = this.bot.blockAt(this.bot.entity.position.offset(0, 0, 1));
-      if (front && front.name !== 'air' && front.name !== 'water' && front.name !== 'lava') {
-        await this.bot.dig(front);
+    for (let i = 0; i < depth; i++) {
+      try {
+        // Check block directly below
+        const below = this.bot.blockAt(this.bot.entity.position.offset(0, -1, 0));
+        
+        if (!below) {
+          console.log(`[HUNTER] ⚠️ No block below at depth ${i}`);
+          break;
+        }
+        
+        // Skip air, water, lava, bedrock
+        if (below.name === 'air' || below.name === 'water' || below.name === 'lava' || below.name === 'bedrock') {
+          console.log(`[HUNTER] Skipping ${below.name} at depth ${i}`);
+          
+          // Move down if air
+          if (below.name === 'air') {
+            // Look straight down and move forward (which is down when looking down)
+            await this.bot.look(0, Math.PI / 2);
+            this.bot.setControlState('forward', true);
+            await this.sleep(500);
+            this.bot.setControlState('forward', false);
+          }
+          continue;
+        }
+        
+        // Mine only the block directly below (1x1 pattern)
+        console.log(`[HUNTER] Mining ${below.name} at depth ${i + 1}`);
+        await this.bot.lookAt(below.position.offset(0.5, 0.5, 0.5));
+        await this.bot.dig(below);
+        
+        // Move down into the space
+        await this.bot.look(0, Math.PI / 2);
+        this.bot.setControlState('forward', true);
+        await this.sleep(500);
+        this.bot.setControlState('forward', false);
+        
+      } catch (err) {
+        console.log(`[HUNTER] Failed to mine at depth ${i + 1}: ${err.message}`);
+        break;
       }
       
-      await this.bot.pathfinder.goto(new goals.GoalNear(
-        this.bot.entity.position.x + Math.sin(newDirection),
-        this.bot.entity.position.y,
-        this.bot.entity.position.z + Math.cos(newDirection),
-        1
-      ));
-      
-      await this.sleep(200);
+      // Safety check
+      if (this.bot.health < 10) {
+        console.log(`[HUNTER] ⚠️ Low health, stopping vertical mining`);
+        break;
+      }
     }
     
-    // Return to main tunnel
-    for (let i = 0; i < length; i++) {
-      await this.bot.pathfinder.goto(new goals.GoalNear(
-        this.bot.entity.position.x - Math.sin(newDirection),
-        this.bot.entity.position.y,
-        this.bot.entity.position.z - Math.cos(newDirection),
-        1
-      ));
-      await this.sleep(200);
-    }
+    console.log(`[HUNTER] ✅ Vertical mining complete`);
   }
   
   async bedMine(targetOre, quantity) {
@@ -45802,7 +45871,7 @@ class AIPlanningEngine {
   }
 
   async executeMiningStep(step) {
-    console.log(`[AI_PLANNING] Mining ${step.target}`);
+    console.log(`[AI_PLANNING] Simple mining ${step.target} (complex patterns disabled)`);
     
     try {
       // Get the bot instance from the planning engine
@@ -45817,7 +45886,7 @@ class AIPlanningEngine {
         bot.speedOptimizer = new SpeedOptimizer(bot);
       }
 
-      // Find blocks to mine
+      // Find blocks to mine using simple search
       const targetBlocks = this.findBlocksToMine(step.target, step.quantity || 1);
       if (targetBlocks.length === 0) {
         console.log(`[AI_PLANNING] ❌ No ${step.target} blocks found nearby`);
@@ -45826,7 +45895,7 @@ class AIPlanningEngine {
 
       console.log(`[AI_PLANNING] Found ${targetBlocks.length} ${step.target} blocks to mine`);
 
-      // Mine each block with proper tool selection
+      // Mine each block individually (no batch patterns)
       let minedCount = 0;
       const targetCount = step.quantity || 1;
       
@@ -45837,10 +45906,17 @@ class AIPlanningEngine {
         const distance = bot.entity.position.distanceTo(block.position);
         if (distance > 4.5) {
           console.log(`[AI_PLANNING] Moving to ${step.target} at ${block.position.x},${block.position.y},${block.position.z}`);
-          await bot.speedOptimizer.moveToFast(block.position, 15000);
+          
+          // Use simple pathfinding (no complex strategies)
+          try {
+            await bot.pathfinder.goto(new goals.GoalNear(block.position, 2));
+          } catch (err) {
+            console.log(`[AI_PLANNING] Failed to reach block: ${err.message}`);
+            continue;
+          }
         }
 
-        // Mine block with proper tool selection - NO DELAYS
+        // Mine single block with proper tool selection
         const success = await bot.speedOptimizer.mineBlockFast(block);
         if (success) {
           minedCount++;
@@ -45849,65 +45925,27 @@ class AIPlanningEngine {
           console.log(`[AI_PLANNING] ❌ Failed to mine ${step.target}`);
         }
 
-        // NO DELAY between blocks - INSTANT continuous mining
+        // Small delay between blocks to prevent overwhelming
+        await this.sleep(100);
       }
 
       const success = minedCount >= (step.quantity || 1);
-      console.log(`[AI_PLANNING] Mining ${step.target} ${success ? 'completed' : 'failed'}: ${minedCount}/${targetCount} blocks`);
+      console.log(`[AI_PLANNING] Simple mining ${step.target} ${success ? 'completed' : 'failed'}: ${minedCount}/${targetCount} blocks`);
       return success;
 
     } catch (error) {
-      console.error(`[AI_PLANNING] Error during mining step: ${error.message}`);
+      console.error(`[AI_PLANNING] Error during simple mining step: ${error.message}`);
       return false;
     }
   }
 
   // BATCH mining execution - mine multiple blocks with ULTRA speed
+  // DISABLED: Batch mining replaced with simple individual block mining
   async executeBatchMiningStep(step) {
-    const bot = this.bot;
-    if (!bot || !bot.entity || !bot.speedOptimizer) {
-      console.log('[AI_PLANNING] Bot or SpeedOptimizer not available for batch mining');
-      return false;
-    }
-
-    try {
-      const targetCount = step.quantity || 5; // Default to 5 blocks for batch
-      console.log(`[AI_PLANNING] 🔥 Starting BATCH mining: ${step.target} x${targetCount}`);
-
-      // Find all blocks to mine
-      const blocks = this.findBlocksToMine(step.target, targetCount);
-      if (blocks.length === 0) {
-        console.log(`[AI_PLANNING] No ${step.target} blocks found for batch mining`);
-        return false;
-      }
-
-      console.log(`[AI_PLANNING] Found ${blocks.length} ${step.target} blocks for batch mining`);
-
-      // Check if we need to move closer to the batch
-      const centerPoint = blocks[0].position;
-      const distance = bot.entity.position.distanceTo(centerPoint);
-      
-      if (distance > 4.5) {
-        console.log(`[AI_PLANNING] Moving to batch location at ${centerPoint.x},${centerPoint.y},${centerPoint.z}`);
-        await bot.speedOptimizer.moveToFast(centerPoint, 15000);
-      }
-
-      // Use BATCH mining for ULTRA speed
-      const result = await bot.speedOptimizer.mineBlocksBatch(blocks, {
-        maxConsecutive: 20,    // Mine up to 20 blocks before tiny pause
-        skipFailed: true,      // Continue even if some fail
-        prequeueNext: true     // Pre-queue tool selection
-      });
-
-      const success = result.success >= (step.quantity || Math.min(targetCount, blocks.length));
-      console.log(`[AI_PLANNING] 🔥 BATCH mining ${step.target} ${success ? 'completed' : 'failed'}: ${result.success}/${result.total} blocks in ${result.totalTime}ms (${result.avgTime?.toFixed(1)}ms/block)`);
-      
-      return success;
-
-    } catch (error) {
-      console.error(`[AI_PLANNING] Error during batch mining step: ${error.message}`);
-      return false;
-    }
+    console.log(`[AI_PLANNING] ❌ Batch mining disabled - using simple individual block mining`);
+    
+    // Delegate to simple mining instead
+    return await this.executeMiningStep(step);
   }
 
   // Find blocks of a specific type to mine
@@ -46369,6 +46407,11 @@ class AIPlanningEngine {
       endTime: plan.endTime,
       estimatedTime: plan.estimatedTime
     };
+  }
+
+  // Helper method for sleeping
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
