@@ -22150,7 +22150,7 @@ try {
   isCommand(message) {
     const commandPrefixes = [
       // Emergency & Assistance
-      '!help', 'need help', '!swarm status', 'swarm status', '!spawn', '!stop',
+      '!help', '!!help', 'need help', '!swarm status', '!!swarm status', 'swarm status', '!spawn', '!!spawn', '!stop', '!!stop',
 
       // Navigation
       '!goto', 'go', '!follow', 'go home', 'head home', 'set home', 'travel to', 'travel', 'find highway',
@@ -22188,7 +22188,7 @@ try {
       'change to', 'switch to',
 
       // Status commands
-      'come to', 'come here', 'go to', 'craft', '!equip', '!status', '!test', 'gear up', 'get geared',
+      'come to', 'come here', 'go to', 'craft', '!equip', '!!equip', '!status', '!!status', '!inventory', '!!inventory', '!test', '!!test', 'gear up', 'get geared',
       'start dupe', 'test dupe', 'stop dupe', 'dupe report', 'dupe stats', 'ultimate dupe',
 
               // Seed cracking & structure finding
@@ -23546,17 +23546,21 @@ try {
     
     // Stop command
     if (lower.includes('!stop')) {
-      console.log(`[EXEC] Stopping current action`);
-      this.bot.chat(`🛑 Stopping current action`);
+      console.log(`[EXEC] Stopping all current actions`);
+      this.bot.chat(`🛑 Stopping all current actions`);
       
+      // Stop pathfinding
       if (this.bot.pathfinder) {
         this.bot.pathfinder.stop();
       }
       if (this.bot.pathfinder) {
         this.bot.pathfinder.stop();
       }
+      
+      // Stop combat
       if (this.bot.combatAI && this.bot.combatAI.isCurrentlyFighting) {
         this.bot.combatAI.isCurrentlyFighting = false;
+        this.bot.chat(`Stopped combat`);
       }
       
       // Stop following
@@ -23566,6 +23570,42 @@ try {
         this.currentFollowTarget = null;
         this.bot.chat(`Stopped following`);
       }
+      
+      // Stop AFK gathering
+      if (this.bot.afkGatherer && this.bot.afkGatherer.enabled) {
+        this.bot.afkGatherer.stop();
+        this.bot.chat(`Stopped AFK gathering`);
+      }
+      
+      // Stop movement manager
+      if (this.bot.movementManager) {
+        if (this.bot.movementManager.currentMode === 'highway' && this.bot.movementManager.highwayNavigator) {
+          this.bot.movementManager.highwayNavigator.stopTravel(null, 'user_cancelled');
+          this.bot.chat(`Stopped highway travel`);
+        }
+        this.bot.movementManager.stop();
+      }
+      
+      // Stop digging/mining
+      if (this.bot.targetDigBlock) {
+        this.bot.stopDigging();
+        this.bot.chat(`Stopped digging`);
+      }
+      
+      // Clear any active targets or goals
+      if (this.bot.targetDigBlock) {
+        this.bot.targetDigBlock = null;
+      }
+      if (this.bot.targetEntity) {
+        this.bot.targetEntity = null;
+      }
+      
+      // Reset bot state
+      this.isCurrentlyMining = false;
+      this.isCurrentlyFarming = false;
+      this.isCurrentlyBuilding = false;
+      
+      this.bot.chat(`✅ All actions stopped - Bot is now idle`);
       return;
     }
     
@@ -23684,6 +23724,89 @@ try {
       this.bot.chat(`❤️ Health: ${health}/20 | 🍖 Hunger: ${hunger}/20 | 🛡️ Armor: ${armor} pieces`);
       this.bot.chat(`📍 Position: ${Math.round(pos.x)} ${Math.round(pos.y)} ${Math.round(pos.z)}`);
       this.bot.chat(`⏱️ Game time: ${this.bot.time.timeOfDay} | 🌍 Dimension: ${this.bot.game.dimension}`);
+      return;
+    }
+    
+    // Inventory command
+    if (lower.includes('!inventory')) {
+      console.log(`[EXEC] Displaying inventory`);
+      
+      try {
+        const items = this.bot.inventory.items();
+        const slotsUsed = items.length;
+        const slotsTotal = 36; // Standard inventory size
+        const emptySlots = slotsTotal - slotsUsed;
+        
+        if (items.length === 0) {
+          this.bot.chat(`📦 Inventory (0/${slotsTotal} slots): Empty`);
+          return;
+        }
+        
+        this.bot.chat(`📦 Inventory (${slotsUsed}/${slotsTotal} slots):`);
+        
+        // Group items by type and count
+        const itemGroups = {};
+        items.forEach(item => {
+          const key = item.name || item.displayName || 'unknown';
+          if (!itemGroups[key]) {
+            itemGroups[key] = {
+              count: 0,
+              items: []
+            };
+          }
+          itemGroups[key].count += item.count;
+          itemGroups[key].items.push(item);
+        });
+        
+        // Display items with formatting
+        let displayed = 0;
+        const maxDisplay = 10; // Limit to avoid spam
+        
+        Object.entries(itemGroups).forEach(([itemName, group]) => {
+          if (displayed >= maxDisplay) return;
+          
+          let itemInfo = `- ${itemName} (${group.count}x)`;
+          
+          // Add durability info for tools and armor
+          const hasDurability = group.items.some(item => item.maxDurability && item.durabilityUsed !== undefined);
+          if (hasDurability) {
+            const damagedItem = group.items.find(item => item.maxDurability && item.durabilityUsed !== undefined);
+            if (damagedItem) {
+              const durability = damagedItem.maxDurability - damagedItem.durabilityUsed;
+              const maxDur = damagedItem.maxDurability;
+              const durabilityPercent = Math.round((durability / maxDur) * 100);
+              
+              if (durabilityPercent < 20) {
+                itemInfo += ` [⚠️ ${durability}/${maxDur}]`;
+              } else if (durabilityPercent < 50) {
+                itemInfo += ` [🔶 ${durability}/${maxDur}]`;
+              } else {
+                itemInfo += ` [✅ ${durability}/${maxDur}]`;
+              }
+            }
+          }
+          
+          // Add enchantment info for enchanted items
+          const enchantedItems = group.items.filter(item => item.nbt && item.nbt.value && item.nbt.value.Enchantments);
+          if (enchantedItems.length > 0) {
+            itemInfo += ` [✨${enchantedItems.length > 1 ? `x${enchantedItems.length}` : ''}]`;
+          }
+          
+          this.bot.chat(itemInfo);
+          displayed++;
+        });
+        
+        if (Object.keys(itemGroups).length > maxDisplay) {
+          const remaining = Object.keys(itemGroups).length - maxDisplay;
+          this.bot.chat(`... and ${remaining} more item types`);
+        }
+        
+        this.bot.chat(`🎒 Empty slots: ${emptySlots}`);
+        
+      } catch (error) {
+        console.log(`[EXEC] Inventory display failed: ${error.message}`);
+        this.bot.chat(`❌ Failed to display inventory: ${error.message}`);
+      }
       return;
     }
     
