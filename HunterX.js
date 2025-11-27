@@ -39582,7 +39582,7 @@ function saveConfiguration() {
       stashHunt: cfg.stashHunt || { active: false, startCoords: null, searchRadius: 10000, discovered: [], scanSpeed: 'fast', avoidPlayers: true, playerDetectionRadius: 100, flyHackEnabled: false, currentWaypoint: null, visitedChunks: [] },
       backup: cfg.backup || { enabled: true, autoBackup: true, backupPriority: [], leavePercentage: 0.1, riskAssessment: true, multiBot: true, maxBotsPerBackup: 3 },
       dangerEscape: cfg.dangerEscape || { enabled: true, playerProximityRadius: 50 },
-      stayMode: cfg.stayMode || { enabled: false },
+      stayMode: cfg.stayMode || { enabled: true },
       conversationalAI: cfg.conversationalAI || { enabled: false, useLLM: false, provider: {}, apiKey: '', requestTimeout: 30000, cacheTTL: 3600000, timeZoneAliases: {}, rateLimit: {}, autoReplyPrefix: '[AUTO]' },
       privateMsg: cfg.privateMsg || { enabled: false, defaultTemplate: '', trustLevelRequirement: 'trusted', rateLimit: {}, forwardToConsole: false },
       neural: cfg.neural || { combat: null, placement: null, dupe: null, conversation: null, dialogue: null, movement: null, available: false, type: 'fallback', manager: null },
@@ -39874,7 +39874,7 @@ function runSetupWizard() {
    }
    if (!config.stayMode) {
      config.stayMode = {
-       enabled: false
+       enabled: true
      };
    }
    if (!config.conversationalAI) {
