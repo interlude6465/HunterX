@@ -19616,6 +19616,13 @@ class BaritoneMiner {
     while (collected < quantity && attempts < maxAttempts) {
       attempts++;
       
+      // COMBAT PAUSE: Check if bot is in combat and wait if necessary
+      if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+        console.log(`[MINE] ⚔️ Combat detected, pausing mining...`);
+        await this.waitForCombatEnd();
+        console.log(`[MINE] ✅ Combat ended, resuming mining...`);
+      }
+      
       // INVENTORY MANAGEMENT: Check space every 3 attempts
       if (attempts > 0 && attempts % 3 === 0) {
         await this.checkAndClearInventory();
@@ -19834,6 +19841,13 @@ class BaritoneMiner {
   async pathfindToBlock(blockPos) {
     console.log(`[MINE] Pathfinding to ${blockPos.x} ${blockPos.y} ${blockPos.z}`);
     
+    // COMBAT PAUSE: Check if bot is in combat before pathfinding
+    if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+      console.log(`[MINE] ⚔️ Combat detected, pausing pathfinding...`);
+      await this.waitForCombatEnd();
+      console.log(`[MINE] ✅ Combat ended, resuming pathfinding...`);
+    }
+    
     try {
       await this.bot.pathfinder.goto(new goals.GoalNear(
         blockPos.x,
@@ -19866,6 +19880,13 @@ class BaritoneMiner {
     }
     
     try {
+      // COMBAT PAUSE: Check if bot is in combat before mining block
+      if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+        console.log(`[MINE] ⚔️ Combat detected, pausing block mining...`);
+        await this.waitForCombatEnd();
+        console.log(`[MINE] ✅ Combat ended, resuming block mining...`);
+      }
+      
       // Record action start for loop detection
       if (this.bot.loopDetector) {
         this.bot.loopDetector.recordAction('mining', true, { block: block.name, position: blockPos });
@@ -19904,6 +19925,12 @@ class BaritoneMiner {
   
   async equipBestTool(block) {
     if (!block || !this.bot.pathfinder) return;
+    
+    // COMBAT PAUSE: Don't switch tools if in combat (equipment manager handles this)
+    if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+      console.log(`[MINE] ⚔️ In combat, skipping tool switch (equipment manager handles combat tools)`);
+      return;
+    }
     
     // Find best tool in inventory
     const tools = this.bot.inventory.items();
@@ -20040,6 +20067,12 @@ class BaritoneMiner {
       return;
     }
     
+    // COMBAT PAUSE: Don't collect items during combat
+    if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+      console.log(`[MINE] ⚔️ In combat, skipping item collection`);
+      return;
+    }
+    
     try {
       // Wait a moment for items to spawn
       await this.sleep(300);
@@ -20093,6 +20126,13 @@ class BaritoneMiner {
     }
   }
   
+  async waitForCombatEnd() {
+    // Wait for combat to end by checking the inCombat flag
+    while (this.bot.combatAI && this.bot.combatAI.inCombat) {
+      await this.sleep(500); // Check every 500ms
+    }
+  }
+  
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -20107,6 +20147,13 @@ class AutoMiner {
   
   async mineForItem(itemName, quantity) {
     console.log(`[HUNTER] ⛏️ Mining for ${quantity}x ${itemName}...`);
+    
+    // COMBAT PAUSE: Check if bot is in combat before starting mining
+    if (this.bot.combatAI && this.bot.combatAI.inCombat) {
+      console.log(`[HUNTER] ⚔️ Combat detected, pausing mining before start...`);
+      await this.baritoneMiner.waitForCombatEnd();
+      console.log(`[HUNTER] ✅ Combat ended, starting mining...`);
+    }
     
     // Use Baritone-style mining instead of Y-level strategies
     return await this.baritoneMiner.mineResource(itemName, quantity);
