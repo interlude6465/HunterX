@@ -1321,6 +1321,19 @@ const { createFarmSystem } = require('./resource_farming');
 // === CRITICAL: PROCESS-LEVEL ERROR HANDLERS (Issue #1) ===
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[CRITICAL] Unhandled Promise Rejection:', reason);
+  
+  // Check for packet parsing errors specifically
+  const reasonStr = String(reason).toLowerCase();
+  if (reasonStr.includes('chunk size') || 
+      reasonStr.includes('explosion') ||
+      reasonStr.includes('packet') ||
+      reasonStr.includes('parse') ||
+      reasonStr.includes('buffer') ||
+      reasonStr.includes('read')) {
+    console.warn('[PACKET] 📦 Packet parsing error detected in unhandled rejection');
+    console.warn('[PACKET] This is likely a transient issue and will be handled by auto-reconnect');
+  }
+  
   const errorLog = `[${new Date().toISOString()}] UNHANDLED REJECTION: ${reason}\n${reason.stack || 'No stack'}\n\n`;
   try {
     safeAppendFile('./logs/errors.log', errorLog);
@@ -1332,6 +1345,19 @@ process.on('unhandledRejection', (reason, promise) => {
 
 process.on('uncaughtException', (err) => {
   console.error('[CRITICAL] Uncaught Exception:', err);
+  
+  // Check for packet parsing errors specifically
+  const errStr = String(err.message || err).toLowerCase();
+  if (errStr.includes('chunk size') || 
+      errStr.includes('explosion') ||
+      errStr.includes('packet') ||
+      errStr.includes('parse') ||
+      errStr.includes('buffer') ||
+      errStr.includes('read')) {
+    console.warn('[PACKET] 📦 Packet parsing error detected in uncaught exception');
+    console.warn('[PACKET] This is likely a transient issue and will be handled by auto-reconnect');
+  }
+  
   const errorLog = `[${new Date().toISOString()}] UNCAUGHT EXCEPTION: ${err.message}\n${err.stack || 'No stack'}\n\n`;
   try {
     safeAppendFile('./logs/errors.log', errorLog);
@@ -5972,6 +5998,98 @@ class Tier3MLCounter extends Tier2AdvancedEvasion {
         // Ignore packet errors
       }
     });
+  }
+  
+  // Enhanced packet error handling for explosion and other malformed packets
+  setupPacketErrorHandling() {
+    if (!this.bot || !this.bot._client) return;
+    
+    // Handle packet parsing errors at the protocol level
+    this.bot._client.on('error', (err) => {
+      if (err) {
+        const errorMessage = err.message || String(err);
+        
+        // Check for specific packet parsing errors
+        if (errorMessage.includes('Chunk size') || 
+            errorMessage.includes('but only') ||
+            errorMessage.includes('was read') ||
+            errorMessage.includes('explosion') ||
+            errorMessage.includes('packet') ||
+            errorMessage.includes('buffer') ||
+            errorMessage.includes('parse')) {
+          
+          console.warn(`[PACKET] ⚠️ Packet parsing error detected: ${errorMessage}`);
+          console.log('[PACKET] 🔄 Attempting graceful recovery from packet error...');
+          
+          // Don't crash on packet errors - trigger graceful reconnection
+          setTimeout(() => {
+            if (this.bot && this.bot._client && !this.bot._client.ended) {
+              console.log('[PACKET] 📡 Initiating graceful reconnection due to packet error...');
+              this.bot.end('packet_parsing_error');
+            }
+          }, 1000);
+          
+          return;
+        }
+        
+        // For other client errors, log but don't crash
+        console.warn(`[PACKET] Client error: ${errorMessage}`);
+      }
+    });
+    
+    // Handle socket errors that might cause packet parsing issues
+    if (this.bot._client.socket) {
+      this.bot._client.socket.on('error', (err) => {
+        if (err) {
+          const errorMessage = err.message || String(err);
+          
+          // Check for specific socket errors that affect packet reading
+          if (err.code === 'ECONNABORTED' || 
+              err.code === 'ECONNRESET' ||
+              err.code === 'ETIMEDOUT' ||
+              errorMessage.includes('read') ||
+              errorMessage.includes('buffer')) {
+            
+            console.warn(`[PACKET] 🔌 Socket error affecting packets: ${err.code} - ${errorMessage}`);
+            console.log('[PACKET] 🔄 Socket error detected, will trigger reconnection...');
+            
+            // Let the normal error handlers deal with reconnection
+            return;
+          }
+          
+          console.warn(`[PACKET] Socket error: ${err.code} - ${errorMessage}`);
+        }
+      });
+    }
+    
+    // Add specific explosion packet handling
+    this.bot._client.on('explosion', (packet) => {
+      try {
+        // Log explosion packets for debugging
+        console.log(`[PACKET] 💥 Explosion packet received: ${JSON.stringify({
+          x: packet.x,
+          y: packet.y,
+          z: packet.z,
+          radius: packet.radius,
+          recordCount: packet.records?.length || 0
+        })}`);
+        
+        // Validate explosion packet structure
+        if (!packet || typeof packet.x !== 'number' || typeof packet.y !== 'number' || typeof packet.z !== 'number') {
+          console.warn('[PACKET] ⚠️ Malformed explosion packet detected, ignoring');
+          return;
+        }
+        
+        // Handle explosion effects if needed
+        // This is where you could add bot reactions to explosions
+        
+      } catch (err) {
+        console.warn(`[PACKET] Error handling explosion packet: ${err.message}`);
+        // Don't let explosion packet errors crash the bot
+      }
+    });
+    
+    console.log('[PACKET] ✅ Enhanced packet error handling initialized');
   }
   
   detectRubberbanding(actions) {
@@ -32532,6 +32650,16 @@ class BotSpawner {
       const loopDetector = new LoopDetector(bot);
       bot.loopDetector = loopDetector; // Attach to bot instance for easy access
 
+      // Initialize enhanced packet error handling
+      try {
+        // Create a temporary anticheat instance to access packet error handling
+        const tempAnticheat = new AnticheatBot(bot);
+        tempAnticheat.setupPacketErrorHandling();
+        console.log(`[PACKET] ✅ Enhanced packet error handling initialized for ${username}`);
+      } catch (err) {
+        console.warn(`[PACKET] ⚠️ Failed to initialize packet error handling for ${username}: ${err.message}`);
+      }
+
       // Flag to prevent multiple disconnect handlers from firing
       let disconnectHandlerExecuted = false;
       let spawnTime = null;
@@ -32591,6 +32719,27 @@ class BotSpawner {
         const isDuplicateLogin = reasonLower.includes('duplicate_login') ||
                                  reasonLower.includes('multiplayer.disconnect.duplicate_login') ||
                                  reasonLower.includes('you are already logged in');
+
+        // Detect if this is a packet parsing error
+        const isPacketError = reasonLower.includes('packet_parsing_error') ||
+                              reasonLower.includes('chunk size') ||
+                              reasonLower.includes('explosion') ||
+                              reasonLower.includes('packet') ||
+                              reasonLower.includes('parse') ||
+                              reasonLower.includes('buffer');
+
+        if (isPacketError) {
+          console.log(`[RECONNECT] 📦 PACKET PARSING ERROR DETECTED for ${username}`);
+          console.log(`[RECONNECT] Full disconnect reason: ${reason}`);
+          console.log(`[RECONNECT] This was likely caused by an explosion or malformed packet`);
+          
+          // For packet errors, use shorter backoff since these are transient
+          if (reconnectManager) {
+            reconnectManager.isPacketError = true;
+            reconnectManager.disconnectTimestamp = Date.now();
+            console.log(`[RECONNECT] Setting reduced backoff for packet error recovery`);
+          }
+        }
 
         if (isDuplicateLogin) {
           console.log(`[RECONNECT] ⚠️ DUPLICATE LOGIN DETECTED for ${username}`);
@@ -33062,13 +33211,24 @@ class AutoReconnectManager {
     this.connectionLock = false; // Prevent simultaneous connection attempts
     this.currentBot = null; // Track current bot instance
     this.isDuplicateLogin = false; // Track if last disconnect was duplicate_login
+    this.isPacketError = false; // Track if last disconnect was packet parsing error
     this.disconnectTimestamp = null; // Track when disconnect occurred
   }
 
   // Calculate exponential backoff delay: 5s, 10s, 20s, 40s, 80s, 160s, etc
   // For duplicate_login, use minimum 60 seconds to allow server to fully clear session
+  // For packet errors, use reduced backoff since these are transient issues
   getBackoffDelay(attempt) {
     const baseDelay = this.baseBackoffDelay * Math.pow(2, Math.min(attempt, 7)); // Cap at 2^7 = 128x (10+ minutes)
+
+    // If last disconnect was packet parsing error, use reduced backoff
+    // Packet errors are typically transient and recover quickly
+    if (this.isPacketError) {
+      // Use much shorter delays for packet errors: 2s, 4s, 8s, 16s, 32s, 64s, etc
+      const packetErrorDelay = 2000 * Math.pow(2, Math.min(attempt, 6)); // Cap at 2^6 = 64x (128s max)
+      console.log(`[RECONNECT] Using packet error backoff: ${packetErrorDelay}ms (attempt ${attempt + 1})`);
+      return Math.min(packetErrorDelay, 30000); // Cap at 30 seconds for packet errors
+    }
 
     // If last disconnect was duplicate_login, enforce minimum 60 second delay
     // Minecraft servers can take 30-60 seconds to clear a session after disconnect
@@ -33254,7 +33414,9 @@ class AutoReconnectManager {
       const delaySeconds = (delay / 1000).toFixed(1);
 
       const duplicateLoginNote = this.isDuplicateLogin ? ' (duplicate_login detected - using extended delay)' : '';
-      console.log(`[RECONNECT] Bot ${this.username} disconnected. Attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts}${duplicateLoginNote}`);
+      const packetErrorNote = this.isPacketError ? ' (packet_error detected - using reduced delay)' : '';
+      const specialNote = duplicateLoginNote || packetErrorNote;
+      console.log(`[RECONNECT] Bot ${this.username} disconnected. Attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts}${specialNote}`);
       console.log(`[RECONNECT] Waiting ${delaySeconds}s before reconnection attempt...`);
 
       // Wait for backoff delay
@@ -33277,6 +33439,7 @@ class AutoReconnectManager {
         this.reconnectAttempts = 0; // Reset attempts on successful reconnection
         this.currentBot = newBot; // Track new bot instance
         this.isDuplicateLogin = false; // Reset duplicate login flag
+        this.isPacketError = false; // Reset packet error flag
 
         // Restore bot state
         await this.restoreBotState(newBot);
@@ -33304,6 +33467,19 @@ class AutoReconnectManager {
         console.log(`[RECONNECT] ⚠️ DUPLICATE LOGIN ERROR detected in spawn attempt`);
         console.log(`[RECONNECT] Full error: ${error.message}`);
         console.log(`[RECONNECT] Will use extended backoff (60+ second delay) on next attempt`);
+      }
+      
+      // Check if error is packet parsing related
+      if (errorMsg.includes('chunk size') ||
+          errorMsg.includes('explosion') ||
+          errorMsg.includes('packet') ||
+          errorMsg.includes('parse') ||
+          errorMsg.includes('buffer') ||
+          errorMsg.includes('read')) {
+        this.isPacketError = true;
+        console.log(`[RECONNECT] 📦 PACKET PARSING ERROR detected in spawn attempt`);
+        console.log(`[RECONNECT] Full error: ${error.message}`);
+        console.log(`[RECONNECT] Will use reduced backoff for packet error recovery`);
       }
     }
 
