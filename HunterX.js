@@ -16943,6 +16943,9 @@ class ItemHunter {
     // OPTIMIZED: Initialize speed optimizer for faster operations
     this.speedOptimizer = new SpeedOptimizer(bot);
     console.log('[HUNTER] ⚡ Speed optimizer initialized for maximum performance');
+    
+    // Alias to prevent "totalFloorFailures is not defined" error during hunting
+    this.totalFloorFailures = 0;
   }
   
   setStructureSystems(structureMapper, seedCracker, structurePredictor) {
@@ -17848,6 +17851,8 @@ class ItemHunter {
     const floorSupportAttempts = new Map(); // Key: "x,y,z", Value: attempt count
     const MAX_FLOOR_SUPPORT_RETRIES = 5;
     let totalFloorSupportFailures = 0; // Track total failures across all positions
+    // Alias to prevent "totalFloorFailures is not defined" error
+    let totalFloorFailures = totalFloorSupportFailures;
     const MAX_TOTAL_FAILURES = 20; // Give up after 20 total floor support failures
     
     const cloneAndFloor = (vec) => {
@@ -18079,6 +18084,7 @@ class ItemHunter {
       const placed = await this.placeSolidTunnelBlock(floorPos);
       if (!placed) {
         totalFloorSupportFailures++;
+        totalFloorFailures = totalFloorSupportFailures; // Keep alias in sync
         const attemptCount = floorSupportAttempts ? floorSupportAttempts.get(`${floorPos.x},${floorPos.y},${floorPos.z}`) || 1 : 1;
         console.log(`[HUNTER] ⚠️ Unable to secure floor support at ${floorPos.x}, ${floorPos.y}, ${floorPos.z} (attempt ${attemptCount}/5, total failures: ${totalFloorSupportFailures}/${MAX_TOTAL_FAILURES})`);
         
@@ -18676,6 +18682,9 @@ class MobHunter {
     this.currentTarget = null;
     this.combatLogger = null;
     this.combatCheck = null;
+    
+    // Alias to prevent "totalFloorFailures is not defined" error during hunting
+    this.totalFloorFailures = 0;
   }
   
   setCombatLogger(logger) {
