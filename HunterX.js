@@ -18843,6 +18843,36 @@ class MobHunter {
     const obsidian = this.bot.inventory.items().find(i => i.name === 'obsidian');
     return !!(crystals && obsidian);
   }
+
+  // Determine if a mob type requires a kill arena for efficient farming
+  needsArena(mobType) {
+    // Mobs that benefit from contained arenas for safe/efficient farming
+    const arenaMobs = [
+      'blaze',        // Blazes fly and can be hard to hit, arena helps contain them
+      'ghast',        // Ghasts fly and shoot fireballs, arena provides protection
+      'wither_skeleton', // Wither skeletons are dangerous, arena provides safety
+      'hoglin',       // Hoglins are aggressive and can flee, arena helps contain
+      'piglin',       // Piglins can be aggressive, arena helps manage them
+      'zombified_piglin' // Zombified piglins can be dangerous in groups
+    ];
+    
+    return arenaMobs.includes(mobType.toLowerCase());
+  }
+
+  // Build a kill arena for specific mob types (placeholder implementation)
+  async buildKillArena(location) {
+    console.log(`[HUNTER] 🏗️ Building kill arena at ${location.x}, ${location.y}, ${location.z}`);
+    
+    // For now, just log that we would build an arena
+    // In a full implementation, this would:
+    // - Clear the area
+    // - Build containment walls
+    // - Create killing platforms
+    // - Add lighting and safety features
+    
+    console.log(`[HUNTER] ✅ Arena construction completed (placeholder)`);
+    return true;
+  }
 }
 
 // === COMBAT LOGGER ===
