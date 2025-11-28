@@ -29565,12 +29565,11 @@ class PluginAnalyzer {
   }
   
   checkPacketHandling(content, analysis) {
-    const packetPatterns = [
-      'PacketPlayInWindowClick',
-      'PacketPlayOutSetSlot',
-      'sendPacket',
-      'handlePacket'
-    ];
+       const packetPatterns = [
+         'PacketPlayInWindowClick',
+         'PacketPlayOutSetSlot',
+         'handlePacket'
+       ];
     
     for (const pattern of packetPatterns) {
       if (content.includes(pattern)) {
@@ -43687,14 +43686,8 @@ class SpeedOptimizer {
       const yaw = Math.atan2(-delta.x, -delta.z);
       const pitch = Math.atan2(delta.y, Math.sqrt(delta.x * delta.x + delta.z * delta.z));
       
-      // Set rotation immediately without waiting
-      this.bot.entity.yaw = yaw;
-      this.bot.entity.pitch = pitch;
-      this.bot.sendPacket('look', {
-        yaw: yaw,
-        pitch: pitch,
-        onGround: this.bot.entity.onGround
-      });
+      // Set rotation immediately using correct Mineflayer method
+      this.bot.look(yaw, pitch, true);
     }
   }
 
