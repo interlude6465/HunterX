@@ -43586,6 +43586,12 @@ class SpeedOptimizer {
       return false; // No tool needed or hand is sufficient
     }
 
+    // Check if bot already has a suitable tool equipped
+    if (this.bot.heldItem && this.bot.heldItem.name.includes(toolType)) {
+      console.log(`[SPEED] ✓ Already has suitable tool equipped: ${this.bot.heldItem.name} for ${block.name}`);
+      return true;
+    }
+
     // Find the best available tool of the required type
     const tool = this.findBestTool(toolType);
     if (!tool) {
@@ -43616,6 +43622,8 @@ class SpeedOptimizer {
       'granite': 'pickaxe',
       'deepslate': 'pickaxe',
       'cobbled_deepslate': 'pickaxe',
+      'polished_deepslate': 'pickaxe',
+      'calcite': 'pickaxe',
       'tuff': 'pickaxe',
       'coal_ore': 'pickaxe',
       'iron_ore': 'pickaxe',
@@ -43625,6 +43633,15 @@ class SpeedOptimizer {
       'emerald_ore': 'pickaxe',
       'lapis_ore': 'pickaxe',
       'redstone_ore': 'pickaxe',
+      // Deepslate ore variants
+      'deepslate_coal_ore': 'pickaxe',
+      'deepslate_iron_ore': 'pickaxe',
+      'deepslate_gold_ore': 'pickaxe',
+      'deepslate_copper_ore': 'pickaxe',
+      'deepslate_diamond_ore': 'pickaxe',
+      'deepslate_emerald_ore': 'pickaxe',
+      'deepslate_lapis_ore': 'pickaxe',
+      'deepslate_redstone_ore': 'pickaxe',
       'nether_gold_ore': 'pickaxe',
       'ancient_debris': 'pickaxe',
       'nether_quartz_ore': 'pickaxe',
@@ -43802,7 +43819,11 @@ class SpeedOptimizer {
       'kelp_plant': 'shears'
     };
 
-    return toolMap[blockName.toLowerCase()] || null;
+    const toolType = toolMap[blockName.toLowerCase()];
+    if (!toolType && blockName.toLowerCase().includes('ore')) {
+      console.log(`[SPEED] ⚠️ Unknown ore type: ${blockName} - may need tool mapping`);
+    }
+    return toolType || null;
   }
 
   // Find the best available tool of a given type
