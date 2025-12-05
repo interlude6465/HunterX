@@ -24178,6 +24178,38 @@ try {
       return;
     }
     
+    // TPA Auto-accept command
+    if (lower.includes('!tpa')) {
+      if (lower.includes('enable') || lower.includes('on')) {
+        if (this.bot.tpaAutoAccept) {
+          this.bot.tpaAutoAccept.setEnabled(true);
+          this.bot.chat('🌀 TPA auto-accept ENABLED');
+        } else {
+          this.bot.chat('❌ TPA auto-accept not available');
+        }
+        return;
+      } else if (lower.includes('disable') || lower.includes('off')) {
+        if (this.bot.tpaAutoAccept) {
+          this.bot.tpaAutoAccept.setEnabled(false);
+          this.bot.chat('🌀 TPA auto-accept DISABLED');
+        } else {
+          this.bot.chat('❌ TPA auto-accept not available');
+        }
+        return;
+      } else if (lower.includes('status')) {
+        if (this.bot.tpaAutoAccept) {
+          const status = this.bot.tpaAutoAccept.getStatus();
+          this.bot.chat(`🌀 TPA Auto-accept: ${status.enabled ? 'Enabled' : 'Disabled'} | Active requests: ${status.activeRequests} | Patterns: ${status.patternsCount}`);
+        } else {
+          this.bot.chat('❌ TPA auto-accept not available');
+        }
+        return;
+      } else {
+        this.bot.chat('Usage: !tpa [enable|disable|status]');
+        return;
+      }
+    }
+    
     // Test command
     if (lower.includes('!test')) {
       console.log('[TEST] Testing all command execution...');
@@ -36886,6 +36918,137 @@ class BuildPersistence {
   }
 }
 
+// === AUTO-ACCEPT TPA SYSTEM ===
+// Server-agnostic TPA request detection and automatic acceptance
+
+class TPAutoAccept {
+  constructor(bot) {
+    this.bot = bot;
+    this.enabled = config.tpaAutoAccept.enabled;
+    this.cooldownTime = config.tpaAutoAccept.cooldownTime;
+    this.logAcceptedRequests = config.tpaAutoAccept.logAcceptedRequests;
+    this.requestCooldown = new Set(); // Prevent spam
+    
+    // Common TPA request patterns (server-agnostic)
+    this.tpaPatterns = [
+      // Standard formats
+      /(\w+)\s+(?:has sent|sent)\s+(?:you\s+)?(?:a\s+)?(?:teleport|tpa|tp)\s+(?:request|ask)/i,
+      /(\w+)\s+(?:would like|wants|wants to|is asking to)\s+(?:teleport|tpa|tp)\s+(?:to\s+)?(?:you|your\s+location)/i,
+      /(\w+)\s+(?:has requested|requested)\s+(?:to\s+)?(?:teleport|tpa|tp)\s+(?:to\s+)?(?:you|your\s+location)/i,
+      // Plugin-specific formats
+      /\[.*?\]\s*>>\s*(\w+)\s+(?:would like|wants)\s+to\s+(?:teleport|tpa|tp)\s+to\s+you/i,
+      /\[.*?\]\s*(\w+)\s+(?:has sent|sent)\s+(?:you\s+)?(?:a\s+)?(?:teleport|tpa|tp)\s+request/i,
+      // Direct requests
+      /(\w+)\s+(?:asked|asks)\s+(?:to\s+)?(?:teleport|tpa|tp)\s+(?:to\s+)?(?:you|your\s+location)/i,
+      // EssentialsX format
+      /(\w+)\s+has\s+requested\s+to\s+teleport\s+to\s+you\./i,
+      // Various other formats
+      /(\w+)\s+wants\s+to\s+teleport\s+to\s+you/i,
+      /(\w+)\s+is\s+asking\s+to\s+teleport\s+to\s+you/i
+    ];
+    
+    // Use configured accept commands or defaults
+    this.acceptCommands = config.tpaAutoAccept.acceptCommands || [
+      '/tpaccept', '/tpyes', '/tpa accept', '/tpa yes', '/tpayes'
+    ];
+    
+    console.log('[TPA] Auto-accept TPA system initialized');
+  }
+  
+  // Enable/disable TPA auto-accept
+  setEnabled(enabled) {
+    this.enabled = enabled;
+    console.log(`[TPA] Auto-accept ${enabled ? 'ENABLED' : 'DISABLED'}`);
+  }
+  
+  // Check if message is a TPA request
+  isTPARequest(message) {
+    for (const pattern of this.tpaPatterns) {
+      const match = message.match(pattern);
+      if (match) {
+        return {
+          isRequest: true,
+          username: match[1],
+          fullMatch: match[0]
+        };
+      }
+    }
+    return { isRequest: false };
+  }
+  
+  // Extract accept command from message
+  extractAcceptCommand(message) {
+    // Look for accept commands mentioned in the message
+    for (const cmd of this.acceptCommands) {
+      if (message.toLowerCase().includes(cmd.replace('/', ''))) {
+        return cmd;
+      }
+    }
+    
+    // Default to /tpaccept if no command found
+    return '/tpaccept';
+  }
+  
+  // Handle incoming chat message for TPA requests
+  async handleChat(username, message) {
+    if (!this.enabled) return false;
+    
+    // Check if this is a TPA request
+    const tpaInfo = this.isTPARequest(message);
+    if (!tpaInfo.isRequest) return false;
+    
+    const requestUsername = tpaInfo.username;
+    
+    // Check cooldown to prevent spam
+    const cooldownKey = `${requestUsername}_${Math.floor(Date.now() / this.cooldownTime)}`;
+    if (this.requestCooldown.has(cooldownKey)) {
+      console.log(`[TPA] Ignoring spam request from ${requestUsername}`);
+      return false;
+    }
+    
+    this.requestCooldown.add(cooldownKey);
+    
+    // Clean up old cooldown entries
+    setTimeout(() => {
+      this.requestCooldown.delete(cooldownKey);
+    }, this.cooldownTime * 2);
+    
+    // Extract the accept command from the message
+    const acceptCommand = this.extractAcceptCommand(message);
+    
+    // Add username parameter if needed (for commands like /tpyes USERNAME)
+    let finalCommand = acceptCommand;
+    if (acceptCommand.includes('tpyes') && !message.includes(requestUsername)) {
+      finalCommand = `${acceptCommand} ${requestUsername}`;
+    }
+    
+    if (this.logAcceptedRequests) {
+      console.log(`[TPA] Auto-accepting request from ${requestUsername} using: ${finalCommand}`);
+    }
+    
+    try {
+      // Execute the accept command
+      this.bot.chat(finalCommand);
+      if (this.logAcceptedRequests) {
+        console.log(`[TPA] ✓ Accepted teleport request from ${requestUsername}`);
+      }
+      return true;
+    } catch (error) {
+      console.error(`[TPA] Error accepting TPA from ${requestUsername}:`, error.message);
+      return false;
+    }
+  }
+  
+  // Get status
+  getStatus() {
+    return {
+      enabled: this.enabled,
+      activeRequests: this.requestCooldown.size,
+      patternsCount: this.tpaPatterns.length
+    };
+  }
+}
+
 // === MAIN BOT LAUNCHER ===
 async function launchBot(username, role = 'fighter') {
   if (!config.server) {
@@ -37804,6 +37967,10 @@ async function launchBot(username, role = 'fighter') {
     // Initialize farming system
     const farmIntegration = createFarmSystem(bot, config, globalSwarmCoordinator);
     
+    // Initialize TPA auto-accept system
+    bot.tpaAutoAccept = new TPAutoAccept(bot);
+    console.log('[TPA] Auto-accept TPA system initialized');
+    
     // Initialize Escape Artist AI
     bot.dangerMonitor = new DangerMonitor(bot);
     bot.dangerMonitor.startMonitoring();
@@ -37813,6 +37980,11 @@ async function launchBot(username, role = 'fighter') {
     bot.on('chat', async (username, message) => {
       if (username === bot.username) return;
       try {
+        // Handle TPA requests first
+        if (await bot.tpaAutoAccept.handleChat(username, message)) {
+          return; // TPA request handled, stop processing
+        }
+        
         if (await farmIntegration.tryHandleChat(username, message)) {
           return;
         }
@@ -39251,6 +39423,26 @@ function loadConfiguration() {
         workingConfig.lifesteal = { ...workingConfig.lifesteal, ...savedConfig.lifesteal };
       }
 
+      // TPA Auto-Accept
+      if (savedConfig.tpaAutoAccept && typeof savedConfig.tpaAutoAccept === 'object') {
+        workingConfig.tpaAutoAccept = { ...workingConfig.tpaAutoAccept, ...savedConfig.tpaAutoAccept };
+        if (typeof savedConfig.tpaAutoAccept.enabled === 'boolean') {
+          workingConfig.tpaAutoAccept.enabled = savedConfig.tpaAutoAccept.enabled;
+        }
+        if (typeof savedConfig.tpaAutoAccept.cooldownTime === 'number' && savedConfig.tpaAutoAccept.cooldownTime > 0) {
+          workingConfig.tpaAutoAccept.cooldownTime = savedConfig.tpaAutoAccept.cooldownTime;
+        }
+        if (typeof savedConfig.tpaAutoAccept.logAcceptedRequests === 'boolean') {
+          workingConfig.tpaAutoAccept.logAcceptedRequests = savedConfig.tpaAutoAccept.logAcceptedRequests;
+        }
+        if (Array.isArray(savedConfig.tpaAutoAccept.supportedPatterns)) {
+          workingConfig.tpaAutoAccept.supportedPatterns = savedConfig.tpaAutoAccept.supportedPatterns;
+        }
+        if (Array.isArray(savedConfig.tpaAutoAccept.acceptCommands)) {
+          workingConfig.tpaAutoAccept.acceptCommands = savedConfig.tpaAutoAccept.acceptCommands;
+        }
+      }
+
       console.log('✅ Configuration loaded successfully!');
       return workingConfig;
     } else {
@@ -39343,6 +39535,14 @@ function ensureConfigStructure(targetConfig) {
   // Ensure nested rateLimit object exists
   if (!cfg.privateMsg.rateLimit) {
     cfg.privateMsg.rateLimit = { windowMs: 60000, maxMessages: 10 };
+  }
+  
+  if (!cfg.tpaAutoAccept) {
+    cfg.tpaAutoAccept = {
+      enabled: true, cooldownTime: 5000, logAcceptedRequests: true,
+      supportedPatterns: ['essentialsx', 'cmi', 'ultimatetpa', 'custom'],
+      acceptCommands: ['/tpaccept', '/tpyes', '/tpa accept', '/tpa yes', '/tpayes']
+    };
   }
   
   if (!cfg.neural) {
