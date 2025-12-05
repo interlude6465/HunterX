@@ -31911,7 +31911,7 @@ class BotSpawner {
         };
 
         testBot.once('spawn', () => {
-          const finalVersion = testBot.version || versionToTry;
+          const finalVersion = (testBot && testBot.version) || versionToTry;
           safeCleanup();
           console.log(`[DETECTION] ✓ Server is CRACKED - will use proxies (version: ${finalVersion})`);
           resolve({ 
@@ -31923,7 +31923,7 @@ class BotSpawner {
         });
 
         testBot.once('error', (err) => {
-          const finalVersion = testBot.version || versionToTry;
+          const finalVersion = (testBot && testBot.version) || versionToTry;
           safeCleanup();
           
           // Try to extract version from error message
@@ -31975,7 +31975,7 @@ class BotSpawner {
         });
 
         testBot.once('kicked', (reason) => {
-          const finalVersion = testBot.version || versionToTry;
+          const finalVersion = (testBot && testBot.version) || versionToTry;
           safeCleanup();
           
           const reasonStr = typeof reason === 'string' ? reason : JSON.stringify(reason);
