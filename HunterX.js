@@ -32411,16 +32411,6 @@ class BotSpawner {
       const loopDetector = new LoopDetector(bot);
       bot.loopDetector = loopDetector; // Attach to bot instance for easy access
 
-      // Initialize enhanced packet error handling
-      try {
-        // Create a temporary anticheat instance to access packet error handling
-        const tempAnticheat = new AnticheatBot(bot);
-        tempAnticheat.setupPacketErrorHandling();
-        console.log(`[PACKET] ✅ Enhanced packet error handling initialized for ${username}`);
-      } catch (err) {
-        console.warn(`[PACKET] ⚠️ Failed to initialize packet error handling for ${username}: ${err.message}`);
-      }
-
       // Flag to prevent multiple disconnect handlers from firing
       let disconnectHandlerExecuted = false;
       let spawnTime = null;
