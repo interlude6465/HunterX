@@ -645,39 +645,54 @@ class NeuralBrainManager {
       this.libraries.synaptic = Synaptic;
       const { Neuron, Layer, Network, Trainer } = Synaptic;
       
+      if (!Network || !Trainer) {
+        console.warn('[NEURAL] Synaptic library missing required components');
+        return false;
+      }
+      
       console.log('[NEURAL] ✓ Synaptic loaded');
       
       // Create networks for each model
       const createSynapticNetwork = (inputSize, hiddenSizes, outputSize) => {
-        const layers = [];
-        
-        // Input layer
-        const inputLayer = new Layer(inputSize);
-        layers.push(inputLayer);
-        
-        // Hidden layers
-        let prevLayer = inputLayer;
-        for (const size of hiddenSizes) {
-          const hiddenLayer = new Layer(size);
-          prevLayer.project(hiddenLayer);
-          layers.push(hiddenLayer);
-          prevLayer = hiddenLayer;
+        try {
+          const layers = [];
+          
+          // Input layer
+          const inputLayer = new Layer(inputSize);
+          layers.push(inputLayer);
+          
+          // Hidden layers
+          let prevLayer = inputLayer;
+          for (const size of hiddenSizes) {
+            const hiddenLayer = new Layer(size);
+            prevLayer.project(hiddenLayer);
+            layers.push(hiddenLayer);
+            prevLayer = hiddenLayer;
+          }
+          
+          // Output layer
+          const outputLayer = new Layer(outputSize);
+          prevLayer.project(outputLayer);
+          layers.push(outputLayer);
+          
+          const network = new Network({
+            input: inputLayer,
+            hidden: layers.slice(1, -1),
+            output: outputLayer
+          });
+          
+          const trainer = new Trainer(network);
+          
+          if (!network || !trainer) {
+            console.warn('[NEURAL] Failed to create synaptic network or trainer');
+            return null;
+          }
+          
+          return { network, trainer };
+        } catch (error) {
+          console.warn('[NEURAL] Error creating synaptic network:', error.message);
+          return null;
         }
-        
-        // Output layer
-        const outputLayer = new Layer(outputSize);
-        prevLayer.project(outputLayer);
-        layers.push(outputLayer);
-        
-        const network = new Network({
-          input: inputLayer,
-          hidden: layers.slice(1, -1),
-          output: outputLayer
-        });
-        
-        const trainer = new Trainer(network);
-        
-        return { network, trainer };
       };
       
       this.models.combat = createSynapticNetwork(10, [256, 128, 64], 5);
@@ -685,8 +700,19 @@ class NeuralBrainManager {
       this.models.dupe = createSynapticNetwork(15, [256, 128, 64], 8);
       this.models.conversation = createSynapticNetwork(20, [128, 64], 10);
       
+      // Verify all models were created successfully
+      const failedModels = Object.entries(this.models)
+        .filter(([name, model]) => !model)
+        .map(([name]) => name);
+      
+      if (failedModels.length > 0) {
+        console.warn(`[NEURAL] Failed to create synaptic models: ${failedModels.join(', ')}`);
+        return false;
+      }
+      
       return true;
     } catch (error) {
+      console.warn('[NEURAL] Synaptic initialization failed:', error.message);
       return false;
     }
   }
@@ -881,6 +907,7 @@ class NeuralBrainManager {
     try {
       const model = this.models[modelName];
       if (!model) {
+        console.warn(`[NEURAL] Model '${modelName}' not found, skipping training`);
         return false;
       }
       
@@ -893,6 +920,12 @@ class NeuralBrainManager {
       
       switch (this.type) {
         case 'ml5':
+          // Check if model network is properly initialized
+          if (!model.network) {
+            console.warn(`[NEURAL] ML5 network not available for ${modelName}, skipping training`);
+            return false;
+          }
+          
           const ml5Options = {
             epochs: options.iterations || 1000,
             batchSize: 32,
@@ -903,6 +936,12 @@ class NeuralBrainManager {
           
         case 'brain.js':
         case 'brainjs-lstm':
+          // Check if model network is properly initialized
+          if (!model.network) {
+            console.warn(`[NEURAL] Brain.js network not available for ${modelName}, skipping training`);
+            return false;
+          }
+          
           const brainOptions = {
             iterations: options.iterations || 1000,
             errorThresh: options.errorThresh || 0.005,
@@ -913,6 +952,12 @@ class NeuralBrainManager {
           break;
           
         case 'synaptic':
+          // Check if model and trainer are properly initialized
+          if (!model.trainer) {
+            console.warn(`[NEURAL] Synaptic trainer not available for ${modelName}, skipping training`);
+            return false;
+          }
+          
           const synapticOptions = {
             rate: 0.1,
             iterations: options.iterations || 1000,
@@ -921,10 +966,22 @@ class NeuralBrainManager {
             log: 0,
             ...options
           };
-          model.trainer.train(data, synapticOptions);
+          
+          try {
+            model.trainer.train(data, synapticOptions);
+          } catch (trainError) {
+            console.warn(`[NEURAL] Synaptic training error for ${modelName}: ${trainError.message}`);
+            return false;
+          }
           break;
           
         case 'tensorflow':
+          // Check if model network is properly initialized
+          if (!model.network || !this.libraries.tensorflow) {
+            console.warn(`[NEURAL] TensorFlow network not available for ${modelName}, skipping training`);
+            return false;
+          }
+          
           const tfInputs = this.libraries.tensorflow.tensor2d(data.map(d => d.input));
           const tfOutputs = this.libraries.tensorflow.tensor2d(data.map(d => d.output));
           
@@ -3958,7 +4015,20 @@ async function safeNeuralPredict(networkOrName, input, fallbackOutput = null) {
 
 // Unified interface for neural training - enhanced with multi-library support
 async function safeNeuralTrain(networkOrName, data, options = {}) {
-  if (!neuralBrainManager || !neuralBrainManager.initialized) {
+  // Check if neural brain manager is available and initialized
+  if (!neuralBrainManager) {
+    console.warn('[NEURAL] Neural brain manager not available, skipping training');
+    return false;
+  }
+  
+  if (!neuralBrainManager.initialized) {
+    console.warn('[NEURAL] Neural brain manager not initialized, skipping training');
+    return false;
+  }
+  
+  // Validate training data
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    console.warn('[NEURAL] No training data provided, skipping training');
     return false;
   }
   
@@ -3978,6 +4048,7 @@ async function safeNeuralTrain(networkOrName, data, options = {}) {
   }
   
   if (!modelName) {
+    console.warn('[NEURAL] Could not determine model name for training');
     return false;
   }
   
@@ -27195,9 +27266,14 @@ class RLSystem {
     }));
     
     try {
-      await this.neuralBrain.train(domain, trainingData, { iterations: 10 });
-      console.log(`[RL_SYSTEM] ✓ Trained ${domain} with ${batch.length} samples`);
-      return true;
+      const success = await safeNeuralTrain(domain, trainingData, { iterations: 10 });
+      if (success) {
+        console.log(`[RL_SYSTEM] ✓ Trained ${domain} with ${batch.length} samples`);
+        return true;
+      } else {
+        console.warn(`[RL_SYSTEM] Training skipped for ${domain} (neural unavailable)`);
+        return false;
+      }
     } catch (err) {
       console.warn(`[RL_SYSTEM] Training failed for ${domain}: ${err.message}`);
       return false;
