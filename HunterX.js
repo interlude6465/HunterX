@@ -17722,6 +17722,26 @@ class ItemHunter {
       const passableNames = ['air', 'water', 'flowing_water', 'lava', 'flowing_lava', 'tall_grass', 'seagrass', 'snow', 'cave_air'];
       if (passableNames.includes(block.name)) return true;
       
+      // === MINING POSITION VALIDATION FIX ===
+      // Allow ore blocks as passable for mining positions
+      // In Minecraft, you can stand on ore blocks to mine adjacent ore
+      // This fixes "No valid mining positions found" when bot should stand on ore
+      if (block.name.includes('ore')) return true; // All ore blocks are passable for mining
+      
+      // Allow other common solid blocks for mining positions
+      // Bot should be able to stand on most solid blocks to mine adjacent blocks
+      if (block.name.includes('stone')) return true; // All stone variants
+      if (block.name.includes('wood') || block.name.includes('log')) return true; // Wood blocks
+      if (block.name.includes('plank')) return true; // Wood planks
+      if (block.name.includes('brick')) return true; // Brick blocks
+      if (block.name.includes('concrete')) return true; // Concrete blocks
+      if (block.name.includes('dirt')) return true; // Dirt variants
+      if (block.name.includes('sand')) return true; // Sand blocks
+      if (block.name.includes('gravel')) return true; // Gravel
+      if (block.name.includes('cobblestone')) return true; // Cobblestone
+      if (block.name.includes('netherrack')) return true; // Netherrack
+      if (block.name.includes('block')) return true; // Generic blocks (except grass blocks handled above)
+      
       // Check if block name contains markers for passability
       if (block.name.includes('grass') && !block.name.includes('block')) return true;
       if (block.name.includes('vine')) return true;
